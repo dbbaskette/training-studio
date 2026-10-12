@@ -1,7 +1,7 @@
 # Training Studio: core pipeline design (phase 1)
 
 Date: 2026-10-12
-Status: revision 2, after the [core pipeline review](../../reviews/2026-10-12-core-pipeline-review.md); awaits approval
+Status: revision 2, written after an external review of revision 1 and updated as phase 1 was built
 
 ## 1. Purpose
 
@@ -16,7 +16,7 @@ Given a topic, it produces:
    versus Redis) and a **product brief** when the topic is one technology or
    product (Greenplum),
 5. a slide deck that can be both presented and distributed,
-6. practice scenarios, each defined in an editable file, and a Yoodli scenario
+6. practice scenarios, each defined in an editable file, and optionally a Yoodli scenario
    built from each one.
 
 A training can be produced at one or more **levels**: 101, 201, 301 and 401.
@@ -34,8 +34,8 @@ different structures and are never required to share wording.
 
 ## 2. Scope
 
-The full ambition matches Blog Studio: guided installer, pinned guidance, Team
-Hub, Google round-trip and a browsing desk. That is five subsystems, so it is
+The full ambition is a guided installer, pinned guidance, a shared Team Hub,
+a Google round-trip and a browsing desk. That is five subsystems, so it is
 split into phases, each with its own spec and plan. **This spec covers phase 1
 only: the core pipeline as a plain, locally linked skill.** Phases 2 to 5 are
 outlined in section 12.
@@ -56,13 +56,14 @@ video.
 | Order across levels | All blueprints are reviewed together, then each level is finished in turn, lowest first | Overlap and gaps between levels show at the blueprint; a complete level arrives early |
 | Approval gates | One per stage: research plan, research, blueprint, document, brief, deck, scenario. Stages after research repeat for each level | User preference for control over speed |
 | Approval lineage | An approval covers an artifact's content and its direct inputs | A rebuild against changed inputs needs approval again; accepting an unchanged upstream artifact does not force re-approval of everything below it |
-| Practice | Scenario files the user can write or edit, discovered by the skill; a Yoodli scenario built from each | User requirement |
+| Practice | Scenario files the user can write or edit, discovered by the skill | User requirement |
+| Yoodli | An optional stage, off unless asked for, that builds a Yoodli scenario from each scenario file | A scenario file works with any AI that can play a role. Yoodli is one target, and a third-party product not every user has |
 | Scenario scope | Scenarios are a list independent of modules; each exercises the objectives its success criteria map to | One scenario per module would stamp the same scenario onto every module of a course |
 | Deck use | One deck that reads without a presenter and can also be presented | User request |
 | Deck planning | `harness-slides` plans narrative and slide content from the blueprint and document | User preference |
 | Guidance loading | Progressive disclosure with measured, enforced budgets (section 9.1) | A skill should cost context only for the step in hand; an unenforced rule erodes as guidance grows |
-| Build approach | Purpose-built Python core that delegates research and decks to the harness skills | Blog Studio's workspace models one article with one draft and does not fit multiple deliverables |
-| Helper language | Python 3.11+, standard library only | Later phases lift Blog Studio's portable Python runtime without a port |
+| Build approach | Purpose-built Python core that delegates research and decks to the harness skills | A workspace built around one draft does not fit several deliverables that each need their own approval |
+| Helper language | Python 3.11+, standard library only | No dependencies to install, and it matches the tooling later phases will build on |
 | Workspace | The directory the harness is launched in is the training; deliverables visible, bookkeeping hidden | The user creates one directory per topic; `harness-research` keeps one research record per project directory |
 
 ## 4. Pipeline
@@ -76,7 +77,8 @@ video.
 | 4 | Document | Training Studio | `document.md` and its export | The learner guide |
 | 5 | Brief | Training Studio | `competitive-brief.md` or `product-brief.md` and its export | The brief |
 | 6 | Deck | `harness-slides` | Google Slides or `deck.pptx` | The deck |
-| 7 | Scenario | Training Studio and the user | Scenario files, a Yoodli scenario for each, and exports | Each scenario with its Yoodli output |
+| 7 | Scenario | Training Studio and the user | Scenario files | Each scenario |
+| 7a | Yoodli, optional | Training Studio | A Yoodli scenario for each scenario file, and its export | Each Yoodli scenario |
 | 8 | Package | Training Studio | `README.md` index and readiness report | None; it reports |
 
 **With levels,** stages 0 to 2 happen once. Stage 3 is done for every level,
@@ -436,8 +438,8 @@ An export is `current`, `outdated` (its source changed since), `missing`
 (the file is gone or was never recorded) or `unavailable` (recorded with a
 reason).
 
-The Yoodli scenario names the brief's export as the knowledge file to
-upload. The assistant never tells the user to upload a file that is not
+When the optional Yoodli stage is on, the Yoodli scenario names the brief's
+export as the knowledge file to upload, and that export becomes required. The assistant never tells the user to upload a file that is not
 `current`. If the brief's export is unavailable, the Yoodli handoff is
 reported as incomplete, with what the user can do instead.
 
@@ -746,7 +748,13 @@ The user never needs to know objective IDs to write one.
 - Facts in a scenario's situation are fiction about the practice setting.
   Product facts the AI may use come only from the brief.
 
-### 8.5 Yoodli scenario
+### 8.5 Yoodli scenario (optional)
+
+This stage is off unless the user asks for it, at intake or later. While it
+is off, no Yoodli artifact is listed or required, the scenario files are the
+practice deliverable, and the objectives exercised are taken from the
+blueprint's practice plan. Turning it on needs the brief and the scenarios;
+while it is on, neither can be skipped.
 
 `yoodli/<id>.md` is built from one scenario file, the brief, the blueprint
 and the Yoodli profile. It expresses the scenario in the fields of Yoodli's
@@ -893,7 +901,7 @@ layered, and each layer is read only when its condition is met.
 | 7 | `harness-research`, `harness-slides` | Only at their own stages, through their own entrypoints | theirs |
 
 Budgets are estimated tokens, counted as characters divided by four, the
-convention Blog Studio uses. They are a planning measure, not a tokenizer
+usual planning convention. They are a planning measure, not a tokenizer
 count.
 
 Rules:
@@ -943,9 +951,11 @@ second hop.
 Prerequisites: Python 3.11+; the `harness-research` skill, which needs Node
 20+; and the `harness-slides` skill for the deck stage.
 
-Phase 1 installation is a symbolic link from the user's skill root to
-`skills/training-studio`, created by the user. The instructions name the
-skill root for each supported harness.
+An installer copies the skill to a versioned folder under
+`~/.local/share/training-studio`, links it into each supported harness's
+skill root, checks for the companion skills, and can roll back or remove
+what it installed. It can instead link straight to a checkout, for
+development. See `docs/installation.md`.
 
 ## 10. Failure handling and boundaries
 
@@ -1015,22 +1025,15 @@ Boundaries:
 
 ## 12. Later phases
 
-Each gets its own spec. Reuse figures come from a read of Blog Studio's
-scripts on 2026-10-12.
+Each gets its own spec.
 
-2. **Packaging.** Bootstrap, pinned guidance, installer, CI. Blog Studio's
-   `sync_guidance.py` and `install.py` lift nearly as-is. The same idea
-   exists in three drifting copies (one Python, two Node), so this phase is
-   the point to decide on a shared core. Blog Studio's runtime version is
-   stated as `1.13.0`, `1.13.1` and `1.15.0` in three places; settle on one
-   source before forking.
-3. **Google round-trip** for the document and brief. `google_drive.py` and
-   `google_roundtrip.py` are domain-neutral.
+2. **Packaging.** Guidance fetched and pinned per task, so guidance can be
+   updated without reinstalling, and CI. A local installer already exists
+   (see `docs/installation.md`).
+3. **Google round-trip** for the document and brief.
 4. **Team Hub.** Shared trainings, research, scenarios and audience
-   profiles. The Hub's record store is generic; its workspace mapping and
-   browse views are keyed to the article model and need redesign.
-5. **Training desk.** The local server shell is reusable; routes and front
-   end are not.
+   profiles.
+5. **Training desk.** A local page for browsing and managing trainings.
 
 ## 13. Known limits
 
@@ -1065,6 +1068,9 @@ Collected 2026-10-12 from public pages.
 - Programs: https://support.yoodli.ai/en/articles/15281246-adding-media-and-documents-to-a-program
 
 ## Appendix B: Disposition of the review
+
+Revision 1 was reviewed externally before any code was written. The review's
+sections are listed here with what was done about each.
 
 | Review section | Disposition | Where |
 | --- | --- | --- |

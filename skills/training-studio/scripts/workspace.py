@@ -17,8 +17,9 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 PROFILE = SKILL_DIR / 'assets' / 'profiles' / 'yoodli.json'
 
 STAGES = ('intake', 'research-plan', 'research', 'blueprint', 'document', 'brief',
-          'deck', 'scenario', 'package', 'done')
-SKIPPABLE = ('document', 'brief', 'deck', 'scenario')
+          'deck', 'scenario', 'yoodli', 'package', 'done')
+SKIPPABLE = ('document', 'brief', 'deck', 'scenario', 'yoodli')
+OPTIONAL = ('yoodli',)
 LEVELS = ('101', '201', '301', '401')
 DECK_TARGETS = ('pptx', 'google')
 BRIEF_KINDS = ('product', 'competitive')
@@ -190,7 +191,8 @@ def prefix(level: str | None) -> str:
 
 
 def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
-         deck_target: str | None = None, brand: str | None = None) -> dict:
+         deck_target: str | None = None, brand: str | None = None,
+         yoodli: bool = False) -> dict:
     if not title.strip():
         raise WorkspaceError('A training needs a title.')
     levels = check_levels(levels)
@@ -218,7 +220,8 @@ def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
         'next_step': 'Complete intake',
         'pending_question': None,
         'settings': {'deck_target': deck_target, 'brand': brand, 'brief_kind': brief_kind,
-                     'stages': list(SKIPPABLE)},
+                     'stages': [stage for stage in SKIPPABLE
+                                if stage not in OPTIONAL or (stage == 'yoodli' and yoodli)]},
         'unavailable': {},
         'pins': {},
         'research': None,
@@ -294,7 +297,7 @@ def artifact(root: Path, session: dict, name: str) -> dict:
     if kind == 'yoodli' and SCENARIO_ID.match(ident):
         return {'file': f'{folder}yoodli/{ident}.md',
                 'upstream': (same('blueprint'), same('brief'), same(f'scenario:{ident}')),
-                'stage': 'scenario', 'extras': ('profile',)}
+                'stage': 'yoodli', 'extras': ('profile',)}
     raise WorkspaceError(f'Unknown artifact {name!r}.')
 
 
@@ -331,13 +334,17 @@ def scenarios(root: Path, session: dict) -> dict:
 def artifact_names(root: Path, session: dict) -> list[str]:
     """Every artifact of this training, upstream before downstream."""
     names = list(SHARED)
+    yoodli = 'yoodli' in session['settings']['stages']
+    kinds = ('scenario:', 'yoodli:') if yoodli else ('scenario:',)
     known = set(scenarios(root, session)['found'])
     known |= {name.replace('yoodli:', 'scenario:', 1) for name in session['artifacts']
-              if name.startswith(('scenario:', 'yoodli:'))}
+              if name.startswith(kinds)}
     for level in session['levels'] or [None]:
         names += [qualify(base, level) for base in PER_LEVEL]
         for name in sorted(name for name in known if split(name)[1] == level):
-            names += [name, name.replace('scenario:', 'yoodli:', 1)]
+            names.append(name)
+            if yoodli:
+                names.append(name.replace('scenario:', 'yoodli:', 1))
     return names
 
 
@@ -673,9 +680,9 @@ def skip(root: Path, stage: str, reason: str | None = None, unavailable: bool = 
         raise WorkspaceError('Only these stages can be skipped: ' + ', '.join(SKIPPABLE))
     wanted = session['settings']['stages']
     if clear:
-        if stage == 'scenario' and 'brief' not in wanted:
-            raise WorkspaceError('Restore the brief first; '
-                                 'scenarios need it as their knowledge source.')
+        if stage == 'yoodli' and not {'brief', 'scenario'} <= set(wanted):
+            raise WorkspaceError('Restore the brief and the scenarios first; a Yoodli '
+                                 'scenario is built from both.')
         if stage not in wanted:
             wanted.append(stage)
             wanted.sort(key=SKIPPABLE.index)
@@ -687,9 +694,10 @@ def skip(root: Path, stage: str, reason: str | None = None, unavailable: bool = 
         session['unavailable'][stage] = reason
         log(session, 'unavailable', stage=stage, reason=reason)
     else:
-        if stage == 'brief' and 'scenario' in wanted:
-            raise WorkspaceError('The brief can be skipped only when scenario is skipped '
-                                 'too; it is the scenario knowledge source.')
+        if stage in ('brief', 'scenario') and 'yoodli' in wanted:
+            raise WorkspaceError(f'Turn Yoodli off before skipping the {stage}: a Yoodli '
+                                 'scenario is built from the scenario file and uses the '
+                                 'brief as its knowledge source.')
         if stage in wanted:
             wanted.remove(stage)
         log(session, 'skip', stage=stage, reason=reason)

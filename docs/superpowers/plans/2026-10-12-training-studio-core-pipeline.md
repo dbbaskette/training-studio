@@ -14,7 +14,7 @@
 
 ## How this plan is organised
 
-This is revision 2. It follows the [review](../../reviews/2026-10-12-core-pipeline-review.md): four increments in place of seventeen tasks, contracts in place of embedded code, and a state-transition matrix whose rows are tests.
+This is revision 2. It follows an external review of revision 1: four increments in place of seventeen tasks, contracts in place of embedded code, and a state-transition matrix whose rows are tests.
 
 - **Contracts first.** Part A fixes the interfaces, formats and algorithms. Code appears only where it settles a contract.
 - **Tests before code, by increment.** Within an increment, write the tests for a contract, then the code. Run the targeted tests named at each milestone. Run the whole suite once at the end of increment 4.
@@ -75,7 +75,7 @@ Two module-level paths in `workspace.py` are resolved from the script's own loca
 
 Scenario discovery, computed on every read, inside each level's folder (or the training directory for a plain training): `scenario.md` is `main`; `scenarios/<id>.md` where `<id>` matches `^[a-z0-9][a-z0-9-]{0,63}$`. Both `scenario.md` and `scenarios/main.md` present is a refusal. Other files under `scenarios/` are reported as ignored, and so is a top-level `scenario.md` or `scenarios/` in a levelled training. Artifact names are the fixed ones plus `scenario:<id>` and `yoodli:<id>` for every ID that is discovered or already recorded in the session, so a removed scenario stays visible.
 
-Skip rule: `brief` can be skipped only when `scenario` is skipped; `scenario` can be restored only when `brief` is wanted.
+`yoodli` is an optional stage: off unless `init --yoodli` or `skip yoodli --clear` turns it on, and its artifacts are listed only while it is on. Skip rule: while `yoodli` is on, `brief` and `scenario` cannot be skipped; `yoodli` can be turned on only when both are wanted.
 
 ### A3. Status and approval
 
@@ -278,8 +278,8 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 26 | Blueprint with M1 and M2 saved | blueprint saved with M1 only | `modules` is `['m1']`; `size` is `lesson` |
 | 27 | Document approved | `document.md` deleted | document `not-started`; `ready` false |
 | 28 | Everything approved, stage `done` | an approved file edited | `ready` false |
-| 29 | Scenario wanted | `skip brief` | refused |
-| 30 | Scenario and brief skipped | `skip scenario --clear` | refused until brief is restored |
+| 29 | Yoodli on | `skip brief` or `skip scenario` | refused |
+| 30 | Yoodli and brief skipped | `skip yoodli --clear` | refused until brief is restored |
 | 31 | Deck marked unavailable, everything else approved | `check --complete` | `ready` true; deck listed under limitations |
 | 32 | Blueprint only | `check` | `checks_passed` true; `ready` false; blocking names the missing artifacts |
 | 33 | Lock held by a live process | any command that changes state | refused; record unchanged |
@@ -307,6 +307,11 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 55 | Levels 101 and 201 | `pin harness-slides --level` for each | two pins, one per level |
 | 56 | A Yoodli file stating "12 of 10,000 characters" for a 666-character field | `check` | the limits check fails |
 | 57 | A levelled training with a top-level `scenarios/x.md` | `check` | a warning names the file |
+| 58 | A new training | `init` without `--yoodli` | no Yoodli stage and no Yoodli artifacts |
+| 59 | Yoodli off, a scenario file present | `skip yoodli --clear` | `yoodli:<id>` is listed as `not-started` |
+| 60 | Yoodli off | `skip brief` while scenarios are wanted | allowed; scenario files do not need the brief |
+| 61 | Yoodli off; everything else approved | `check --complete` | `ready` true; no Yoodli limitation; practice taken from the practice plan |
+| 62 | Row 61 | `skip yoodli --clear` | `ready` false until each Yoodli scenario is built and approved |
 
 ### A8. Guidance
 

@@ -19,6 +19,7 @@ In a single message, ask only for what the user has not already said. Offer a de
 | Time limit or size | Optional: "30 minutes", "one lesson", "a full course" |
 | Deck target | Google Slides or PowerPoint, and any brand |
 | Stages | All by default. Ask only if they hinted at wanting fewer |
+| Yoodli | Optional and off. Turn it on only if they ask for Yoodli scenarios |
 
 ## Files already in the directory
 
@@ -29,10 +30,10 @@ List the files, ignoring dot-directories.
 
 ## Record it
 
-1. `training.py init --title "<title>"`, adding `--levels 101,301`, `--brief-kind competitive`, `--deck-target pptx` or `google`, and `--brand "<brand>"` as they apply. If it refuses, show the user why and stop.
+1. `training.py init --title "<title>"`, adding `--levels 101,301`, `--brief-kind competitive`, `--deck-target pptx` or `google`, `--brand "<brand>"` and `--yoodli` as they apply. If it refuses, show the user why and stop.
 2. Write `intake.md` with these `##` headings and nothing else: Topic, Levels, Brief, Audience, Purpose, Source scope, Time limit. Settings such as the deck target stay out of it, so changing them later does not mark the research stale.
 3. `training.py save intake --built`, then `training.py approve intake`. The user's answers are the approval for this stage.
-4. For each stage they do not want: `training.py skip <stage> --reason "<their words>"`. Skip scenario before the brief.
+4. For each stage they do not want: `training.py skip <stage> --reason "<their words>"`.
 5. `training.py checkpoint --stage research-plan --next "Draft the research questions"`.
 
 Then read the research-plan reference. If the training has levels, read the levels reference first.

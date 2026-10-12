@@ -6,13 +6,13 @@ Every stage ends at a gate. Nothing downstream starts until the user approves.
 
 1. Run `training.py check` and `training.py status`.
 2. Fix any failed check that is yours to fix, and check again.
-3. Review the content yourself and say what you found. Does the prose teach what its coverage comment claims? Does each assessment ask for the behaviour its objective names? Is every factual statement one the research supports? Label this as your judgment. A passing check does not answer these questions.
+3. Review the content yourself: does the prose teach what its coverage comment claims, does each assessment ask for the behaviour its objective names, and does the research support every factual statement? Say what you found and label it as your judgment. A passing check does not answer these.
 4. Show the user, briefly:
    - the file to open,
    - what it contains, in five lines or fewer,
    - each check that failed or could not run, by name and reason, and the count that passed,
    - anything stale, and what changed upstream,
-   - open gaps and limitations they should know about.
+   - open gaps and limitations.
 5. Offer the choices: approve, revise (they say what), rebuild, or skip the stage.
 6. `training.py checkpoint --question "<the question you asked>" --next "Waiting for approval of <artifact>"`, so a resumed session knows it is at this gate and asks again.
 
@@ -27,7 +27,7 @@ A failed check you cannot fix is shown, never hidden.
 
 An approval covers the content and what it was built from. Rebuilding against changed inputs needs approval again, even if the text came out the same.
 
-## The seven gates
+## The gates
 
 | Gate | Approve | Show in particular |
 | --- | --- | --- |
@@ -37,8 +37,9 @@ An approval covers the content and what it was built from. Rebuilding against ch
 | 4 | `document` | Length and structure; what you found reading each section against its coverage comment |
 | 5 | `brief` | Where it is weakest; what is under Unknowns |
 | 6 | `deck` | Where the deck is; the reviewed coverage of objectives |
-| 7 | `scenario:<id>` then `yoodli:<id>`, for each scenario | Whose file it is; mode; which goal carries each success criterion; counts against limits |
+| 7 | `scenario:<id>`, for each scenario | Whose file it is; its mode and success criteria; whether the brief supports what it asks |
+| 8, only if Yoodli is on | `yoodli:<id>`, for each scenario | Which goal carries each success criterion; counts against limits; whether the brief's export is current |
 
-Exports are made after approval, so a gate never promises one. Say whether each was made once it has been tried.
+Exports are made after approval; say then whether each was made.
 
-With levels, gate 3 presents every level's blueprint together and approves each separately. Gates 4 to 7 then repeat for one level at a time, lowest first; the levels reference has the checkpoint that moves from one level to the next.
+With levels, gate 3 presents every level's blueprint together and approves each separately. The later gates then repeat for one level at a time, lowest first; the levels reference has the checkpoint that moves from one level to the next.

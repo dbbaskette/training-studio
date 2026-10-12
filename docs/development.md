@@ -15,6 +15,7 @@ skills/training-studio/
     workspace.py            the session record, status, approval, exports
     checks.py               format checks and readiness
     validate_package.py     package and disclosure checks
+installer/                  install.sh, install.py and a double-click launcher
 tests/                      unit tests; temporary directories only
 docs/                       this documentation, the spec, the plan and reviews
 ```
@@ -42,8 +43,19 @@ The validator confirms the package is whole: required files exist, links resolve
 | `tests/test_cli.py` | The command line and readiness, including a course and a two-level training |
 | `tests/test_package.py` | The validator, on a small synthetic package and on the real one |
 | `tests/test_disclosure.py` | Every loading set against its budget |
+| `tests/test_installer.py` | The installer, against a temporary home directory |
 
 Tests named `test_row_NN` implement a row of the state-transition matrix in section A7 of the plan. A change to status, approval, inputs or readiness adds or updates a row and its test.
+
+## Working on the skill
+
+Link your checkout so your assistant uses your changes as you make them:
+
+```bash
+sh installer/install.sh install --link
+```
+
+Bump `skills/training-studio/VERSION` when you release a change. The installed version is named by that number and a hash of every file.
 
 ## Changing a format
 

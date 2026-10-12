@@ -1,6 +1,6 @@
 ---
 name: training-studio
-description: Turn a topic into researched training in the current directory, with a research report, teaching blueprint, learner guide, product or competitive brief, slide deck and Yoodli practice scenarios, at one or more levels from 101 to 401. Use to build, resume, check or revise a training, lesson or course.
+description: Turn a topic into researched training in the current directory, with a research report, teaching blueprint, learner guide, product or competitive brief, slide deck and practice scenarios, at one or more levels from 101 to 401, with optional Yoodli scenarios. Use to build, resume, check or revise a training, lesson or course.
 ---
 
 # Training Studio
@@ -30,7 +30,8 @@ Read the one file for the step in hand, once per session. Open only the artifact
 | Stage `document`: writing the learner guide | [document](references/stages/document.md) | [document](assets/examples/document.md) |
 | Stage `brief`: writing the brief | [brief](references/stages/brief.md) | [product](assets/examples/product-brief.md) or [competitive](assets/examples/competitive-brief.md) |
 | Stage `deck`: building the deck | [deck-handoff](references/stages/deck-handoff.md) | |
-| Stage `scenario`: scenarios and Yoodli | [scenario](references/stages/scenario.md), the [Yoodli profile](references/profiles/yoodli.md) and one mode: [roleplay](references/modes/roleplay.md), [pitch](references/modes/pitch.md), [tutor](references/modes/tutor.md) or [questionnaire](references/modes/questionnaire.md) | [scenario](assets/examples/scenario.md), [Yoodli](assets/examples/yoodli.md) |
+| Stage `scenario`: practice scenarios | [scenario](references/stages/scenario.md) and one mode: [roleplay](references/modes/roleplay.md), [pitch](references/modes/pitch.md), [tutor](references/modes/tutor.md) or [questionnaire](references/modes/questionnaire.md) | [scenario](assets/examples/scenario.md) |
+| Stage `yoodli`: Yoodli scenarios, only if asked for | [yoodli](references/stages/yoodli.md), the [Yoodli profile](references/profiles/yoodli.md) and the same mode | [Yoodli](assets/examples/yoodli.md) |
 | Stage `package` or `done`: finishing | [package](references/stages/package.md) | |
 | Presenting a gate | [gates](references/gates.md) | |
 | The training has levels | [levels](references/levels.md) | |

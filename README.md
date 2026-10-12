@@ -13,7 +13,7 @@ For each training:
 - **A learner guide**: a document people read.
 - **A brief**: a short reference about the subject. It is a product brief for one technology, or a competitive brief when you are comparing two.
 - **A slide deck** that works both presented and handed out.
-- **Practice scenarios**: a role-play situation you can write or edit yourself, and a version ready to build in [Yoodli](https://yoodli.ai).
+- **Practice scenarios**: a role-play situation you can write or edit yourself. If you use [Yoodli](https://yoodli.ai), it can also prepare a version ready to build there.
 
 You can ask for one or more **levels**, from 101 (introduction) to 401 (expert). Each level gets its own set of material.
 
@@ -27,19 +27,15 @@ You need:
 
 ## Install
 
-Download this repository, then run one command from inside it.
-
-For Claude Code:
+Download this repository, then run the installer from inside it:
 
 ```bash
-ln -s "$(pwd)/skills/training-studio" ~/.claude/skills/training-studio
+sh installer/install.sh
 ```
 
-For Codex:
+On a Mac you can double-click `Install Training Studio.command` in the `installer` folder instead.
 
-```bash
-ln -s "$(pwd)/skills/training-studio" ~/.agents/skills/training-studio
-```
+It installs the skill for Claude Code and Codex, whichever you have, and tells you if a companion skill is missing. It asks before changing anything. See [installation](docs/installation.md) for updating, going back a version and removing it.
 
 ## Your first training
 
@@ -71,7 +67,7 @@ mkdir valkey-training
 
 At each stop you can approve it, ask for changes, or skip that stage.
 
-**6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, `scenario.md` and a `yoodli/` folder, with Word copies where they could be made. `README.md` in your folder lists everything and says whether the training is complete.
+**6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, and `scenario.md`, with Word copies where they could be made. If you asked for Yoodli scenarios there is a `yoodli/` folder too. `README.md` in your folder lists everything and says whether the training is complete.
 
 ## Things you can say
 
@@ -131,7 +127,9 @@ Save it as `scenario.md` in your training folder, or put several under `scenario
 
 ## Using the scenarios in Yoodli
 
-For each scenario, Training Studio writes a file under `yoodli/` laid out in the same order as Yoodli's roleplay builder, so you can copy each part into its field. It also tells you which file to upload as the AI's reference material. You build the roleplay in Yoodli yourself; Training Studio does not upload anything. See [scenarios and Yoodli](docs/scenarios-and-yoodli.md).
+This part is optional. A scenario file already works with any AI that can play a role. If you use Yoodli, say "also make Yoodli scenarios" when you start, or "add Yoodli" at any time.
+
+For each scenario, Training Studio then writes a file under `yoodli/` laid out in the same order as Yoodli's roleplay builder, so you can copy each part into its field. It also tells you which file to upload as the AI's reference material. You build the roleplay in Yoodli yourself; Training Studio does not upload anything. See [scenarios and Yoodli](docs/scenarios-and-yoodli.md).
 
 ## If something goes wrong
 
@@ -149,7 +147,12 @@ This is the first of five planned phases. The helper that tracks your files is t
 
 ## Learn more
 
+- [Installation](docs/installation.md): what the installer does, and how to update, roll back or remove.
 - [How it works](docs/how-it-works.md): the stages, approvals, what "stale" means, and the files in a training folder.
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
+
+## Licence
+
+[MIT](LICENSE).

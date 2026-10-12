@@ -616,7 +616,20 @@ def practice(parsed: dict, yoodli_texts: list[str]) -> dict:
     missed = [objective for objective in parsed['objectives'] if objective not in named]
     warnings = [f'{objective} is a handle objective that no scenario exercises.'
                 for objective in missed if parsed['objectives'][objective]['level'] == 'handle']
-    return {'exercised': exercised, 'not_exercised': missed, 'warnings': warnings}
+    return {'basis': 'Yoodli goals', 'exercised': exercised, 'not_exercised': missed,
+            'warnings': warnings}
+
+
+def practice_from_plan(parsed: dict, scenario_ids: set[str]) -> dict:
+    """Objectives the blueprint's practice plan gives to scenarios that exist."""
+    named = {objective for entry in parsed['practice'] if entry['id'] in scenario_ids
+             for objective in entry['objectives']}
+    exercised = [objective for objective in parsed['objectives'] if objective in named]
+    missed = [objective for objective in parsed['objectives'] if objective not in named]
+    warnings = [f'{objective} is a handle objective that no scenario exercises.'
+                for objective in missed if parsed['objectives'][objective]['level'] == 'handle']
+    return {'basis': 'practice plan', 'exercised': exercised, 'not_exercised': missed,
+            'warnings': warnings}
 
 
 # --- readiness --------------------------------------------------------------------
@@ -624,11 +637,12 @@ def practice(parsed: dict, yoodli_texts: list[str]) -> dict:
 def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dict],
               skipped: list[str], unavailable: dict[str, str],
               without_scenario: list[str], pending_question: str | None = None,
-              decisions: list[dict] | None = None) -> dict:
+              decisions: list[dict] | None = None, yoodli: bool = False) -> dict:
     """Whether the training is complete, what blocks it, and what it had to leave out.
 
     `artifacts` lists each artifact's name, stage and status. `without_scenario` names the
     levels (or '' for a plain training) that want scenarios and have no scenario file.
+    `yoodli` says the optional Yoodli stage is wanted, which makes the brief's export an upload.
     """
     blocking = [f"{item['name']} is {item['status']}" for item in artifacts
                 if item['status'] not in ('approved', 'skipped', 'unavailable')]
@@ -647,13 +661,13 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
                     if decision.get('decision') == 'accepted-stale']
     limitations += [f'{stage} unavailable: {reason}' for stage, reason in unavailable.items()]
     approved = {item['name'] for item in artifacts if item['status'] == 'approved'}
-    scenario_wanted = 'scenario' not in skipped and 'scenario' not in unavailable
+    upload_needed = yoodli and 'yoodli' not in unavailable
     for name, state in exports.items():
         if state == 'outdated':
             blocking.append(f'The export of {name} is out of date')
         elif name not in approved or state == 'current':
             continue
-        elif name.partition('@')[0] == 'brief' and scenario_wanted:
+        elif name.partition('@')[0] == 'brief' and upload_needed:
             if state == 'unavailable':
                 limitations.append(f'Yoodli handoff incomplete: no export of {name}')
             else:
