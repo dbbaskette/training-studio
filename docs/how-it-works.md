@@ -82,6 +82,17 @@ With levels, `intake.md`, `research-report.md` and `sources/` stay at the top, a
 
 Every version of every file that was saved or approved is kept under `.training-studio/history/`, so an earlier version can be restored.
 
+## Guidance and scripts
+
+What your assistant follows is guidance: instructions, templates and the Yoodli field data. What changes files is a small set of scripts.
+
+- Scripts are installed and never fetched.
+- Guidance is fetched from this repository's `main` branch when a new training starts, and that training is pinned to it. The pin records the exact commit and a hash of every file.
+- A pinned training needs no network to resume.
+- If guidance cannot be fetched, the guidance installed with the scripts is used, and you are told it may be older.
+
+See the [phase 2 design](superpowers/specs/2026-10-12-phase-2-packaging.md).
+
 ## The helper
 
 The skill drives a small command-line helper, `skills/training-studio/scripts/training.py`. You never need to run it, but you can:
@@ -94,5 +105,6 @@ The skill drives a small command-line helper, `skills/training-studio/scripts/tr
 | `export` | Records a Word or PDF copy |
 | `skip` | Leaves a stage out, or brings it back |
 | `checkpoint` | Records where the run stopped, and changes settings |
+| `list` | The trainings on this computer |
 
 It needs only Python, never touches the network, and never commits to git. The assistant's instructions for using it are in [the workspace reference](../skills/training-studio/references/workspace.md).

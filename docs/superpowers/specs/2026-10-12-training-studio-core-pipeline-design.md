@@ -1027,9 +1027,7 @@ Boundaries:
 
 Each gets its own spec.
 
-2. **Packaging.** Guidance fetched and pinned per task, so guidance can be
-   updated without reinstalling, and CI. A local installer already exists
-   (see `docs/installation.md`).
+2. **Packaging.** Done: see `2026-10-12-phase-2-packaging.md`.
 3. **Google round-trip** for the document and brief.
 4. **Team Hub.** Shared trainings, research, scenarios and audience
    profiles.

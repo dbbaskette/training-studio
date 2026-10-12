@@ -29,6 +29,14 @@ It installs for every assistant whose skill folder already exists. To choose, ad
 
 The installer does not install the companion skills. It tells you which are missing and where to get them.
 
+## Guidance updates itself; scripts do not
+
+The skill has two parts. The **scripts** change files on your computer, so they only change when you run the installer. The **guidance**, the instructions your assistant follows, is fetched from this repository when you start a new training, so improvements reach you without reinstalling.
+
+Each training stays on the guidance it started with, so a training does not change under you halfway through. To move one to the newest guidance, ask your assistant to update the guidance for that training.
+
+If the newest guidance cannot be fetched, for example with no network, the assistant uses the guidance that was installed with the scripts and tells you it may be older.
+
 ## See what is installed
 
 ```bash

@@ -1,9 +1,14 @@
 """Shared test setup: import path, a temporary training directory, sample data."""
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+# Nothing a test does may touch the real per-user data folder.
+_DATA = tempfile.TemporaryDirectory()
+os.environ['TRAINING_STUDIO_DATA'] = _DATA.name
 
 REPO = Path(__file__).resolve().parent.parent
 SKILL = REPO / 'skills' / 'training-studio'

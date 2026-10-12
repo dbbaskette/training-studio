@@ -150,6 +150,51 @@ class ContractTests(TrainingCase):
         self.assertIn('FileNotFoundError', missing['error'])
 
 
+class FoundationTests(TrainingCase):
+    """Command plug-ins and the list of trainings on this computer."""
+
+    def run_at(self, script, *args, cwd=None, expect=0):
+        done = subprocess.run([sys.executable, str(script), *args], cwd=cwd or self.root,
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_cmd_module_beside_the_helper_adds_its_commands(self):
+        import shutil
+        scripts = self.root.parent / 'scripts'
+        shutil.copytree(helpers.SCRIPTS, scripts, ignore=shutil.ignore_patterns('__pycache__'))
+        (scripts / 'cmd_hello.py').write_text(
+            'def register(commands):\n'
+            "    hello = commands.add_parser('hello')\n"
+            "    hello.add_argument('--name', default='you')\n"
+            '    hello.set_defaults(handler=lambda args, root: '
+            "{'hello': args.name, 'root': root.name})\n")
+        self.assertEqual(self.run_at(scripts / 'training.py', 'hello', '--name', 'there'),
+                         {'hello': 'there', 'root': self.root.name})
+        self.assertIn('No training', self.run_at(scripts / 'training.py', 'status',
+                                                 expect=2)['error'])
+
+    def test_list_names_the_trainings_on_this_computer(self):
+        other = self.root.parent / 'another'
+        other.mkdir()
+        self.run_at(CLI, 'init', '--title', 'First training')
+        self.run_at(CLI, 'init', '--title', 'Second', '--levels', '101', cwd=other)
+        listed = {item['path']: item for item in self.run_at(CLI, 'list')['trainings']}
+        self.assertEqual(listed[str(self.root)]['title'], 'First training')
+        self.assertEqual(listed[str(other)]['levels'], ['101'])
+
+    def test_list_forgets_a_training_whose_directory_no_longer_holds_one(self):
+        import shutil
+        self.run_at(CLI, 'init', '--title', 'Short lived')
+        shutil.rmtree(self.root / '.training-studio')
+        paths = [item['path'] for item in self.run_at(CLI, 'list')['trainings']]
+        self.assertNotIn(str(self.root), paths)
+
+    def test_status_says_which_guidance_a_training_follows(self):
+        report = self.run_at(CLI, 'init', '--title', 'Topic')
+        self.assertIn('guidance', report)
+
+
 class CommandTests(Flow):
     def test_approving_research_warns_about_pending_questions(self):
         self.cli('init', '--title', 'Rolling restarts')

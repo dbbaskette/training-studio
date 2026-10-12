@@ -7,6 +7,7 @@
 - **Guidance is disclosed progressively.** `SKILL.md` is the whole entry and links every reference and example itself. Each stage file carries its own commands. When a file goes over its budget, cut it; do not raise the budget. `validate_package.py` enforces this.
 - **Guidance is harness-neutral.** It names no harness-specific tools, so it runs on Claude Code and Codex alike.
 - **Yoodli facts live in one file:** `skills/training-studio/assets/profiles/yoodli.json`, each with its source and date. Record only what Yoodli's pages state.
+- **`main` is live.** New trainings fetch their guidance from it. Guidance that needs a script change raises `minimum_runtime` in `guidance/manifest.json` and the `VERSION` together.
 - **The README is for a new user.** It takes someone from nothing to a first training in plain language. Technical detail goes in `docs/` and is linked from it.
 - **Research and decks are delegated.** Do not add research or slide-building logic here; they belong to `harness-research` and `harness-slides`.
 - **State changes need a matrix row.** A change to status, approval, inputs or readiness adds or updates a row in the plan's state-transition matrix and its test.

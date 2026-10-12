@@ -41,7 +41,10 @@ REQUIRED = (
     'scripts/training.py',
     'scripts/workspace.py',
     'scripts/checks.py',
+    'scripts/home.py',
+    'scripts/sync_guidance.py',
 )
+GUIDANCE_PARTS = ('SKILL.md', 'references/', 'assets/')
 
 
 def estimate(text: str) -> int:
@@ -87,10 +90,16 @@ def local_links(document: Path) -> list[tuple[str, Path]]:
             if not EXTERNAL.match(target)]
 
 
-def problems(skill: Path) -> list[str]:
-    """Everything wrong with the package at `skill`; empty when it is whole."""
+def problems(skill: Path, guidance_only: bool = False) -> list[str]:
+    """Everything wrong with the package at `skill`; empty when it is whole.
+
+    `guidance_only` checks a folder holding just SKILL.md, references and assets, which is
+    how guidance is kept inside an installed copy and in the fetched cache.
+    """
     skill = skill.resolve()
-    found = [f'Missing: {name}' for name in REQUIRED if not (skill / name).is_file()]
+    required = [name for name in REQUIRED
+                if not guidance_only or name.startswith(GUIDANCE_PARTS)]
+    found = [f'Missing: {name}' for name in required if not (skill / name).is_file()]
     sizes = measured(skill)
     entry = skill / 'SKILL.md'
 
@@ -141,13 +150,13 @@ def measure(skill: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    show = '--measure' in args
-    paths = [arg for arg in args if arg != '--measure']
+    show, guidance_only = '--measure' in args, '--guidance' in args
+    paths = [arg for arg in args if arg not in ('--measure', '--guidance')]
     skill = Path(paths[0]) if paths else Path(__file__).resolve().parent.parent
     if show:
         print(measure(skill))
         return 0
-    found = problems(skill)
+    found = problems(skill, guidance_only)
     for line in found:
         print(line)
     print('ok' if not found else f'{len(found)} problem(s)')
