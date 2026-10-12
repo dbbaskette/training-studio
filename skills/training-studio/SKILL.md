@@ -37,6 +37,7 @@ Read the one file for the step in hand, once per session, and open only the arti
 | Staleness, history, exports, restoring | [workspace](references/workspace.md) |
 | Before a public search, upload or share | [privacy](references/privacy.md) |
 | Google Docs for the document or brief | [google](references/google.md) |
+| Browsing trainings in a browser | [desk](references/desk.md) |
 
 ## Boundaries
 
