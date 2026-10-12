@@ -16,7 +16,9 @@ skills/training-studio/
     checks.py               format checks and readiness
     home.py                 the per-user data folder and the registry of trainings
     sync_guidance.py        fetches, pins and verifies guidance
+    hub.py                  the team hub: publish, find, get, share, sync
     cmd_*.py                optional command modules, discovered automatically
+    cmd_hub.py              the hub commands
     validate_package.py     package and disclosure checks
 bootstrap/training-studio/  the small entry an installed copy uses
 guidance/manifest.json      which script version the guidance needs
@@ -50,6 +52,7 @@ The validator confirms the package is whole: required files exist, links resolve
 | `tests/test_disclosure.py` | Every loading set against its budget |
 | `tests/test_installer.py` | The installer, against a temporary home directory |
 | `tests/test_sync.py` | Guidance sync, against a local git repository |
+| `tests/test_hub.py` | The team hub, against bare git repositories in temporary directories |
 
 Tests named `test_row_NN` implement a row of the state-transition matrix in section A7 of the plan. A change to status, approval, inputs or readiness adds or updates a row and its test.
 

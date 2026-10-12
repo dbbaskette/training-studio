@@ -79,6 +79,8 @@ At each stop you can approve it, ask for changes, or skip that stage.
 - "Add a scenario." adds another practice situation.
 - "More research on licensing." extends the research.
 - "What trainings do I have?" lists the trainings on this computer.
+- "Publish this to the team hub." shares what you have approved with your team, through a private git repository you control.
+- "What is in the hub about Redis?" finds scenarios, audiences and research your team has shared, to reuse in a new training.
 
 ## Coming back later
 
@@ -151,6 +153,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 - [Installation](docs/installation.md): what the installer does, and how to update, roll back or remove.
 - [How it works](docs/how-it-works.md): the stages, approvals, what "stale" means, and the files in a training folder.
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
+- [Team hub](docs/team-hub.md): sharing finished trainings with your team, and reusing their scenarios, audiences and research.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
 
