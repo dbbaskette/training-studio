@@ -78,6 +78,7 @@ At each stop you can approve it, ask for changes, or skip that stage.
 - "Just the document." builds only the learner guide.
 - "Add a scenario." adds another practice situation.
 - "More research on licensing." extends the research.
+- "What trainings do I have?" lists the trainings on this computer.
 
 ## Coming back later
 

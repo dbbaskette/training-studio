@@ -19,7 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NAME = 'training-studio'
-SOURCE = Path(__file__).resolve().parent.parent / 'skills' / NAME
+REPO = Path(__file__).resolve().parent.parent
+SOURCE = REPO / 'skills' / NAME
+BOOTSTRAP = REPO / 'bootstrap' / NAME / 'SKILL.md'
+GUIDANCE_SOURCE = {'repository': 'https://github.com/dbbaskette/training-studio.git',
+                   'branch': 'main'}
+GUIDANCE_PARTS = ('SKILL.md', 'references', 'assets')
 SKILL_ROOTS = {'claude': ('.claude', 'skills'), 'codex': ('.agents', 'skills')}
 HARNESS = {'claude': 'Claude Code', 'codex': 'Codex'}
 COMPANIONS = {
@@ -44,14 +49,37 @@ def package_files(source: Path) -> list[Path]:
                   if path.is_file() and not any(part in IGNORED for part in path.parts))
 
 
-def package_key(source: Path) -> str:
+def package_key(folder: Path) -> str:
     """The version and a hash of every file, naming one exact copy of the skill."""
-    version = (source / 'VERSION').read_text(encoding='utf-8').strip()
+    version = (folder / 'VERSION').read_text(encoding='utf-8').strip()
     digest = hashlib.sha256()
-    for path in package_files(source):
-        digest.update(path.relative_to(source).as_posix().encode() + b'\0')
+    for path in package_files(folder):
+        digest.update(path.relative_to(folder).as_posix().encode() + b'\0')
         digest.update(path.read_bytes() + b'\0')
     return f'{version}-{digest.hexdigest()[:12]}'
+
+
+def assemble(source: Path, bootstrap: Path, destination: Path) -> None:
+    """Lay out an installed copy: a small entry, the scripts, and the guidance beside them.
+
+    The entry fetches newer guidance when it can. The guidance copied here is what it falls
+    back to when it cannot.
+    """
+    ignore = shutil.ignore_patterns(*IGNORED)
+    destination.mkdir(parents=True)
+    shutil.copy2(bootstrap, destination / 'SKILL.md')
+    shutil.copy2(source / 'VERSION', destination / 'VERSION')
+    (destination / 'source.json').write_text(
+        json.dumps(GUIDANCE_SOURCE, indent=2) + '\n', encoding='utf-8')
+    for folder in ('scripts', 'agents'):
+        shutil.copytree(source / folder, destination / folder, ignore=ignore)
+    for part in GUIDANCE_PARTS:
+        target = destination / 'guidance' / part
+        if (source / part).is_dir():
+            shutil.copytree(source / part, target, ignore=ignore)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source / part, target)
 
 
 def verify(source: Path) -> None:
@@ -68,13 +96,16 @@ def verify(source: Path) -> None:
 
 
 def smoke(skill: Path) -> None:
-    """Confirm an installed copy runs: its validator passes and its helper answers."""
-    checked = subprocess.run([sys.executable, str(skill / 'scripts' / 'validate_package.py'),
-                              str(skill)], capture_output=True, text=True)
+    """Confirm an installed copy runs: its guidance is whole and its helper answers."""
+    # -B: checking the copy must not leave bytecode caches in it.
+    checked = subprocess.run([sys.executable, '-B',
+                              str(skill / 'scripts' / 'validate_package.py'),
+                              '--guidance', str(skill / 'guidance')],
+                             capture_output=True, text=True)
     if checked.returncode != 0:
         raise InstallError('The installed copy failed its own check:\n' + checked.stdout)
     with tempfile.TemporaryDirectory() as empty:
-        asked = subprocess.run([sys.executable, str(skill / 'scripts' / 'training.py'),
+        asked = subprocess.run([sys.executable, '-B', str(skill / 'scripts' / 'training.py'),
                                 '--dir', empty, 'status'], capture_output=True, text=True)
     if asked.returncode != 2 or 'No training in this directory' not in asked.stdout:
         raise InstallError('The installed helper did not answer as expected:\n'
@@ -142,9 +173,11 @@ def blocked_links(home: Path, harnesses: list[str]) -> list[Path]:
 # --- actions ----------------------------------------------------------------------
 
 def install(source: Path, home: Path, root: Path, harnesses: list[str], link_only: bool,
-            replace: bool) -> dict:
+            replace: bool, bootstrap: Path = BOOTSTRAP) -> dict:
     """Install the skill and link it into each assistant's skill folder."""
     verify(source)
+    if not link_only and not bootstrap.is_file():
+        raise InstallError(f'The installer entry file is missing: {bootstrap}')
     blocked = blocked_links(home, harnesses)
     if blocked and not replace:
         raise InstallError('These exist and are not links, so they were left alone:\n  '
@@ -152,20 +185,23 @@ def install(source: Path, home: Path, root: Path, harnesses: list[str], link_onl
                            + '\nMove them away, or add --replace to have them moved to '
                            + str(root / 'backups') + '.')
     state = read_state(root) or {'schema': 1, 'history': []}
-    key = package_key(source)
     if link_only:
+        key = package_key(source)
         destination = source
     else:
-        staged = root / 'versions' / key
-        if staged.exists():
-            if package_key(staged) != key:
-                raise InstallError(f'{staged} exists but its files have changed. '
-                                   'Remove that folder and install again.')
-        else:
-            staged.parent.mkdir(parents=True, exist_ok=True)
-            pending = staged.with_name(f'.{key}.pending-{secrets.token_hex(4)}')
-            shutil.copytree(source, pending, ignore=shutil.ignore_patterns(*IGNORED))
-            os.replace(pending, staged)
+        pending = root / 'versions' / f'.pending-{secrets.token_hex(4)}'
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            assemble(source, bootstrap, pending)
+            key = package_key(pending)
+            staged = root / 'versions' / key
+            if not staged.exists():
+                os.replace(pending, staged)
+        finally:
+            shutil.rmtree(pending, ignore_errors=True)
+        if package_key(staged) != key:
+            raise InstallError(f'{staged} exists but its files have changed. '
+                               'Remove that folder and install again.')
         smoke(staged)
         replace_link(root / 'current', staged)
         destination = root / 'current'
@@ -361,7 +397,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise InstallError('--dry-run applies to install only.')
             verify(source)
             harnesses = chosen_harnesses(home, args.target)
-            result = {'action': 'plan', 'version': package_key(source),
+            result = {'action': 'plan',
+                      'version': (source / 'VERSION').read_text(encoding='utf-8').strip(),
                       'mode': 'link' if args.link else 'managed', 'harnesses': harnesses,
                       'links': [str(skill_link(home, harness)) for harness in harnesses],
                       'blocked': [str(path) for path in blocked_links(home, harnesses)]}

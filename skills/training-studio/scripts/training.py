@@ -7,10 +7,13 @@ if sys.version_info < (3, 11):
              + sys.version.split()[0] + '.')
 
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 
 import checks
+import home
+import sync_guidance
 import workspace
 
 PROVISIONAL = ('Yoodli limits are provisional: they come from public help pages and have '
@@ -28,7 +31,7 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
     state = workspace.statuses(root, session)
     wanted = session['settings']['stages']
     found = workspace.scenarios(root, session)['found']
-    profile = json.loads(workspace.PROFILE.read_text(encoding='utf-8'))
+    profile = json.loads(workspace.profile_for(root).read_text(encoding='utf-8'))
     outcomes, warnings, practice, blueprints = [], [], {}, {}
     without_scenario = []
 
@@ -145,6 +148,29 @@ def comma_list(text: str) -> list[str]:
     return [part.strip() for part in text.split(',') if part.strip()]
 
 
+def plugins() -> list:
+    """Optional command modules: every cmd_*.py beside this file.
+
+    Each defines register(commands), which adds its sub-commands and gives each a `handler`
+    default: a function taking (args, root) and returning the JSON to print.
+    """
+    found = []
+    for path in sorted(Path(__file__).resolve().parent.glob('cmd_*.py')):
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        found.append(module)
+    return found
+
+
+def summarise(root: Path) -> dict:
+    """Status for the user, with the guidance pin; also remembers where this training is."""
+    report = workspace.status(root)
+    report['guidance'] = sync_guidance.summary(root)
+    home.remember(root, report['title'], report['levels'])
+    return report
+
+
 def parser() -> argparse.ArgumentParser:
     top = JsonParser(prog='training.py', description=__doc__)
     top.add_argument('--dir', default='.',
@@ -215,16 +241,26 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument('--complete', action='store_true',
                        help='exit 1 unless the training is ready')
     check.add_argument('--all', action='store_true', help='list checks that passed too')
+
+    commands.add_parser('list', help='the trainings on this computer, most recent first')
+    for plugin in plugins():
+        plugin.register(commands)
     return top
 
 
 def dispatch(args: argparse.Namespace, root: Path) -> dict:
+    handler = getattr(args, 'handler', None)
+    if handler is not None:
+        return handler(args, root)
+    if args.command == 'list':
+        return {'trainings': home.trainings()}
     if args.command == 'init':
         workspace.init(root, args.title, args.levels, args.brief_kind, args.deck_target,
                        args.brand, args.yoodli)
-        return workspace.status(root)
+        sync_guidance.adopt(root)
+        return summarise(root)
     if args.command == 'status':
-        return workspace.status(root)
+        return summarise(root)
     if args.command == 'save':
         coverage = None
         if args.coverage:

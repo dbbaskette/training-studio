@@ -47,7 +47,11 @@ class InstallTests(InstallerCase):
         result = self.run_installer('install', '--yes')
         self.assertEqual(result['mode'], 'managed')
         staged = self.root / 'versions' / result['version']
-        self.assertTrue((staged / 'SKILL.md').is_file())
+        self.assertIn('sync_guidance.py', (staged / 'SKILL.md').read_text())
+        self.assertTrue((staged / 'guidance' / 'references' / 'gates.md').is_file())
+        self.assertTrue((staged / 'guidance' / 'assets' / 'profiles' / 'yoodli.json').is_file())
+        self.assertFalse((staged / 'references').exists())
+        self.assertIn('github.com', (staged / 'source.json').read_text())
         self.assertEqual(os.readlink(self.root / 'current'), str(staged))
         for link in (self.claude / 'training-studio', self.codex / 'training-studio'):
             self.assertEqual(os.readlink(link), str(self.root / 'current'))
@@ -60,7 +64,8 @@ class InstallTests(InstallerCase):
         result = self.run_installer('install', '--yes')
         version = (helpers.SKILL / 'VERSION').read_text().strip()
         self.assertTrue(result['version'].startswith(version + '-'))
-        self.assertEqual(result['version'], install.package_key(helpers.SKILL))
+        staged = self.root / 'versions' / result['version']
+        self.assertEqual(result['version'], install.package_key(staged))
 
     def test_only_assistants_with_a_skill_folder_are_linked_by_default(self):
         shutil.rmtree(self.codex)
@@ -244,5 +249,14 @@ class InstalledCopyTests(InstallerCase):
         elsewhere = self.base / 'valkey-training'
         elsewhere.mkdir()
         made = subprocess.run([sys.executable, str(helper), '--dir', str(elsewhere), 'init',
-                               '--title', 'Topic'], capture_output=True, text=True)
+                               '--title', 'Topic', '--yoodli'], capture_output=True, text=True)
         self.assertEqual(made.returncode, 0, made.stdout)
+
+    def test_the_installed_helper_finds_the_profile_in_its_guidance_folder(self):
+        self.run_installer('install', '--yes')
+        scripts = self.claude / 'training-studio' / 'scripts'
+        import subprocess
+        found = subprocess.run([sys.executable, '-c',
+                                'import workspace; print(workspace.PROFILE.is_file())'],
+                               cwd=scripts, capture_output=True, text=True)
+        self.assertEqual(found.stdout.strip(), 'True', found.stderr)

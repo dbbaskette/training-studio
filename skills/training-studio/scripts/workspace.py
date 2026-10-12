@@ -14,7 +14,9 @@ from pathlib import Path
 SCHEMA = 1
 STATE_DIR = '.training-studio'
 SKILL_DIR = Path(__file__).resolve().parent.parent
-PROFILE = SKILL_DIR / 'assets' / 'profiles' / 'yoodli.json'
+# In a checkout the guidance sits beside the scripts; an installed copy keeps it in guidance/.
+GUIDANCE_DIR = SKILL_DIR if (SKILL_DIR / 'references').is_dir() else SKILL_DIR / 'guidance'
+PROFILE = GUIDANCE_DIR / 'assets' / 'profiles' / 'yoodli.json'
 
 STAGES = ('intake', 'research-plan', 'research', 'blueprint', 'document', 'brief',
           'deck', 'scenario', 'yoodli', 'package', 'done')
@@ -357,6 +359,16 @@ def research_fingerprint(root: Path) -> str | None:
     return hashlib.sha256('\n'.join(part or '-' for part in parts).encode()).hexdigest()
 
 
+def profile_for(root: Path) -> Path:
+    """The Yoodli profile a training uses: its pinned guidance's, else the installed one."""
+    try:
+        pin = json.loads((root / STATE_DIR / 'guidance.json').read_text(encoding='utf-8'))
+        pinned = Path(pin['path']) / 'assets' / 'profiles' / 'yoodli.json'
+    except (OSError, ValueError, KeyError, TypeError):
+        return PROFILE
+    return pinned if pin.get('commit') and pinned.is_file() else PROFILE
+
+
 def inputs(root: Path, session: dict, name: str) -> dict:
     """What an artifact is built from: upstream content, and the settings that affect it."""
     spec = artifact(root, session, name)
@@ -368,7 +380,7 @@ def inputs(root: Path, session: dict, name: str) -> dict:
             found[upstream] = sha256_file(root / artifact(root, session, upstream)['file'])
     for extra in spec['extras']:
         if extra == 'profile':
-            found[extra] = sha256_file(PROFILE)
+            found[extra] = sha256_file(profile_for(root))
         else:
             found[extra] = session['settings'][extra.partition(':')[2]]
     return found

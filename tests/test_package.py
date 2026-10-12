@@ -91,6 +91,14 @@ class SyntheticCase(unittest.TestCase):
         self.assertTrue(any(line.startswith('Loading set scenario:pitch is ')
                             for line in found), found)
 
+    def test_guidance_alone_can_be_checked(self):
+        import shutil
+        for name in ('scripts', 'agents'):
+            shutil.rmtree(self.skill / name)
+        (self.skill / 'VERSION').unlink()
+        self.assertTrue(any(line.startswith('Missing: scripts/') for line in self.found()))
+        self.assertEqual(validate_package.problems(self.skill, guidance_only=True), [])
+
     def test_measure_prints_files_and_loading_sets(self):
         table = validate_package.measure(self.skill)
         self.assertIn('| `SKILL.md` |', table)

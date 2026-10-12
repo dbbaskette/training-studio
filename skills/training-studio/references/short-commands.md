@@ -16,6 +16,7 @@
 | "add a scenario" | Read the scenario stage reference |
 | "more research on X" | The top-up in the research-handoff reference |
 | "what changed", "restore the earlier one" | History, in the workspace reference |
+| "what trainings do I have" | `training.py list` |
 
 Rules that go with them:
 

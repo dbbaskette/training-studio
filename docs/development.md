@@ -14,7 +14,12 @@ skills/training-studio/
     training.py             the command line
     workspace.py            the session record, status, approval, exports
     checks.py               format checks and readiness
+    home.py                 the per-user data folder and the registry of trainings
+    sync_guidance.py        fetches, pins and verifies guidance
+    cmd_*.py                optional command modules, discovered automatically
     validate_package.py     package and disclosure checks
+bootstrap/training-studio/  the small entry an installed copy uses
+guidance/manifest.json      which script version the guidance needs
 installer/                  install.sh, install.py and a double-click launcher
 tests/                      unit tests; temporary directories only
 docs/                       this documentation, the spec, the plan and reviews
@@ -44,6 +49,7 @@ The validator confirms the package is whole: required files exist, links resolve
 | `tests/test_package.py` | The validator, on a small synthetic package and on the real one |
 | `tests/test_disclosure.py` | Every loading set against its budget |
 | `tests/test_installer.py` | The installer, against a temporary home directory |
+| `tests/test_sync.py` | Guidance sync, against a local git repository |
 
 Tests named `test_row_NN` implement a row of the state-transition matrix in section A7 of the plan. A change to status, approval, inputs or readiness adds or updates a row and its test.
 
@@ -56,6 +62,14 @@ sh installer/install.sh install --link
 ```
 
 Bump `skills/training-studio/VERSION` when you release a change. The installed version is named by that number and a hash of every file.
+
+## The main branch is live
+
+New trainings fetch their guidance from `main`. Keep it usable at every commit. If guidance needs a script change, raise `minimum_runtime` in `guidance/manifest.json` and `skills/training-studio/VERSION` in the same change; older installs then keep their installed guidance and tell the user to update.
+
+## Adding a command
+
+Put a `cmd_<name>.py` beside `training.py`. It defines `register(commands)`, adds its sub-parsers, and sets each one's `handler` to a function taking `(args, root)` and returning the JSON to print. `training.py` finds it without being edited.
 
 ## Changing a format
 
