@@ -97,13 +97,15 @@ def verify(source: Path) -> None:
 
 def smoke(skill: Path) -> None:
     """Confirm an installed copy runs: its guidance is whole and its helper answers."""
-    checked = subprocess.run([sys.executable, str(skill / 'scripts' / 'validate_package.py'),
+    # -B: checking the copy must not leave bytecode caches in it.
+    checked = subprocess.run([sys.executable, '-B',
+                              str(skill / 'scripts' / 'validate_package.py'),
                               '--guidance', str(skill / 'guidance')],
                              capture_output=True, text=True)
     if checked.returncode != 0:
         raise InstallError('The installed copy failed its own check:\n' + checked.stdout)
     with tempfile.TemporaryDirectory() as empty:
-        asked = subprocess.run([sys.executable, str(skill / 'scripts' / 'training.py'),
+        asked = subprocess.run([sys.executable, '-B', str(skill / 'scripts' / 'training.py'),
                                 '--dir', empty, 'status'], capture_output=True, text=True)
     if asked.returncode != 2 or 'No training in this directory' not in asked.stdout:
         raise InstallError('The installed helper did not answer as expected:\n'
