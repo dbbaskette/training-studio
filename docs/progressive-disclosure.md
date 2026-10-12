@@ -14,10 +14,11 @@ An installed copy reads a small entry first, which finds the guidance: 306 estim
 
 | File | Estimated tokens |
 | --- | ---: |
-| `SKILL.md` | 925 |
+| `SKILL.md` | 944 |
 | `references/desk.md` | 417 |
 | `references/gates.md` | 792 |
 | `references/google.md` | 950 |
+| `references/hub.md` | 927 |
 | `references/intake.md` | 700 |
 | `references/levels.md` | 802 |
 | `references/modes/pitch.md` | 438 |
@@ -43,29 +44,30 @@ An installed copy reads a small entry first, which finds the guidance: 306 estim
 | `assets/examples/product-brief.md` | 582 |
 | `assets/examples/scenario.md` | 382 |
 | `assets/examples/yoodli.md` | 1,092 |
-| Whole library | 20,337 |
+| Whole library | 21,283 |
 
 | Loading set | Estimated tokens | Budget |
 | --- | ---: | ---: |
-| `short-command` | 1,358 | 2,000 |
-| `start` | 1,625 | 2,000 |
-| `google` | 1,875 | 2,000 |
-| `desk` | 1,342 | 2,000 |
-| `stage:research-plan` | 2,573 | 3,500 |
-| `stage:research-handoff` | 2,626 | 3,500 |
-| `stage:blueprint` | 3,137 | 3,500 |
-| `stage:document` | 3,111 | 3,500 |
-| `stage:brief` | 3,273 | 3,500 |
-| `stage:deck-handoff` | 2,580 | 3,500 |
-| `stage:package` | 2,459 | 3,500 |
-| `levelled-blueprint` | 3,939 | 4,000 |
-| `scenario:roleplay` | 3,491 | 4,000 |
-| `yoodli:roleplay` | 5,301 | 6,000 |
-| `scenario:pitch` | 3,388 | 4,000 |
-| `yoodli:pitch` | 5,198 | 6,000 |
-| `scenario:tutor` | 3,404 | 4,000 |
-| `yoodli:tutor` | 5,214 | 6,000 |
-| `scenario:questionnaire` | 3,343 | 4,000 |
-| `yoodli:questionnaire` | 5,153 | 6,000 |
+| `short-command` | 1,377 | 2,000 |
+| `start` | 1,644 | 2,000 |
+| `google` | 1,894 | 2,000 |
+| `desk` | 1,361 | 2,000 |
+| `hub` | 1,871 | 2,000 |
+| `stage:research-plan` | 2,592 | 3,500 |
+| `stage:research-handoff` | 2,645 | 3,500 |
+| `stage:blueprint` | 3,156 | 3,500 |
+| `stage:document` | 3,130 | 3,500 |
+| `stage:brief` | 3,292 | 3,500 |
+| `stage:deck-handoff` | 2,599 | 3,500 |
+| `stage:package` | 2,478 | 3,500 |
+| `levelled-blueprint` | 3,958 | 4,000 |
+| `scenario:roleplay` | 3,510 | 4,000 |
+| `yoodli:roleplay` | 5,320 | 6,000 |
+| `scenario:pitch` | 3,407 | 4,000 |
+| `yoodli:pitch` | 5,217 | 6,000 |
+| `scenario:tutor` | 3,423 | 4,000 |
+| `yoodli:tutor` | 5,233 | 6,000 |
+| `scenario:questionnaire` | 3,362 | 4,000 |
+| `yoodli:questionnaire` | 5,172 | 6,000 |
 
 A loading set is what one operation reads. `stage:<name>` is resuming at that stage and reaching its gate: the entry, the stage reference, the gates reference and the stage template. The `yoodli:<mode>` sets apply only when the optional Yoodli stage is on. The whole library is never loaded at once.

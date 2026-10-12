@@ -81,6 +81,8 @@ At each stop you can approve it, ask for changes, or skip that stage.
 - "Put the guide in a Google Doc." sends the learner guide or the brief out for review. "Pull the Google Doc." brings the edits back.
 - "What trainings do I have?" lists the trainings on this computer.
 - "Open the desk." shows every training in your browser.
+- "Publish this to the team hub." shares what you have approved with your team, through a private git repository you control.
+- "What is in the hub about Redis?" finds scenarios, audiences and research your team has shared, to reuse in a new training.
 
 ## Coming back later
 
@@ -155,6 +157,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
 - [Google Docs](docs/google-docs.md): sending the learner guide or the brief to a Google Doc for review, and bringing the edits back.
 - [The training desk](docs/desk.md): a page in your browser showing every training on this computer.
+- [Team hub](docs/team-hub.md): sharing finished trainings with your team, and reusing their scenarios, audiences and research.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
 

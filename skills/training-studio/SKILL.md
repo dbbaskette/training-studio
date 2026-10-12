@@ -38,6 +38,7 @@ Read the one file for the step in hand, once per session, and open only the arti
 | Before a public search, upload or share | [privacy](references/privacy.md) |
 | Google Docs for the document or brief | [google](references/google.md) |
 | Browsing trainings in a browser | [desk](references/desk.md) |
+| Sharing with a team, or reusing shared work | [hub](references/hub.md) |
 
 ## Boundaries
 
