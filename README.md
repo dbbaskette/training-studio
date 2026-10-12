@@ -78,6 +78,7 @@ At each stop you can approve it, ask for changes, or skip that stage.
 - "Just the document." builds only the learner guide.
 - "Add a scenario." adds another practice situation.
 - "More research on licensing." extends the research.
+- "Put the guide in a Google Doc." sends the learner guide or the brief out for review. "Pull the Google Doc." brings the edits back.
 - "What trainings do I have?" lists the trainings on this computer.
 - "Open the desk." shows every training in your browser.
 
@@ -152,6 +153,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 - [Installation](docs/installation.md): what the installer does, and how to update, roll back or remove.
 - [How it works](docs/how-it-works.md): the stages, approvals, what "stale" means, and the files in a training folder.
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
+- [Google Docs](docs/google-docs.md): sending the learner guide or the brief to a Google Doc for review, and bringing the edits back.
 - [The training desk](docs/desk.md): a page in your browser showing every training on this computer.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
