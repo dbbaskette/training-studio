@@ -15,7 +15,8 @@ Given a topic, it produces:
 5. interactive practice briefs: a tool-neutral master and a Yoodli version.
 
 The user approves each stage before the next begins. Work is saved in a
-per-training folder and can stop and resume at any gate.
+directory the user creates for that training, and can stop and resume at any
+gate.
 
 ## 2. Scope
 
@@ -26,8 +27,9 @@ only: the core pipeline as a plain, locally linked skill.** Phases 2 to 5 are
 outlined in section 12.
 
 Out of phase 1: installer and guidance sync, Google Docs round-trip, Team Hub,
-the desk, reusable audience profiles, vendor profiles other than Yoodli, SCORM
-or LTI packaging, video.
+the desk, listing trainings across directories, saved defaults, reusable
+audience profiles, vendor profiles other than Yoodli, SCORM or LTI packaging,
+video.
 
 ## 3. Decisions
 
@@ -41,7 +43,7 @@ or LTI packaging, video.
 | Deck planning | `harness-slides` plans narrative and slide content from the blueprint and document | User preference; Training Studio does not write a slide-by-slide plan |
 | Build approach | Purpose-built Python core that delegates research and decks to the harness skills | Blog Studio's workspace models one article with one draft and does not fit multiple deliverables |
 | Helper language | Python 3.11+, standard library only | Later phases lift Blog Studio's portable Python runtime without a port |
-| Workspace | One self-contained folder per training; deliverables visible, bookkeeping hidden | `harness-research` keeps one research record per project directory |
+| Workspace | The directory the harness is launched in is the training; deliverables visible, bookkeeping hidden | The user creates one directory per topic; `harness-research` keeps one research record per project directory |
 
 ## 4. Pipeline
 
@@ -89,7 +91,11 @@ revise, rebuild or skip.
 ### 5.1 Intake
 
 Asked in one bundled pass. Anything supplied in the opening request is not
-asked again, and saved workspace defaults fill the rest.
+asked again.
+
+Documents already in the directory are offered as candidate sources. Only
+those the user selects are used; they are registered under `sources/` with
+readable snapshots, as `harness-research` requires.
 
 `brief.md` holds what shapes research and teaching:
 
@@ -132,7 +138,7 @@ Gate 1 presents the questions as a readable list, not as JSON.
 ### 5.3 Research handoff
 
 After gate 1 the assistant starts a `harness-research` task with the training
-folder as its project, saves the approved plan through that skill's helper,
+directory as its project, saves the approved plan through that skill's helper,
 and follows that skill's own guidance for investigating and recording
 findings. Training Studio records the task ID, runtime and run with `pin`.
 
@@ -150,39 +156,44 @@ and everything built from it is stale.
 
 ### 6.1 Layout
 
+One directory is one training. The user creates a directory for the topic
+(for example `valkey-training`), launches the harness there and starts the
+skill. That working directory is the training. Training content never lives
+in the skill's own repository.
+
 ```
-<content project>/
+valkey-training/               the directory the harness was launched in
+  README.md                    index, written at stage 7
+  brief.md
+  research-report.md           the approved report, copied at gate 2
+  blueprint.md
+  document.md
+  document.docx                derived export
+  deck-handoff.md              one-page note given to harness-slides
+  deck.pptx                    or deck-link.md for Google Slides
+  interactive/
+    m1/
+      generic.md               tool-neutral master
+      yoodli.md                derived from generic.md
+      yoodli.docx              derived export
+    program.md                 courses only: module order
+  sources/                     selected documents and readable snapshots
   .training-studio/
-    studio.json                  workspace marker, schema version, defaults
-  trainings/
-    <slug>/
-      README.md                  index, written at stage 7
-      brief.md
-      research-report.md         the approved report, copied at gate 2
-      blueprint.md
-      document.md
-      document.docx              derived export
-      deck-handoff.md            one-page note given to harness-slides
-      deck.pptx                  or deck-link.md for Google Slides
-      interactive/
-        m1/
-          generic.md             tool-neutral master
-          yoodli.md              derived from generic.md
-          yoodli.docx            derived export
-        program.md               courses only: module order
-      sources/                   supplied documents and readable snapshots
-      .training-studio/
-        session.json
-        research-plan.json
-        history/
-      .harness-research/         owned by harness-research
-      .harness-slides/           owned by harness-slides
+    session.json
+    research-plan.json
+    history/
+  .harness-research/           owned by harness-research
+  .harness-slides/             owned by harness-slides
 ```
 
-The training folder is the `--project` directory for both harness skills. The
-slug is lowercase `[a-z0-9-]`, derived from the title and unique within
-`trainings/`. A lesson has one module, `m1`, and uses the same layout as a
-course.
+The training directory is the `--project` directory for both harness skills.
+A lesson has one module, `m1`, and uses the same layout as a course.
+
+When the skill starts, it looks for `.training-studio/session.json` in the
+working directory. If the record exists, the skill resumes that training and
+shows its status. If not, it begins intake for a new one. `init` refuses to
+run when the directory already contains a file with a deliverable's name, and
+names the files, so nothing the user already has is overwritten.
 
 ### 6.2 Session record
 
@@ -287,14 +298,13 @@ Commands, all returning JSON:
 
 | Command | Does |
 | --- | --- |
-| `init` | Creates the training folder and `session.json`; creates `studio.json` if absent |
+| `init` | Creates `.training-studio/session.json` in the working directory; refuses if a deliverable's filename is already taken |
 | `status` | Stage, next step, pending question, status of every artifact |
 | `save` | Records an artifact's content, snapshotting to history; for the deck, also accepts the reviewed coverage record |
 | `approve` | Records approval of the current content; refuses a stale artifact unless accepted with a reason |
 | `skip` | Marks a stage skipped or clears the mark, with a reason |
 | `checkpoint` | Sets stage, next step and pending question |
 | `pin` | Records a harness skill's task ID, runtime and run |
-| `list` | Every training in a content project with its stage and status |
 | `check` | Runs the checks in section 7.3 and 8.3; reports each as passed, failed or unavailable |
 
 The helper never commits to git, never calls a harness skill and never
@@ -341,7 +351,7 @@ Misconception: "Rolling means zero downtime." Correction: single-instance apps s
 - **Course:** 2 to 6 modules of 3 to 5 objectives each.
 - **Split:** a topic that needs more than 6 modules, or more than the 30
   research questions `harness-research` allows per plan, is proposed as
-  separate trainings.
+  separate trainings, each in its own directory.
 
 A time limit from intake overrides the proposal. The blueprint then fits the
 limit and lists what was cut.
@@ -423,8 +433,8 @@ containing:
   sources and does not start its own research,
 - output format and brand add-on.
 
-The assistant then starts a `harness-slides` task with the training folder as
-its project and follows that skill's own guidance. `harness-slides` owns
+The assistant then starts a `harness-slides` task with the training directory
+as its project and follows that skill's own guidance. `harness-slides` owns
 narrative, slide content, layout, brand, authoring and visual review.
 Training Studio records the task ID, runtime and where the deck landed.
 
@@ -512,7 +522,7 @@ training-studio/
   skills/training-studio/
     SKILL.md
     references/
-      entry-flows.md             start, resume, "my trainings", short commands
+      entry-flows.md             start, resume, short commands
       intake.md
       gates.md
       workspace.md
@@ -589,8 +599,9 @@ Boundaries:
   the loading map has a file.
 - **Acceptance.** One real run on a small public topic through all six gates
   on Claude Code, with commands and outcomes recorded in
-  `docs/acceptance.md`. It includes one hand edit, one skipped stage on a
-  second training, and one resume after an interruption.
+  `docs/acceptance.md`. It includes one hand edit, one resume after an
+  interruption, and a second training in its own directory with one stage
+  skipped. Both run in disposable directories outside this repository.
 - **Yoodli.** The user's first paste into the Yoodli Builder is the
   acceptance test for that profile. Its result sets
   `verified_against_live_ui` and corrects any field name or limit.
@@ -626,6 +637,8 @@ scripts on 2026-10-12.
   automatically.
 - A hand edit overwritten by another hand edit before any save is not in
   history.
+- Each training knows only its own directory. Finding trainings across
+  directories belongs to the Team Hub and desk phases.
 
 ## Appendix: Yoodli sources
 

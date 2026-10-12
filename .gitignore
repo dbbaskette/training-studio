@@ -1,6 +1,4 @@
-# Local training data and credentials
-.training-studio/
-/trainings/
+# Credentials
 .env
 .env.*
 !.env.example
