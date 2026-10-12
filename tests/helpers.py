@@ -65,7 +65,9 @@ class TrainingCase(unittest.TestCase):
         self.root = base / 'training'
         self.root.mkdir()
         self.profile = base / 'yoodli.json'
-        self.profile.write_text('{"revision": 1}\n', encoding='utf-8')
+        real = SKILL / 'assets' / 'profiles' / 'yoodli.json'
+        self.profile.write_text(real.read_text(encoding='utf-8') if real.is_file()
+                                else '{"revision": 1}\n', encoding='utf-8')
         patcher = mock.patch.object(workspace, 'PROFILE', self.profile)
         patcher.start()
         self.addCleanup(patcher.stop)

@@ -549,3 +549,42 @@ def practice(parsed: dict, yoodli_texts: list[str]) -> dict:
     warnings = [f'{objective} is a handle objective that no scenario exercises.'
                 for objective in missed if parsed['objectives'][objective]['level'] == 'handle']
     return {'exercised': exercised, 'not_exercised': missed, 'warnings': warnings}
+
+
+# --- readiness --------------------------------------------------------------------
+
+def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dict],
+              skipped: list[str], unavailable: dict[str, str],
+              without_scenario: list[str]) -> dict:
+    """Whether the training is complete, what blocks it, and what it had to leave out.
+
+    `artifacts` lists each artifact's name, stage and status. `without_scenario` names the
+    levels (or '' for a plain training) that want scenarios and have no scenario file.
+    """
+    blocking = [f"{item['name']} is {item['status']}" for item in artifacts
+                if item['status'] not in ('approved', 'skipped', 'unavailable')]
+    blocking += ['No scenario file found' + (f' for level {level}' if level else '') + '.'
+                 for level in without_scenario]
+    for outcome in outcomes:
+        if outcome['status'] == 'failed':
+            blocking.append(f"{outcome['check']} failed")
+        elif outcome['status'] == 'unavailable':
+            blocking.append(f"{outcome['check']} could not run: {outcome['problems'][0]}")
+    limitations = [f'{stage} was skipped' for stage in skipped]
+    limitations += [f'{stage} unavailable: {reason}' for stage, reason in unavailable.items()]
+    approved = {item['name'] for item in artifacts if item['status'] == 'approved'}
+    scenario_wanted = 'scenario' not in skipped and 'scenario' not in unavailable
+    for name, state in exports.items():
+        if state == 'outdated':
+            blocking.append(f'The export of {name} is out of date')
+        elif name not in approved or state == 'current':
+            continue
+        elif name.partition('@')[0] == 'brief' and scenario_wanted:
+            if state == 'unavailable':
+                limitations.append(f'Yoodli handoff incomplete: no export of {name}')
+            else:
+                blocking.append(f'{name} has no export, and the Yoodli scenario names it '
+                                'as the file to upload')
+        else:
+            limitations.append(f'{name} has no export')
+    return {'ready': not blocking, 'blocking': blocking, 'limitations': limitations}
