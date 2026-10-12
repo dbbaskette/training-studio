@@ -312,6 +312,7 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 60 | Yoodli off | `skip brief` while scenarios are wanted | allowed; scenario files do not need the brief |
 | 61 | Yoodli off; everything else approved | `check --complete` | `ready` true; no Yoodli limitation; practice taken from the practice plan |
 | 62 | Row 61 | `skip yoodli --clear` | `ready` false until each Yoodli scenario is built and approved |
+| 63 | A stale document | its text is replaced from a file as an edit (a Google Docs pull) | history keeps the old version; the document is still `stale` |
 
 ### A8. Guidance
 

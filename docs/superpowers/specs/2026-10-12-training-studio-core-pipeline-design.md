@@ -1028,10 +1028,11 @@ Boundaries:
 Each gets its own spec.
 
 2. **Packaging.** Done: see `2026-10-12-phase-2-packaging.md`.
-3. **Google round-trip** for the document and brief.
+3. **Google round-trip** for the document and brief. Done: see `2026-10-12-phase-3-google-round-trip.md`.
 4. **Team Hub.** Shared trainings, research, scenarios and audience
-   profiles.
-5. **Training desk.** A local page for browsing and managing trainings.
+   descriptions, through a git repository. Done: see `2026-10-12-phase-4-team-hub.md`.
+5. **Training desk.** A local, read-only page for browsing trainings. Done: see
+   `2026-10-12-phase-5-training-desk.md`.
 
 ## 13. Known limits
 

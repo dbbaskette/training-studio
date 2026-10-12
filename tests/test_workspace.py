@@ -276,6 +276,16 @@ class SaveTests(PlainCase):
         self.assertEqual((self.root / 'intake.md').read_text(), 'v2\n')
         self.assertEqual(self.history('intake'), ['hand edit never saved\n', 'v2\n'])
 
+    def test_row_63_an_edit_from_a_file_keeps_history_and_never_clears_staleness(self):
+        self.approved(*CHAIN)
+        self.write('blueprint.md', helpers.CONTENT['blueprint'] + 'edited\n')
+        self.assertEqual(self.state()['document'], 'stale')
+        incoming = self.write('incoming.md', 'an edit made somewhere else\n')
+        workspace.save(self.root, 'document', source=incoming, edit=True)
+        self.assertEqual((self.root / 'document.md').read_text(), 'an edit made somewhere else\n')
+        self.assertEqual(self.state()['document'], 'stale')
+        self.assertEqual(len(self.history('document')), 2)
+
     def test_save_refuses_when_an_input_is_missing(self):
         self.write('.training-studio/research-plan.json', '{}')
         with self.assertRaisesRegex(WorkspaceError, 'before intake exists'):
