@@ -53,6 +53,7 @@ video.
 | Scenario scope | Scenarios are a list independent of modules; each exercises the objectives its success criteria map to | One scenario per module would stamp the same scenario onto every module of a course |
 | Deck use | One deck that reads without a presenter and can also be presented | User request |
 | Deck planning | `harness-slides` plans narrative and slide content from the blueprint and document | User preference |
+| Guidance loading | Progressive disclosure with measured, enforced budgets (section 9.1) | A skill should cost context only for the step in hand; an unenforced rule erodes as guidance grows |
 | Build approach | Purpose-built Python core that delegates research and decks to the harness skills | Blog Studio's workspace models one article with one draft and does not fit multiple deliverables |
 | Helper language | Python 3.11+, standard library only | Later phases lift Blog Studio's portable Python runtime without a port |
 | Workspace | The directory the harness is launched in is the training; deliverables visible, bookkeeping hidden | The user creates one directory per topic; `harness-research` keeps one research record per project directory |
@@ -416,6 +417,10 @@ a failure. An unavailable deliverable or export is a limitation that the
 package must state; it is never counted as done.
 `check --complete` exits non-zero unless `ready` is true.
 
+Output is compact by default (section 9.1): `check` lists the checks that
+did not pass and gives a count of those that did. `check --all` lists every
+check.
+
 The helper never commits to git, never calls a harness skill and never
 contacts the network.
 
@@ -714,9 +719,9 @@ training-studio/
   README.md
   AGENTS.md
   skills/training-studio/
-    SKILL.md
+    SKILL.md                     the whole entry: start or resume, loading map
     references/
-      entry-flows.md             start, resume, short commands
+      short-commands.md
       intake.md
       gates.md
       workspace.md
@@ -755,9 +760,73 @@ The example files serve two purposes: the guidance points to them as the
 template for each format, and the tests read them as fixtures. A format, its
 checker and its template therefore cannot drift apart unnoticed.
 
-`SKILL.md` is a small router in the style of Blog Studio's: a loading map
-from the current operation to the one reference file it needs. Guidance uses
-harness-neutral language so the skill runs on Claude Code and Codex.
+Guidance uses harness-neutral language so the skill runs on Claude Code and
+Codex.
+
+### 9.1 Progressive disclosure
+
+The skill spends context only on what the current step needs. Guidance is
+layered, and each layer is read only when its condition is met.
+
+| Layer | What | Read when | Budget |
+| --- | --- | --- | --- |
+| 0 | Name and description | Always; the harness holds it | 100 |
+| 1 | `SKILL.md` | The skill is invoked | 1,000 |
+| 2 | One stage reference | That stage is being worked | 1,000 each |
+| 3 | `gates.md` | The first gate of a session is presented | 1,000 |
+| 3 | `workspace.md`, `privacy.md`, `short-commands.md` | Only for what each covers: an unusual workspace operation, a public search or upload, a short command | 1,000 each |
+| 4 | One mode file; the Yoodli profile reference | The scenario stage, and only the mode in use | 1,000 each |
+| 5 | One example file | That format is being written for the first time in a session | 1,200 each |
+| 6 | Helper scripts | Never read. They are run, and only their output enters context | none |
+| 7 | `harness-research`, `harness-slides` | Only at their own stages, through their own entrypoints | theirs |
+
+Budgets are estimated tokens, counted as characters divided by four, the
+convention Blog Studio uses. They are a planning measure, not a tokenizer
+count.
+
+Rules:
+
+- **`SKILL.md` is the whole entry.** It decides between starting and resuming
+  by itself and needs no second file to do so.
+- **One hop.** Every reference and every example is linked directly from the
+  loading map in `SKILL.md`, with the condition for reading it. A reference
+  may mention another file, but nothing is reachable only through a chain.
+- **Stage files are self-contained.** Each carries the commands its stage
+  needs, so a normal stage does not load `workspace.md`.
+- **Resume reads forward only.** It loads the entry and the reference for the
+  current stage, and nothing for stages already finished.
+- **Read once.** A file read in a session is reused, not read again.
+- **A stage reads only its inputs.** The assistant opens the artifacts listed
+  as that stage's inputs in section 6.3, not the whole directory.
+- **Helper output is compact.** `status` returns one status per artifact.
+  `check` returns the checks that did not pass and a count of those that did.
+  Neither returns the session record or its event log.
+
+Loading sets, each with a budget for the guidance newly read:
+
+| Operation | Files | Budget |
+| --- | --- | --- |
+| A short command such as status or check | `SKILL.md`, `short-commands.md` | 2,000 |
+| Starting a new training | `SKILL.md`, `intake.md` | 2,000 |
+| Resuming at a stage and reaching its gate | `SKILL.md`, the stage reference, `gates.md`, the stage's example | 3,500 |
+| The scenario stage, the heaviest | `SKILL.md`, its stage reference, one mode file, the Yoodli profile reference, `gates.md`, the scenario and Yoodli examples | 6,000 |
+
+The whole library is measured and reported but has no budget, because it is
+never loaded at once.
+
+Enforcement:
+
+- `validate_package.py` fails when a file exceeds its budget, when a
+  reference or example is not linked directly from `SKILL.md`, or when a
+  reference links to a guidance file that `SKILL.md` does not.
+- A test asserts that each loading set fits its budget. The sets are defined
+  once, in the validator, and the test reads them from there.
+- `validate_package.py --measure` prints the table of files and loading sets.
+  The result is recorded in `docs/progressive-disclosure.md`.
+
+For comparison, the first prototype needed two files and 1,289 estimated
+tokens to get started, and reached its mode and profile files through a
+second hop.
 
 Prerequisites: Python 3.11+; the `harness-research` skill, which needs Node
 20+; and the `harness-slides` skill for the deck stage.
@@ -814,6 +883,10 @@ Boundaries:
   the start.
 - **Package.** `validate_package.py` confirms that every link in `SKILL.md`
   and the references resolves and that every required file exists.
+- **Progressive disclosure.** The validator enforces the per-file budgets
+  and the one-hop rule, and a test asserts each loading set in section 9.1
+  fits its budget. Live acceptance records which guidance files were read on
+  one resume, to confirm the assistant loads what the map says and no more.
 - **Automated verification** ends there. It needs no network, no harness
   skill and no outside account.
 - **Live acceptance** is separate and needs the user: one real run on a

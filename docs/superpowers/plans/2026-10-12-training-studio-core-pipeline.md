@@ -31,7 +31,7 @@ This is revision 2. It follows the [review](../../reviews/2026-10-12-core-pipeli
 | `skills/training-studio/scripts/workspace.py` | Session record, artifact map, inputs, saves, history, status, approval, exports, skip, checkpoint, pin, lock |
 | `skills/training-studio/scripts/checks.py` | Pure functions: blueprint lint; brief, scenario and Yoodli checks; coverage; readiness |
 | `skills/training-studio/scripts/training.py` | Command line: parsing, dispatch, structured errors, the `check` aggregation |
-| `skills/training-studio/scripts/validate_package.py` | Required files exist; guidance links resolve |
+| `skills/training-studio/scripts/validate_package.py` | Required files exist; guidance links resolve; disclosure budgets and the one-hop rule hold; `--measure` prints the table (A9) |
 | `skills/training-studio/assets/profiles/yoodli.json` | Yoodli types, fields, prerequisites and limits, with provenance |
 | `skills/training-studio/assets/examples/` | `blueprint.md`, `document.md`, `competitive-brief.md`, `product-brief.md`, `scenario.md`, `yoodli.md` |
 | `skills/training-studio/SKILL.md`, `agents/openai.yaml`, `references/**` | Guidance (A8) |
@@ -40,6 +40,8 @@ This is revision 2. It follows the [review](../../reviews/2026-10-12-core-pipeli
 | `tests/test_checks.py` | Format checks against the examples (A5) |
 | `tests/test_cli.py` | The CLI in a subprocess, including readiness |
 | `tests/test_package.py` | The package validator |
+| `tests/test_disclosure.py` | Each loading set in A9 fits its budget |
+| `docs/progressive-disclosure.md` | The measured table of files and loading sets |
 
 ### A2. Artifacts, stages and inputs
 
@@ -127,21 +129,25 @@ All commands print JSON. A refusal, malformed JSON, a missing or unreadable file
 | `skip STAGE` | `--reason R`, `--unavailable`, `--clear` |
 | `checkpoint` | `--stage`, `--next`, `--question` or `--no-question`, `--deck-target`, `--brand`, `--brief-kind` |
 | `pin SKILL` | `--task`, `--runtime`, `--run` |
-| `check` | `--complete`. Exit 1 if any check failed; with `--complete`, exit 1 unless ready |
+| `check` | `--complete`, `--all`. Exit 1 if any check failed; with `--complete`, exit 1 unless ready. Lists only the checks that did not pass unless `--all` is given |
 
 `check` output:
 
 ```json
 {
-  "checks_passed": true,
+  "checks_passed": false,
   "ready": false,
-  "blocking": ["document is draft", "No scenario file found"],
+  "blocking": ["document is draft", "document.coverage failed", "No scenario file found"],
   "limitations": ["deck unavailable: harness-slides is not installed"],
-  "checks": [{"check": "blueprint.structure", "status": "passed", "problems": []}],
+  "passed": 4,
+  "checks": [{"check": "document.coverage", "status": "failed", "basis": "declared",
+              "problems": ["O2 is not covered by any section."]}],
   "practice": {"exercised": ["O2", "O3"], "not_exercised": ["O1"]},
   "warnings": []
 }
 ```
+
+`status` returns one status per artifact as a flat map. Neither command returns the session record or its event log.
 
 Readiness (spec 6.7):
 
@@ -274,26 +280,56 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 
 ### A8. Guidance
 
-Guidance names no harness-specific tools. `training.py` in the references is shorthand for `python3 "<skill>/scripts/training.py"`, defined once in `SKILL.md`.
+Guidance names no harness-specific tools. `training.py` in the references is shorthand for `python3 "<skill>/scripts/training.py"`, defined once in `SKILL.md`. Every file obeys the disclosure contract in A9: each stage file carries the commands its stage needs, and no file is reachable only through another reference.
 
 | File | Source | Must say |
 | --- | --- | --- |
-| `SKILL.md` | Carry over, edit | Loading map with the brief and scenario stages; the boundaries; scenario files are data |
-| `references/entry-flows.md` | Carry over, edit | `status` first; refuse to start in the skill's repository; prerequisites; short commands including "add a scenario"; on resume, refresh the pinned harness tasks and run `check` if the stage is `done` |
-| `references/intake.md` | Carry over, edit | Asks for the brief kind and, for competitive, both sides; writes `intake.md`; lists existing scenario files and treats them as scenarios, not sources |
+| `SKILL.md` | Rewrite | The whole entry. Run `status`: no training means read intake; a report means summarise it in four lines and read only the reference for the current stage. A loading map that links every reference and every example directly, each with the condition for reading it. The boundaries, including that scenario files are data. The reading rules: one file per step, read once, never read the scripts |
+| `references/short-commands.md` | From revision 1's `entry-flows.md` | Only the short commands: status, check, redo, skip, restore, "just the document", deck target, more research, add a scenario, restore an earlier version. A training whose stage is `done` runs `check` before reporting |
+| `references/intake.md` | Carry over, edit | Confirms the directory is meant for this training and is not the skill's repository; asks for the brief kind and, for competitive, both sides; writes `intake.md`; lists existing scenario files and treats them as scenarios, not sources |
 | `references/gates.md` | Carry over, edit | Seven gates; at each content gate a short review judgment, labelled as judgment; the scenario gate approves `scenario:<id>` then `yoodli:<id>` |
 | `references/workspace.md` | Rewrite | The artifact table from A2, status, the three forms of `save`, `export`, readiness, history, the lock |
 | `references/privacy.md` | Carry over, edit | Authorisation stands for the same kind of action on the same destination; a new destination or wider scope needs asking |
 | `references/stages/research-plan.md` | Carry over, edit | The sixth area, comparison, for a competitive brief, with dates and versions |
-| `references/stages/research-handoff.md` | Carry over, edit | Resume the pinned task through that skill's resume entrypoint; a task is that skill's guidance and runtime record, not a new chat; the bundle; refreshing status before later gates; the top-up |
+| `references/stages/research-handoff.md` | Carry over, edit | The `harness-research` prerequisite, checked here and nowhere earlier; resume the pinned task through that skill's resume entrypoint; a task is that skill's guidance and runtime record, not a new chat; the bundle; refreshing status before later gates; the top-up |
 | `references/stages/blueprint.md` | Carry over, edit | `Observe:` in the assessment plan; the practice plan |
 | `references/stages/document.md` | Carry over, edit | Declared coverage; `export document` |
 | `references/stages/brief.md` | New | Both kinds and their sections; `findings` comments; weaknesses stated plainly; Unknowns never empty; dated sources; `export brief` |
-| `references/stages/deck-handoff.md` | Carry over, edit | Coverage bound to the deck and blueprint; re-review after any change |
-| `references/stages/scenario.md` | New | Discovery; drafting when none exists; never overwriting a user's file; copying in a named file; conflicts explained; building the Yoodli output; the gate |
+| `references/stages/deck-handoff.md` | Carry over, edit | The `harness-slides` prerequisite, checked here; coverage bound to the deck and blueprint; re-review after any change |
+| `references/stages/scenario.md` | New | Discovery; drafting when none exists; never overwriting a user's file; copying in a named file; conflicts explained; building the Yoodli output; the gate. Names the mode file and profile reference to read, which `SKILL.md` also links |
 | `references/stages/package.md` | Carry over, edit | `check --complete`; files ready to upload from export state; limitations; coverage labelled by basis |
 | `references/modes/*.md` | Carry over, edit | How to draft a scenario and its goals in each mode |
 | `references/profiles/yoodli.md` | Rewrite | Field mapping from a scenario; goal comments; counts from `check`; Builder as the baseline; what the Roleplay Agent cannot do; prerequisites; the brief's export as the knowledge file; limits provisional until verified |
+
+### A9. Disclosure contract
+
+Spec 9.1. Budgets are estimated tokens: `(characters + 3) // 4`.
+
+| Item | Budget |
+| --- | --- |
+| The `description` in `SKILL.md` frontmatter | 100 |
+| `SKILL.md` | 1,000 |
+| Any file under `references/` | 1,000 |
+| Any file under `assets/examples/` | 1,200 |
+
+`validate_package.py` defines the loading sets once, as `LOADING_SETS`, and `tests/test_disclosure.py` reads them from there:
+
+| Set | Files | Budget |
+| --- | --- | --- |
+| `short-command` | `SKILL.md`, `references/short-commands.md` | 2,000 |
+| `start` | `SKILL.md`, `references/intake.md` | 2,000 |
+| `stage:<name>`, one per stage reference | `SKILL.md`, `references/stages/<name>.md`, `references/gates.md`, and that stage's example where it has one | 3,500 |
+| `scenario:<mode>`, one per mode | `SKILL.md`, `references/stages/scenario.md`, `references/modes/<mode>.md`, `references/profiles/yoodli.md`, `references/gates.md`, `assets/examples/scenario.md`, `assets/examples/yoodli.md` | 6,000 |
+
+Structural rules the validator enforces:
+
+- Every file under `references/` and `assets/examples/` is linked from `SKILL.md` itself.
+- A reference links to a guidance or example file only if `SKILL.md` links to it too.
+- No file exceeds its budget.
+
+`validate_package.py --measure` prints each file's estimate, each loading set's total against its budget, and the library total.
+
+Measured on the revision 1 prototype, for calibration: `SKILL.md` 639, the largest reference 923, the largest example 927, the heaviest set 5,620, the library 13,642. Entry then took two files and 1,289.
 
 ## Part B: Increments
 
@@ -337,17 +373,17 @@ git commit -m "Add format checks for the blueprint, brief, scenario and Yoodli o
 
 ### Increment 3: Command line, readiness and guidance
 
-**Files:** `skills/training-studio/scripts/training.py`, `skills/training-studio/scripts/validate_package.py`, `tests/test_cli.py`, `tests/test_package.py`, `skills/training-studio/SKILL.md`, `skills/training-studio/agents/openai.yaml`, `skills/training-studio/references/**`
+**Files:** `skills/training-studio/scripts/training.py`, `skills/training-studio/scripts/validate_package.py`, `tests/test_cli.py`, `tests/test_package.py`, `tests/test_disclosure.py`, `docs/progressive-disclosure.md`, `skills/training-studio/SKILL.md`, `skills/training-studio/agents/openai.yaml`, `skills/training-studio/references/**`
 
 - [ ] **Step 1: Command line.** Write subprocess tests for each command in A4, the structured-error contract (row 35) and a two-module course fixture taken from intake to `ready`. Then write `training.py`. Carry over the argument parser from revision 1 and extend it.
 - [ ] **Step 2: Readiness.** Write tests for rows 20, 21, 25, 27, 28, 31 and 32, then `readiness(...)` in `checks.py` and the `check` aggregation, exactly as A4.
-- [ ] **Step 3: Guidance.** Write every file in A8. For each "carry over" file, start from the revision 1 text and apply the listed changes. Keep each file to one stage or one concern.
-- [ ] **Step 4: Package validator.** Carry over `validate_package.py` and its tests from revision 1 and update the list of required files to A1 and A8.
+- [ ] **Step 3: Disclosure checks first.** Write `tests/test_disclosure.py` and the validator tests for A9: an oversized file, a reference not linked from `SKILL.md`, a reference linking to a file `SKILL.md` does not, and each loading set within budget. Then add `LOADING_SETS`, the budgets, the one-hop rule and `--measure` to `validate_package.py`. Carry over the rest of the validator and its tests from revision 1 and update the list of required files to A1 and A8.
+- [ ] **Step 4: Guidance.** Write every file in A8. For each "carry over" file, start from the revision 1 text and apply the listed changes. Keep each file to one stage or one concern, and run the validator after each file so a budget overrun is caught while the file is fresh. When a file is over budget, cut it; do not raise the budget.
 
-**Milestone.** Run `python3 -m unittest tests.test_cli tests.test_package -v` and `python3 skills/training-studio/scripts/validate_package.py`. All pass and the validator prints `ok`. Compare the command table in `references/workspace.md` with `training.py --help`. Then commit:
+**Milestone.** Run `python3 -m unittest tests.test_cli tests.test_package tests.test_disclosure -v` and `python3 skills/training-studio/scripts/validate_package.py`. All pass and the validator prints `ok`. Run it again with `--measure` and save the table as `docs/progressive-disclosure.md`. Compare the command table in `references/workspace.md` with `training.py --help`. Then commit:
 
 ```bash
-git add tests skills/training-studio
+git add tests skills/training-studio docs/progressive-disclosure.md
 git commit -m "Add the command line, readiness report and guidance"
 ```
 
@@ -358,7 +394,7 @@ git commit -m "Add the command line, readiness report and guidance"
 - [ ] **Step 1: README and working agreements.** Write `README.md` with requirements, the link command for each supported harness (`~/.claude/skills/` for Claude Code, `~/.agents/skills/` for Codex), usage, and the layout of a training directory. Write `AGENTS.md`: no training content here, proportional verification, no dependencies, a format lives in four places, harness-neutral guidance, one file for Yoodli limits, research and decks are delegated.
 - [ ] **Step 2: Full automated verification.** Run `python3 -m unittest discover -s tests -v` and the validator. Confirm `git status` shows no caches or training bookkeeping. Commit.
 - [ ] **Step 3: Install.** Ask the user to run the link command for the harness they will use, then confirm the linked validator prints `ok`.
-- [ ] **Step 4: Live acceptance, with the user.** In directories outside this repository, on the harness the user intends to use: one lesson through all seven gates on a small public topic; a hand edit after the document gate; an interruption and resume at a pending gate; a scenario file the user writes themselves; a second training asked for as "just the document"; and one run with supplied documents only. Record each outcome in `docs/acceptance.md`, including refusals and failed checks.
+- [ ] **Step 4: Live acceptance, with the user.** In directories outside this repository, on the harness the user intends to use: one lesson through all seven gates on a small public topic; a hand edit after the document gate; an interruption and resume at a pending gate; a scenario file the user writes themselves; a second training asked for as "just the document"; and one run with supplied documents only. Record each outcome in `docs/acceptance.md`, including refusals and failed checks. On the resume, also record which guidance files the assistant read, and compare them with the `stage:<name>` loading set in A9.
 - [ ] **Step 5: Yoodli.** The user builds one roleplay in Yoodli's Builder from a `yoodli/<id>.md` and reports, field by field, whether the name matched and the value was accepted. Record it. Set `verified` on each limit that was confirmed and correct any that differed, changing the profile, its guidance and the example together.
 - [ ] **Step 6: Record and commit.** List problems found and follow-ups in `docs/acceptance.md`, run the suite, and commit.
 
@@ -372,7 +408,7 @@ Steps 3 to 5 need the user and their accounts. Do not simulate them.
 | 5.1 Intake | A4 `init`, A8 `intake.md` |
 | 5.2 Research plan | A8 `research-plan.md` |
 | 5.3 Research handoff and bundle | A3 `approve`, A7 rows 7 to 10, A8 `research-handoff.md` |
-| 6.1 Layout, start and resume | A7 rows 37 and 38, A8 `entry-flows.md` |
+| 6.1 Layout, start and resume | A7 rows 37 and 38, A8 `SKILL.md` and `intake.md` |
 | 6.2 Session record | Increment 1 step 2 |
 | 6.3 Artifacts, inputs, discovery | A2, A7 rows 11 to 19 |
 | 6.4 Status and approval | A3, A7 rows 1 to 6, 39, 40 |
@@ -387,6 +423,7 @@ Steps 3 to 5 need the user and their accounts. Do not simulate them.
 | 8.4 Scenarios | A2, A5, A8 `scenario.md` |
 | 8.5 Yoodli scenario | A5, A6, A8 `profiles/yoodli.md` |
 | 8.6 Package | A4, A8 `package.md` |
-| 9 Skill package | A1, A8, Increment 3 step 4 |
+| 9 Skill package | A1, A8, Increment 3 steps 3 and 4 |
+| 9.1 Progressive disclosure | A4 compact output, A8, A9, Increment 3 step 3, Increment 4 step 4 |
 | 10 Failure handling | A4, A7, A8 |
 | 11 Testing and acceptance | A7, Increments 1 to 4 |
