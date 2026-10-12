@@ -1,0 +1,17 @@
+# Local training data and credentials
+.training-studio/
+/trainings/
+.env
+.env.*
+!.env.example
+
+# Harness session bookkeeping
+.claude/.cc-writes
+.claude/worktrees/
+
+# Python and editor caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.DS_Store
