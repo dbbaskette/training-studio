@@ -14,7 +14,7 @@
 
 ## How this plan is organised
 
-This is revision 2. It follows the [review](../../reviews/2026-10-12-core-pipeline-review.md): four increments in place of seventeen tasks, contracts in place of embedded code, and a state-transition matrix whose rows are tests.
+This is revision 2. It follows an external review of revision 1: four increments in place of seventeen tasks, contracts in place of embedded code, and a state-transition matrix whose rows are tests.
 
 - **Contracts first.** Part A fixes the interfaces, formats and algorithms. Code appears only where it settles a contract.
 - **Tests before code, by increment.** Within an increment, write the tests for a contract, then the code. Run the targeted tests named at each milestone. Run the whole suite once at the end of increment 4.

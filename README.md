@@ -152,3 +152,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
+
+## Licence
+
+[MIT](LICENSE).

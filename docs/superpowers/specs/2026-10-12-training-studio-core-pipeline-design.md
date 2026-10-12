@@ -1,7 +1,7 @@
 # Training Studio: core pipeline design (phase 1)
 
 Date: 2026-10-12
-Status: revision 2, after the [core pipeline review](../../reviews/2026-10-12-core-pipeline-review.md); awaits approval
+Status: revision 2, written after an external review of revision 1 and updated as phase 1 was built
 
 ## 1. Purpose
 
@@ -1068,6 +1068,9 @@ Collected 2026-10-12 from public pages.
 - Programs: https://support.yoodli.ai/en/articles/15281246-adding-media-and-documents-to-a-program
 
 ## Appendix B: Disposition of the review
+
+Revision 1 was reviewed externally before any code was written. The review's
+sections are listed here with what was done about each.
 
 | Review section | Disposition | Where |
 | --- | --- | --- |
