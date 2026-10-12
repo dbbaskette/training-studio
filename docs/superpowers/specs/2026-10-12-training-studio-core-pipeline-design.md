@@ -951,9 +951,11 @@ second hop.
 Prerequisites: Python 3.11+; the `harness-research` skill, which needs Node
 20+; and the `harness-slides` skill for the deck stage.
 
-Phase 1 installation is a symbolic link from the user's skill root to
-`skills/training-studio`, created by the user. The instructions name the
-skill root for each supported harness.
+An installer copies the skill to a versioned folder under
+`~/.local/share/training-studio`, links it into each supported harness's
+skill root, checks for the companion skills, and can roll back or remove
+what it installed. It can instead link straight to a checkout, for
+development. See `docs/installation.md`.
 
 ## 10. Failure handling and boundaries
 

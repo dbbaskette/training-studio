@@ -20,6 +20,7 @@ STAGE_TEMPLATES = {
 }
 REQUIRED = (
     'SKILL.md',
+    'VERSION',
     'agents/openai.yaml',
     'assets/profiles/yoodli.json',
     'assets/examples/blueprint.md',

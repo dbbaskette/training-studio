@@ -27,19 +27,15 @@ You need:
 
 ## Install
 
-Download this repository, then run one command from inside it.
-
-For Claude Code:
+Download this repository, then run the installer from inside it:
 
 ```bash
-ln -s "$(pwd)/skills/training-studio" ~/.claude/skills/training-studio
+sh installer/install.sh
 ```
 
-For Codex:
+On a Mac you can double-click `Install Training Studio.command` in the `installer` folder instead.
 
-```bash
-ln -s "$(pwd)/skills/training-studio" ~/.agents/skills/training-studio
-```
+It installs the skill for Claude Code and Codex, whichever you have, and tells you if a companion skill is missing. It asks before changing anything. See [installation](docs/installation.md) for updating, going back a version and removing it.
 
 ## Your first training
 
@@ -151,6 +147,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 
 ## Learn more
 
+- [Installation](docs/installation.md): what the installer does, and how to update, roll back or remove.
 - [How it works](docs/how-it-works.md): the stages, approvals, what "stale" means, and the files in a training folder.
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
