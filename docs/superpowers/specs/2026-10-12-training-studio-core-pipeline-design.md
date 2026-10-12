@@ -1,7 +1,7 @@
 # Training Studio: core pipeline design (phase 1)
 
 Date: 2026-10-12
-Status: design approved in conversation; this written spec awaits review
+Status: revision 2, after the [core pipeline review](../../reviews/2026-10-12-core-pipeline-review.md); awaits approval
 
 ## 1. Purpose
 
@@ -10,13 +10,22 @@ Given a topic, it produces:
 
 1. a cited research report,
 2. a teaching blueprint,
-3. a learner guide (a document to read),
-4. a slide deck that can be both presented and distributed,
-5. interactive practice briefs: a tool-neutral master and a Yoodli version.
+3. a learner guide: a document to read,
+4. a brief: a reference document about the subject. It is a **competitive
+   brief** when the topic compares one thing against an alternative (Valkey
+   versus Redis) and a **product brief** when the topic is one technology or
+   product (Greenplum),
+5. a slide deck that can be both presented and distributed,
+6. practice scenarios, each defined in an editable file, and a Yoodli scenario
+   built from each one.
 
 The user approves each stage before the next begins. Work is saved in a
 directory the user creates for that training, and can stop and resume at any
 gate.
+
+The learner guide teaches. The brief is reference material to consult and to
+give an AI as its knowledge. A scenario is practice instructions. They have
+different structures and are never required to share wording.
 
 ## 2. Scope
 
@@ -35,12 +44,15 @@ video.
 
 | Decision | Choice | Reason |
 | --- | --- | --- |
-| Training purpose | Field enablement, technical upskilling or general knowledge, chosen per run | One skill serves all three; the purpose sets the default interactive mode |
+| Training purpose | Field enablement, technical upskilling or general knowledge, chosen per run | One skill serves all three |
+| Brief kind | Competitive or product, chosen at intake | A comparison topic and a single-technology topic need different reference documents |
 | Unit of work | Lesson or multi-module course, proposed after research and confirmed at the blueprint gate | Size depends on what the research supports |
-| Approval gates | Every stage: research plan, research report, blueprint, document, deck, interactive | User preference for control over speed |
-| Interactive targets | A tool-neutral master plus a Yoodli version derived from it | User request |
+| Approval gates | One per stage: research plan, research, blueprint, document, brief, deck, scenario | User preference for control over speed |
+| Approval lineage | An approval covers an artifact's content and its direct inputs | A rebuild against changed inputs needs approval again; accepting an unchanged upstream artifact does not force re-approval of everything below it |
+| Practice | Scenario files the user can write or edit, discovered by the skill; a Yoodli scenario built from each | User requirement |
+| Scenario scope | Scenarios are a list independent of modules; each exercises the objectives its success criteria map to | One scenario per module would stamp the same scenario onto every module of a course |
 | Deck use | One deck that reads without a presenter and can also be presented | User request |
-| Deck planning | `harness-slides` plans narrative and slide content from the blueprint and document | User preference; Training Studio does not write a slide-by-slide plan |
+| Deck planning | `harness-slides` plans narrative and slide content from the blueprint and document | User preference |
 | Build approach | Purpose-built Python core that delegates research and decks to the harness skills | Blog Studio's workspace models one article with one draft and does not fit multiple deliverables |
 | Helper language | Python 3.11+, standard library only | Later phases lift Blog Studio's portable Python runtime without a port |
 | Workspace | The directory the harness is launched in is the training; deliverables visible, bookkeeping hidden | The user creates one directory per topic; `harness-research` keeps one research record per project directory |
@@ -49,42 +61,45 @@ video.
 
 | # | Stage | Done by | Produces | Gate |
 | --- | --- | --- | --- | --- |
-| 0 | Intake | Training Studio | `brief.md`, delivery settings | The user's answers |
+| 0 | Intake | Training Studio | `intake.md`, settings | The user's answers |
 | 1 | Research plan | Training Studio | Up to 30 focused questions | Questions and source scope |
 | 2 | Research | `harness-research` | Cited report with named gaps | The findings |
-| 3 | Blueprint | Training Studio | `blueprint.md` | Sizing, objectives, outline, interactive modes |
-| 4 | Document | Training Studio | `document.md`, `document.docx` | The learner guide |
-| 5 | Deck | `harness-slides` | Google Slides or `deck.pptx` | The deck |
-| 6 | Interactive | Training Studio | Generic and Yoodli briefs per module | The briefs |
-| 7 | Package | Training Studio | `README.md` index and coverage report | None; it reports |
+| 3 | Blueprint | Training Studio | `blueprint.md` | Sizing, objectives, outline, practice plan |
+| 4 | Document | Training Studio | `document.md` and its export | The learner guide |
+| 5 | Brief | Training Studio | `competitive-brief.md` or `product-brief.md` and its export | The brief |
+| 6 | Deck | `harness-slides` | Google Slides or `deck.pptx` | The deck |
+| 7 | Scenario | Training Studio and the user | Scenario files, a Yoodli scenario for each, and exports | Each scenario with its Yoodli output |
+| 8 | Package | Training Studio | `README.md` index and readiness report | None; it reports |
 
 Rules:
 
-- **The blueprint is the hub and the document is the reference text.** The
-  document is written from the blueprint. The deck and the interactive briefs
-  are built from the blueprint and the approved document. Nothing is built from
-  the deck or from the briefs.
-- **Research questions are training-shaped.** Besides the facts of the topic,
-  the plan asks what learners commonly get wrong, which prerequisites they
-  lack, what objections arise, and which worked examples exist.
-- **Every factual statement traces back.** Blueprint key points cite research
-  finding IDs. A research gap stays a visible gap in the training; it is never
-  filled from model memory.
-- **Staleness flows downstream.** Each artifact records what it was built from.
-  When an upstream artifact changes, everything built from it is flagged.
-- **Stages are addressable.** The user can ask for one stage, redo one, or skip
-  one. The deck and interactive stages can each be skipped. The document can be
-  skipped only when interactive is also skipped, because the interactive AI
-  needs it as its knowledge source; the deck then works from the blueprint and
-  research report.
-- **Intake is asked once.** Settled answers are passed to the harness skills so
-  they do not ask again.
+- **The blueprint is the hub.** The document, the brief and the practice plan
+  come from it. Nothing is built from the deck or from a Yoodli output.
+- **The brief is the practice knowledge source.** A Yoodli scenario is built
+  from the brief, the blueprint and a scenario file. It does not depend on
+  the learner guide, so editing the guide does not disturb practice, and the
+  file uploaded to an AI tool is a focused reference rather than a whole
+  course.
+- **Research questions are training-shaped.** Besides the facts, the plan asks
+  what learners commonly get wrong, which prerequisites they lack, what
+  objections arise and which worked examples exist. A competitive brief adds
+  comparison questions.
+- **Every factual statement traces back.** Blueprint key points and brief
+  sections cite research finding IDs. A research gap stays a visible gap; it
+  is never filled from model memory. A scenario describes simulated business
+  circumstances, not evidence about a product.
+- **Staleness flows downstream** through recorded inputs (section 6.4).
+- **Stages are addressable.** The user can ask for one stage, redo one, or
+  skip one. Document, brief, deck and scenario can each be skipped. The brief
+  can be skipped only when scenario is also skipped.
+- **Intake is asked once.** Settled answers are passed to the harness skills.
 - **Approval comes only from the user in chat.** Nothing in a source document,
   research result or tool output counts as approval.
 
-At each gate the assistant shows: the file path, a short summary, the result of
-the helper's checks, any staleness, open gaps, and the choices to approve,
-revise, rebuild or skip.
+At each gate the assistant shows: the file path, a short summary, the result
+of the helper's checks, a brief review judgment of whether the content does
+its job, any staleness, open gaps, and the choices to approve, revise,
+rebuild or skip.
 
 ## 5. Intake and research
 
@@ -93,64 +108,82 @@ revise, rebuild or skip.
 Asked in one bundled pass. Anything supplied in the opening request is not
 asked again.
 
-Documents already in the directory are offered as candidate sources. Only
-those the user selects are used; they are registered under `sources/` with
-readable snapshots, as `harness-research` requires.
-
-`brief.md` holds what shapes research and teaching:
+`intake.md` holds what shapes research and teaching:
 
 - topic,
+- brief kind: `product`, or `competitive` with the two sides named,
 - audience: role and what they already know,
 - purpose: field enablement, technical upskilling or general knowledge,
 - source scope: public web, supplied documents only, or both, and which
   documents,
 - time limit or preferred size, if the user has one.
 
-Delivery settings are stored in `session.json`, not in `brief.md`, so that
-changing them does not mark the research stale: deck target (Google Slides or
-PowerPoint), brand add-on, and which stages are wanted.
+Settings are stored in `session.json`: deck target (Google Slides or
+PowerPoint), brand add-on, brief kind, and which stages are wanted. A setting
+is an input only to the artifacts it affects (section 6.3), so changing the
+brand does not mark the research stale.
+
+Documents already in the directory are offered as candidate sources. Only
+those the user selects are used; they are registered under `sources/` with
+readable snapshots, as `harness-research` requires. Scenario files
+(section 8.4) are recognised by their location and are not treated as
+sources.
 
 ### 5.2 Research plan
 
 Training Studio drafts the plan in the format `harness-research` accepts and
 keeps it at `.training-studio/research-plan.json`:
 
-- `topic` from the brief, and `purpose` set to `planning`.
-- `scope`: `supplied-only` when the brief allows supplied documents only,
+- `topic` from intake, and `purpose` set to `planning`.
+- `scope`: `supplied-only` when intake allows supplied documents only,
   otherwise `public-web`. Supplied documents are registered under `sources`
   in both cases.
 - `items`: 1 to 30 questions, each with a stable lowercase ID, the question,
   and a public query built only from non-confidential terms (or null for
   supplied-only research).
 
-Questions cover five areas: the facts of the topic; what learners commonly
-get wrong; prerequisites the audience may lack; objections or pushback; and
-worked examples. The finding ID of each question is what the blueprint later
-cites.
+Questions cover the facts of the topic; what learners commonly get wrong;
+prerequisites the audience may lack; objections or pushback; and worked
+examples. For a competitive brief they also cover comparison: the dimensions
+that matter, licensing and cost, migration effort, and where the alternative
+is stronger. Comparison facts date quickly, so those questions ask for the
+date and version of what they find.
 
-`brief.md` is deliberately not registered as a `harness-research` input file.
-That skill starts a new, empty run whenever a registered input changes, so a
-typo fix in the brief would discard live findings. Training Studio tracks the
-brief-to-research dependency itself and lets the user decide at the gate.
+`intake.md` is deliberately not registered as a `harness-research` input
+file. That skill starts a new, empty run whenever a registered input changes,
+so a typo fix would discard live findings. Training Studio tracks that
+dependency itself.
 
 Gate 1 presents the questions as a readable list, not as JSON.
 
 ### 5.3 Research handoff
 
 After gate 1 the assistant starts a `harness-research` task with the training
-directory as its project, saves the approved plan through that skill's helper,
-and follows that skill's own guidance for investigating and recording
-findings. Training Studio records the task ID, runtime and run with `pin`.
+directory as its project, saves the approved plan through that skill's
+helper, and follows that skill's own guidance. Training Studio records the
+task ID, runtime and run with `pin`. On resume or revision it continues that
+pinned task through the skill's resume entrypoint; it does not start a new
+one.
 
 Research is ready for gate 2 only after the completion checks that
-`harness-research` defines: status is refreshed, the report is opened, and
-the findings are confirmed saved.
+`harness-research` defines.
 
-The `research` artifact's live content is
-`.harness-research/research-report.md`. Approving gate 2 copies it to
-`research-report.md` and stores the findings index in `session.json`. If the
-live report later differs from the approved copy, research returns to `draft`
-and everything built from it is stale.
+**The approved research bundle.** Approving gate 2 records, together: the
+hash of the live report `.harness-research/research-report.md`, the hash of
+the record `.harness-research/research.json`, and the run ID. It copies the
+report to `research-report.md` and stores the findings index (finding ID to
+status) in `session.json`. The record is read only if its `schema` is 1 and
+its `owner` is `harness-research`.
+
+Research returns to `draft`, and everything built from it becomes stale, when
+any of these differs from the approved bundle: the live report, the record,
+or the approved copy `research-report.md`.
+
+Training Studio does not fingerprint evidence snapshots itself. That is the
+job of `harness-research`. On resume and before each later gate, the
+assistant refreshes that skill's status through the pinned runtime. If it
+reports stale evidence, its refreshed report changes, which Training Studio
+then sees as a changed bundle.
 
 ## 6. Workspace
 
@@ -158,42 +191,47 @@ and everything built from it is stale.
 
 One directory is one training. The user creates a directory for the topic
 (for example `valkey-training`), launches the harness there and starts the
-skill. That working directory is the training. Training content never lives
-in the skill's own repository.
+skill. Training content never lives in the skill's own repository.
 
 ```
 valkey-training/               the directory the harness was launched in
-  README.md                    index, written at stage 7
-  brief.md
+  README.md                    index, written at stage 8
+  intake.md
   research-report.md           the approved report, copied at gate 2
   blueprint.md
   document.md
-  document.docx                derived export
+  document.docx                export
+  competitive-brief.md         or product-brief.md
+  competitive-brief.docx       export
   deck-handoff.md              one-page note given to harness-slides
   deck.pptx                    or deck-link.md for Google Slides
-  interactive/
-    m1/
-      generic.md               tool-neutral master
-      yoodli.md                derived from generic.md
-      yoodli.docx              derived export
-    program.md                 courses only: module order
+  scenario.md                  a scenario; its ID is "main"
+  scenarios/
+    exec-cost.md               further scenarios; the ID is the file name
+  yoodli/
+    main.md                    Yoodli scenario built from scenario.md
+    main.docx                  export
+    exec-cost.md
   sources/                     selected documents and readable snapshots
   .training-studio/
     session.json
     research-plan.json
     history/
+    lock
   .harness-research/           owned by harness-research
   .harness-slides/             owned by harness-slides
 ```
 
 The training directory is the `--project` directory for both harness skills.
-A lesson has one module, `m1`, and uses the same layout as a course.
 
 When the skill starts, it looks for `.training-studio/session.json` in the
 working directory. If the record exists, the skill resumes that training and
 shows its status. If not, it begins intake for a new one. `init` refuses to
-run when the directory already contains a file with a deliverable's name, and
-names the files, so nothing the user already has is overwritten.
+run:
+
+- when the directory already contains a file with a deliverable's name, and
+  names the files;
+- when the directory is, or contains, the skill's own package.
 
 ### 6.2 Session record
 
@@ -202,114 +240,199 @@ names the files, so nothing the user already has is overwritten.
 ```json
 {
   "schema": 1,
-  "id": "rolling-restarts",
-  "title": "Rolling restarts",
+  "id": "valkey-for-redis-teams",
+  "title": "Valkey for Redis teams",
   "size": "lesson",
   "modules": ["m1"],
-  "stage": "blueprint",
-  "next_step": "Present the blueprint for approval",
+  "stage": "brief",
+  "next_step": "Present the brief for approval",
   "pending_question": null,
-  "settings": {"deck_target": "pptx", "brand": null, "stages": ["document", "deck", "interactive"]},
+  "settings": {
+    "deck_target": "pptx",
+    "brand": null,
+    "brief_kind": "competitive",
+    "stages": ["document", "brief", "deck", "scenario"]
+  },
+  "unavailable": {},
   "pins": {
     "harness-research": {"task": "…", "runtime": "…", "run": "…"},
     "harness-slides": {"task": "…", "runtime": "…"}
   },
-  "findings": {"availability": "supported", "instance-min": "supported"},
+  "research": {"report_sha256": "…", "record_sha256": "…", "run": "…"},
+  "findings": {"licensing": "supported", "migration-effort": "insufficient"},
   "artifacts": {
     "blueprint": {
       "file": "blueprint.md",
       "sha256": "…",
-      "approved": {"sha256": "…", "at": "2026-10-12T15:04:00Z"},
-      "built_from": {"brief": "…", "research": "…"}
+      "built_from": {"intake": "…", "research": "…"},
+      "approved": {"sha256": "…", "inputs": {"intake": "…", "research": "…"},
+                   "at": "2026-10-12T15:04:00Z"}
     }
   },
+  "exports": {},
   "decisions": [],
   "events": []
 }
 ```
 
 `stage` is one of `intake`, `research-plan`, `research`, `blueprint`,
-`document`, `deck`, `interactive`, `package`, `done`.
+`document`, `brief`, `deck`, `scenario`, `package`, `done`. It is a marker
+for resuming. It never stands in for computed status or readiness.
 
-### 6.3 Artifacts and dependencies
+The helper validates the record's structure on every load, not only its
+schema number, and refuses to write to a record it does not recognise.
 
-| Artifact | File | Built from |
+### 6.3 Artifacts and inputs
+
+| Artifact | File | Inputs |
 | --- | --- | --- |
-| `brief` | `brief.md` | none |
-| `research-plan` | `.training-studio/research-plan.json` | `brief` |
-| `research` | `.harness-research/research-report.md`, copied to `research-report.md` on approval | `research-plan` |
-| `blueprint` | `blueprint.md` | `brief`, `research` |
+| `intake` | `intake.md` | none |
+| `research-plan` | `.training-studio/research-plan.json` | `intake` |
+| `research` | The research bundle (section 5.3) | `research-plan` |
+| `blueprint` | `blueprint.md` | `intake`, `research` |
 | `document` | `document.md` | `blueprint` |
-| `deck` | `deck.pptx` or `deck-link.md` | `blueprint`, `document` (or `blueprint`, `research` when the document is skipped) |
-| `interactive:<module>` | `interactive/<module>/generic.md` | `blueprint`, `document` |
-| `yoodli:<module>` | `interactive/<module>/yoodli.md` | `interactive:<module>` |
+| `brief` | `competitive-brief.md` or `product-brief.md` | `blueprint`, `research`, the brief-kind setting |
+| `deck` | `deck.pptx` or `deck-link.md` | `blueprint`, `document` (or `research` when the document is skipped), the deck-target and brand settings |
+| `scenario:<id>` | `scenario.md` or `scenarios/<id>.md` | none; it is an input the user owns |
+| `yoodli:<id>` | `yoodli/<id>.md` | `blueprint`, `brief`, `scenario:<id>`, the Yoodli profile |
 
-`.docx` files and `deck-handoff.md` are derived. They are regenerated from
-their source and never tracked as artifacts.
+An artifact's inputs are the hashes of its upstream artifacts plus the
+settings and profile revision that affect it. Changing the brand therefore
+makes only the deck stale; changing the Yoodli profile makes only the Yoodli
+outputs stale; editing a scenario file makes only its own Yoodli output
+stale.
 
-A module's folder name is its blueprint ID in lowercase: module `M1` lives in
-`interactive/m1/` and its artifacts are `interactive:m1` and `yoodli:m1`.
+`deck-handoff.md` and `README.md` are derived and untracked. Exports are
+tracked separately (section 6.5).
 
-`save` records the current upstream hashes as `built_from`. `approve` refuses
-when any upstream artifact is neither approved nor skipped. `skip` applies to
-a whole stage and enforces the rule in section 4 that the document can be
-skipped only when interactive is.
+**Scenario discovery.** `scenario.md` in the training directory has the ID
+`main`. Each `scenarios/<id>.md` has the ID of its file name, which must be
+lowercase letters, digits and hyphens. Having both `scenario.md` and
+`scenarios/main.md` is refused as ambiguous. Other markdown files are never
+picked up as scenarios. The set is computed on every read, so adding or
+removing a file is seen at once. A Yoodli output whose scenario file has been
+removed stays listed and shows as stale.
 
-### 6.4 Status
+### 6.4 Status and approval
 
 Status is computed on every read and never stored. In order of precedence:
 
 1. `skipped`: the user skipped the stage.
 2. `unavailable`: the stage could not run, for example no `harness-slides`.
-3. `not-started`: no file and no record.
-4. `stale`: an upstream artifact's current content hash differs from the hash
-   this artifact was built from, or an upstream artifact is itself stale.
-5. `draft`: the current hash differs from the approved hash, or there is no
-   approval.
-6. `approved`: the current hash equals the approved hash.
+3. `not-started`: the file does not exist.
+4. `stale`: the artifact's recorded inputs differ from its current inputs, or
+   an upstream artifact is itself stale.
+5. `draft`: not approved in its current form (see below).
+6. `approved`.
 
-Hand edits are supported. Editing a file changes its hash, so the next status
-call returns it to `draft` and flags its dependents as `stale`.
+**An approval covers content and lineage.** It records the artifact's hash
+and the inputs it was built from. An artifact is `approved` only when its
+current hash equals the approved hash and its recorded inputs equal the
+approved inputs.
 
-Approving a stale artifact requires an explicit accept with a reason. That
-re-pins `built_from` to the current upstream hashes and appends to
-`decisions`.
+- A hand edit changes the hash: the artifact is `draft` and what was built
+  from it is `stale`.
+- A rebuild against changed inputs changes the recorded inputs: the artifact
+  is `draft` even if the rebuild produced identical bytes.
+- Recording a hand edit never changes the recorded inputs, so it can never
+  clear staleness.
 
-### 6.5 History
+**Accepting a stale artifact** requires the user's reason. It re-pins the
+inputs, approves that content against them, and records the old inputs, the
+new inputs and the reason under `decisions`. It does not approve anything
+downstream. A downstream artifact stays approved only if its own direct
+inputs are byte-for-byte what it was approved against. Research built from an
+unchanged plan therefore stays approved when that plan is accepted as it is;
+a blueprint that reads the changed intake directly does not.
+
+`approve` refuses when any upstream artifact is neither approved nor skipped.
+
+### 6.5 Exports
+
+An export is a converted copy for sharing or upload: `document.docx`, the
+brief's `.docx`, and each `yoodli/<id>.docx`. Exports have no approval gate,
+but the helper records, for each one, the source hash it was made from, its
+own hash and its path, or the reason it could not be produced.
+
+An export is `current`, `outdated` (its source changed since), `missing`
+(the file is gone or was never recorded) or `unavailable` (recorded with a
+reason).
+
+The Yoodli scenario names the brief's export as the knowledge file to
+upload. The assistant never tells the user to upload a file that is not
+`current`. If the brief's export is unavailable, the Yoodli handoff is
+reported as incomplete, with what the user can do instead.
+
+Export uses, in order: `pandoc` if on the path; otherwise the harness's own
+document-creation capability; otherwise the export is recorded as
+unavailable.
+
+### 6.6 History
 
 `history/` holds content-addressed copies of every version the helper has
-seen. A save through the helper first copies the on-disk version into history
-if it is not already there, then replaces the file atomically, then records
-the new version. Versions that were saved or approved are always recoverable.
-A hand edit that is overwritten by another hand edit before any save is not.
+seen. A save through the helper first copies the on-disk version into
+history if it is not already there, then replaces the file atomically, then
+records the new version. Versions that were saved or approved are always
+recoverable. A hand edit that is overwritten by another hand edit before any
+save is not.
 
-### 6.6 Helper
+### 6.7 Helper
 
 A Python 3.11+ standard-library CLI with no network access. It checks the
 Python version at start and fails with a clear message on older versions.
 
-Three files:
+Files:
 
 - `training.py`: argument parsing and command dispatch.
-- `workspace.py`: records, saves, history, status.
-- `checks.py`: blueprint lint, coverage, profile limits.
+- `workspace.py`: record, artifact map, inputs, saves, history, status,
+  approval, exports, lock.
+- `checks.py`: blueprint lint, brief, scenario and Yoodli checks, coverage,
+  readiness.
+- `validate_package.py`: the package's own integrity.
 
 Commands, all returning JSON:
 
 | Command | Does |
 | --- | --- |
-| `init` | Creates `.training-studio/session.json` in the working directory; refuses if a deliverable's filename is already taken |
-| `status` | Stage, next step, pending question, status of every artifact |
-| `save` | Records an artifact's content, snapshotting to history. `--from FILE` replaces the artifact and `--built` records a file written in place; both re-pin what it was built from. A plain `save` records a hand edit and keeps the earlier pins, so saving an edit never clears staleness. For the deck, also accepts the reviewed coverage record |
-| `approve` | Records approval of the current content; refuses a stale artifact unless accepted with a reason |
-| `skip` | Marks a stage skipped or clears the mark, with a reason |
-| `checkpoint` | Sets stage, next step and pending question |
+| `init` | Creates `.training-studio/session.json`; takes the title, brief kind, deck target and brand |
+| `status` | Stage, next step, pending question, every artifact's status and export state, scenarios found and files ignored |
+| `save` | Records an artifact. `--from FILE` replaces it and `--built` records a file written in place; both re-pin its inputs. A plain `save` records a hand edit and keeps the earlier inputs. For the deck, also takes the reviewed coverage |
+| `approve` | Records approval of the current content and lineage; refuses a stale artifact unless accepted with a reason |
+| `export` | Records an export of an artifact, or that it is unavailable and why |
+| `skip` | Marks a stage skipped or unavailable, or clears the mark |
+| `checkpoint` | Sets stage, next step, pending question and settings |
 | `pin` | Records a harness skill's task ID, runtime and run |
-| `check` | Runs the checks in section 7.3 and 8.3; reports each as passed, failed or unavailable |
+| `check` | Runs every check that applies and reports readiness |
+
+**`check` reports two things.** `checks_passed` says no check that ran has
+failed; a run with only a blueprint can pass. `ready` says the training is
+complete: every wanted artifact exists and is approved, nothing is stale, no
+applicable check failed or could not run, no export is out of date, and
+every upload the outputs name has a current export or is recorded as
+unavailable. `blocking` lists each reason `ready` is false.
+`limitations` lists what was skipped at the user's request or could not be
+produced, including an export that could not be made. A skipped stage is not
+a failure. An unavailable deliverable or export is a limitation that the
+package must state; it is never counted as done.
+`check --complete` exits non-zero unless `ready` is true.
 
 The helper never commits to git, never calls a harness skill and never
-contacts the network. The assistant runs the harness skills and records the
-results through `pin` and `save`.
+contacts the network.
+
+### 6.8 Robustness
+
+- **One writer at a time.** Commands that change state take
+  `.training-studio/lock`. A second command fails with a clear message
+  instead of overwriting the first one's changes. A lock left by a process
+  that no longer exists is taken over.
+- **Readable failures.** Malformed JSON, a missing or unreadable file and a
+  permission error are returned as `{"error": …}`, like any other refusal.
+- **Managed paths stay inside the directory.** A managed file that is a
+  symbolic link is refused.
+- **No transaction journal.** Status is computed from the files, so an
+  update interrupted between two files leaves a state that `status` reports
+  truthfully and that rerunning the command repairs. Inputs are validated
+  before anything is changed.
 
 ## 7. Blueprint
 
@@ -318,18 +441,20 @@ results through `pin` and `save`.
 `blueprint.md` is built backward: outcomes first, then evidence of learning,
 then content.
 
-1. **Frame.** Audience and prior knowledge, purpose, total time.
+1. **Frame.** Audience and prior knowledge, purpose, total time, and for a
+   competitive brief the two sides being compared.
 2. **Sizing and reasoning.** See 7.2.
-3. **Objectives `O1…`.** One observable behaviour each, with a level: `recall`,
-   `explain`, `apply` or `handle` (live conversation skills).
+3. **Objectives `O1…`.** One observable behaviour each, with a level:
+   `recall`, `explain`, `apply` or `handle` (live conversation skills).
 4. **Modules `M1…`.** Each lists its objectives and duration, and contains:
    - key points `K<module>.<n>`, each citing research findings as `[R:<id>]`,
    - misconceptions, each with its correction and citation,
    - one worked example or scenario.
 5. **Assessment plan.** For every objective, a knowledge-check question for
-   the document and a goal for the interactive brief.
-6. **Interactive plan.** The mode per module (`roleplay`, `pitch`, `tutor` or
-   `questionnaire`) and persona sketches where the mode needs one.
+   the document and what a practice session should observe.
+6. **Practice plan.** The scenarios proposed or already supplied: for each,
+   its ID, mode (`roleplay`, `pitch`, `tutor` or `questionnaire`) and the
+   objectives it exercises.
 7. **Open gaps.** Research questions that came back unresolved, and what the
    training omits as a result.
 
@@ -356,10 +481,6 @@ Misconception: "Rolling means zero downtime." Correction: single-instance apps s
 A time limit from intake overrides the proposal. The blueprint then fits the
 limit and lists what was cut.
 
-The default interactive mode follows the purpose: `roleplay` for field
-enablement, `tutor` for technical upskilling, `questionnaire` for general
-knowledge. The user can override it per module at the gate.
-
 ### 7.3 Checks
 
 `check` enforces:
@@ -368,121 +489,203 @@ knowledge. The user can override it per module at the gate.
 - Every objective belongs to a module and has an assessment entry.
 - Every key point cites at least one finding or is marked `[unsupported]`.
 - A cited finding exists in the approved findings index and has status
-  `supported`. A misconception's correction may cite a `contradicted` finding.
+  `supported`. A misconception's correction may cite a `contradicted`
+  finding.
 - An `[unsupported]` key point appears under open gaps.
+- A practice-plan line names a known mode and known objectives.
 - Module objective counts outside 3 to 5 produce a warning, not a failure.
 
-The findings index (`id` to status) is read from
-`.harness-research/research.json` when gate 2 is approved and stored in
-`session.json`. The helper reads that file only if its `schema` is 1; on any
-other value the citation check reports `unavailable`.
-
-Downstream artifacts declare coverage in HTML comments, for example
-`<!-- covers: O1 K1.1 -->` on a document section and
-`<!-- assesses: O1 -->` on an interactive goal. Stage 7 reads these.
+If the findings index could not be read, the citation check reports
+`unavailable`.
 
 ### 7.4 Research top-up
 
 If the blueprint exposes a gap that matters, gate 3 offers more research. A
-changed plan is a new run in `harness-research`, which starts with no results
-and moves the prior run to its history. The top-up therefore keeps the
-original questions unchanged, adds the new ones, re-records each prior finding
-whose evidence snapshots are unchanged from the saved prior run, and
-investigates only the new questions. Gate 2 is then repeated and the blueprint
-rebuilt against the re-approved report.
+changed plan is a new run in `harness-research`, which starts with no
+results and moves the prior run to its history. The top-up therefore keeps
+the original questions unchanged, adds the new ones, re-records each prior
+finding whose evidence snapshots are unchanged from the saved prior run, and
+investigates only the new questions. Gate 2 is then repeated and the
+blueprint rebuilt against the re-approved bundle.
 
-## 8. Formats
+## 8. Deliverables
 
-Each format has its own guidance file, loaded only when its stage runs.
+Each has its own guidance file, loaded only when its stage runs, and an
+example file that serves as both template and test fixture.
 
 ### 8.1 Document
 
 The learner guide, written to stand alone as pre-read and leave-behind. A
 course is one document with a chapter per module.
 
-Structure:
+Structure: title, who it is for, time needed and what the reader will be
+able to do; then per module an opening scenario, teaching prose organised
+around the key points, the worked example, a "common mistake" callout per
+misconception, a summary and a knowledge check; then the answer key,
+glossary and sources.
 
-- Title, who it is for, time needed, and what the reader will be able to do.
-- Per module: an opening scenario showing why it matters; teaching prose
-  organised around the key points; the worked example; a "common mistake"
-  callout per misconception; a summary; a knowledge check.
-- Answer key.
-- Glossary.
-- Sources: the original URL or document behind every finding used.
+Each section declares the objectives and key points it teaches in a
+`covers` comment. `check` verifies that every objective and supported key
+point is declared somewhere and that no `[unsupported]` point is. This is
+**declared coverage**: it shows the section claims to teach something, not
+that the prose does it well. The gate's review judgment covers that.
 
-Each section carries a `covers` comment. Prose states nothing as fact beyond
-the cited findings.
+### 8.2 Brief
 
-Export to `document.docx` uses, in order: `pandoc` if on the path; otherwise
-the harness's own document-creation capability; otherwise the export is
-reported as unavailable and the stage completes with markdown only.
+The reference document about the subject. It is consulted, not studied, and
+it is the knowledge file given to an AI for practice.
 
-### 8.2 Deck
+**Competitive brief** (`competitive-brief.md`), in this order:
+
+1. Executive summary
+2. Comparison: the dimensions that matter, each side on each, with evidence
+3. Differentiators the research supports
+4. Limitations: where our side is weaker or the alternative is stronger
+5. Qualification questions: how to tell whether it fits a given situation
+6. Objections and responses, each response resting on evidence
+7. Unknowns: what the research could not establish
+8. Sources, with the date of each
+
+**Product brief** (`product-brief.md`), in this order:
+
+1. Executive summary
+2. What it is and where it fits
+3. Capabilities the research supports
+4. Limitations, and when not to use it
+5. Qualification questions
+6. Objections and responses
+7. Unknowns
+8. Sources, with the date of each
+
+Every evidence section (2 to 6) names the findings it rests on in a
+`findings` comment. `check` verifies that each required section is present
+and not empty, that each evidence section names at least one finding, and
+that every named finding exists and is `supported`. A response to an
+objection may also rest on a `contradicted` finding, since the objection's
+claim was contradicted. Unknowns is never left empty: it lists what is not
+known, or says that nothing was left unresolved.
+
+A brief states weaknesses as plainly as strengths. A competitive brief that
+only flatters one side fails the people who have to use it in front of a
+customer.
+
+### 8.3 Deck
 
 Training Studio does not plan slides. It writes `deck-handoff.md`, one page
-containing:
+containing: goal, audience and duration; the requirement that the deck reads
+without a presenter and can also be presented, so no slide depends on its
+speaker notes for meaning; required elements (objectives, a check for
+understanding per module, a recap, a closing pointer to practice); the
+sources `blueprint.md`, `document.md` and `research-report.md`; a statement
+that research is complete; and the output format and brand.
 
-- goal, audience and duration,
-- the dual-use requirement: the deck must read without a presenter and also be
-  presentable, so no slide may depend on its speaker notes for meaning, and
-  notes carry the talk track and timing,
-- required elements: objectives, a check for understanding per module, a
-  recap, and a closing pointer to the interactive practice,
-- sources: `blueprint.md`, `document.md` and `research-report.md`,
-- a statement that research is complete, so `harness-slides` works from the
-  sources and does not start its own research,
-- output format and brand add-on.
+The assistant then starts a `harness-slides` task with the training
+directory as its project and follows that skill's own guidance. Training
+Studio records the task ID, runtime and where the deck landed.
 
-The assistant then starts a `harness-slides` task with the training directory
-as its project and follows that skill's own guidance. `harness-slides` owns
-narrative, slide content, layout, brand, authoring and visual review.
-Training Studio records the task ID, runtime and where the deck landed.
+**Coverage is a recorded review.** After the deck exists, the assistant
+reads its slides and records which slides address each objective. The record
+is bound to the hash of the deck and of the blueprint it was reviewed
+against. If either changes, the review no longer applies and coverage is
+reported as unavailable until the deck is reviewed again. Objective IDs must
+exist and slide numbers must be positive integers.
 
-After the deck exists, the assistant reads its slides and records which
-objectives it found on which slides. This is a review judgment. The index
-labels deck coverage as reviewed, not checked.
+For Google Slides, the local record tracks `deck-link.md`, with the deck's
+identity and the time of review. Edits made in Google after approval are not
+detected in phase 1.
 
-For Google Slides, the local record tracks `deck-link.md` only. Edits made in
-Google after approval are not detected in phase 1.
+### 8.4 Scenarios
 
-### 8.3 Interactive
+A scenario is a practice situation: who the learner is, who the AI plays,
+how it opens, what pushback comes, and what success looks like. It is an
+**input the user owns**. The user can write one before starting, edit one
+the skill drafted, or add more at any time.
 
-**Generic master: `interactive/<module>/generic.md`.** Tool-neutral. It opens
-with a short note on use: sections 3 to 8 serve as the system prompt or
-instructions, and `document.docx` is attached as knowledge.
+**Format.** A scenario file has these sections:
 
-| # | Section | Required for |
+| Section | Required | Content |
 | --- | --- | --- |
-| 1 | Name | all modes |
-| 2 | Description, learner-facing, 2 to 4 sentences | all |
-| 3 | Mode | all |
-| 4 | AI instructions, in second person: scenario, how to open, how to behave, what to press on, when to end | all |
-| 5 | Personas: name, role, demeanour, background, behaviours | `roleplay`, `pitch` |
-| 6 | Objections and pushback, each with what a good answer contains | `roleplay` |
-| 7 | Question bank with expected answers | `pitch`, `tutor`, `questionnaire` |
-| 8 | Goals and rubric: name, type, explanation, what achieved looks like, what missed looks like, and an `assesses` comment | all |
-| 9 | Knowledge source: the document, and what the AI must treat as true | all |
-| 10 | Session settings: time limit, who ends the session | all |
+| `# Scenario: <name>` | yes | Title |
+| `## Mode` | no | `roleplay` (the default), `pitch`, `tutor` or `questionnaire` |
+| `## Situation` | yes | The simulated circumstances |
+| `## Learner role` | yes | Who the learner is and what they are trying to do |
+| `## AI role` | yes | Who the AI plays and how it behaves |
+| `## Opening` | yes | The AI's first line or move |
+| `## Concerns and pushback` | no | What the AI raises |
+| `## Questions` | no | Questions to ask, for the modes that use them |
+| `## Success criteria` | yes | A list; each item is one thing the learner should do |
+| `## Constraints` | no | What the AI must not invent or assume |
+| `## Session settings` | no | Duration and how the session ends |
 
-One guidance file per mode describes how to write that mode well.
+The user never needs to know objective IDs to write one.
 
-**Yoodli version: `interactive/<module>/yoodli.md`.** Generated from the
-master, never written separately. It uses Yoodli's field names in builder
-order: roleplay name, type, description, context, personas, objections, goals,
-AI assets, knowledge-based goal source, settings.
+**Rules.**
 
-- Each pasteable field value sits in its own fenced block, so it copies
-  cleanly and the helper can count its characters. Coverage comments sit
-  outside the blocks.
-- The count and the limit are shown beside each limited field.
-- The file opens with the two ways to use it: paste field by field into the
-  Builder, or give `yoodli.docx` and `document.docx` to Yoodli's Roleplay
-  Agent and compare the agent's draft against this file.
-- Mode maps to Yoodli type: `roleplay` to Objection Handling, `pitch` to
-  Pitch, `tutor` to Tutor, `questionnaire` to Questionnaire.
+- If no scenario file exists when the scenario stage starts, the assistant
+  drafts `scenario.md` from the user's request, the blueprint's practice plan
+  and the brief, and presents it at the gate with its Yoodli output.
+- An existing scenario file is never overwritten with generated content. The
+  assistant proposes changes and applies them only when the user agrees.
+- When the user names a file elsewhere, the assistant copies it into
+  `scenarios/` under a suitable ID, says so, and uses that copy.
+- `check` validates the required sections before a Yoodli output is built.
+- A scenario that conflicts with the blueprint or the brief is not silently
+  corrected. The assistant explains the conflict and the user decides.
+- Facts in a scenario's situation are fiction about the practice setting.
+  Product facts the AI may use come only from the brief.
 
-Limits live in `assets/profiles/yoodli.json`, together with the retrieval
-date and a `verified_against_live_ui` flag, initially `false`:
+### 8.5 Yoodli scenario
+
+`yoodli/<id>.md` is built from one scenario file, the brief, the blueprint
+and the Yoodli profile. It expresses the scenario in the fields of Yoodli's
+roleplay builder. It is not required to share wording with the brief.
+
+Fields, in builder order: roleplay name, type, description, context,
+personas, objections, goals, AI assets, knowledge-based goal source,
+settings. Each pasteable value sits alone in a fenced block under the
+heading that names its field, so it copies cleanly and the helper can count
+its characters.
+
+**Goals carry the mapping.** Each goal names the success criterion it comes
+from and, where one applies, the objective it assesses, in comments outside
+the pasteable blocks. `check` verifies that:
+
+- every required field is present, every persona has all of its fields, and
+  no field or heading is duplicated and no fence is left open;
+- the type matches the scenario's mode, and goal types are ones Yoodli
+  offers;
+- every success criterion in the scenario file is carried by at least one
+  goal, and no goal refers to a criterion that does not exist;
+- every objective a goal names exists in the blueprint;
+- every field is within its limit.
+
+`check` reports the character count of each limited field. The counts shown
+in the file are taken from that output.
+
+**Objectives exercised** are reported, not enforced. A scenario the user
+wrote need not touch every objective. `check` lists which objectives the
+scenarios exercise between them and which they do not, and warns when a
+`handle` objective is exercised by none.
+
+Whether the scenario's context and goals are consistent with the brief is a
+review judgment made at the gate and labelled as one.
+
+**Delivery.** Building the roleplay in Yoodli's Builder, pasting field by
+field, is the baseline path. Yoodli's Roleplay Agent can draft a roleplay
+from uploaded files, but it cannot create new custom goals: those are
+created in the Builder and then selected. The file says so, and says which
+fields the agent can draft. Both paths have access prerequisites, which the
+profile lists. Training Studio prepares local files only; creating or
+enabling a roleplay in the service is the user's action.
+
+The knowledge file to upload is the brief's export.
+
+**Profile.** `assets/profiles/yoodli.json` holds Yoodli's types, goal types,
+persona fields, prerequisites and limits. Each limit carries its value, the
+URL it came from, the date it was collected and the date it was confirmed in
+the live builder, which is empty until that happens. Limits are provisional
+until confirmed. A successful paste confirms that the fields were accepted;
+it says nothing about factual grounding or rubric quality.
 
 | Limit | Value |
 | --- | --- |
@@ -493,27 +696,16 @@ date and a `verified_against_live_ui` flag, initially `false`:
 | Goal missed text | 1,000 characters |
 | Roleplay Agent inputs | 5 files and 1 public URL |
 
-`check` fails a Yoodli file that exceeds a limit or lacks a required field,
-and fails a generic file that lacks a section its mode requires. Required
-Yoodli fields are roleplay name, type, description, context and at least one
-goal, plus at least one persona for Objection Handling and Pitch. The writer
-revises; nothing is truncated silently. `check` also reports the character
-count of each limited field, and the counts shown in the file are taken from
-that output rather than counted by eye.
+### 8.6 Package
 
-**Courses.** Each module gets its own pair. Gate 6 presents all pairs
-together and approval is recorded per artifact, so one module can be redone
-without reopening the others. `interactive/program.md` gives the
-module order with the document and deck as steps, which maps to a Yoodli
-Program.
+Stage 8 writes `README.md`: title, audience, purpose, size, objectives; a
+table of artifacts with status and links; the files ready to upload, taken
+from export state; declared document coverage, reviewed deck coverage and
+objectives exercised by the scenarios, each labelled by its basis; open
+gaps; limitations; and how to use the scenario files.
 
-### 8.4 Package
-
-Stage 7 writes `README.md`: title, audience, purpose, size, objectives, a
-table of artifacts with status and links, a coverage table of objective
-against document, deck and interactive, open gaps, and how to use the Yoodli
-files. Document and interactive coverage come from `check`. Deck coverage
-comes from the recorded review.
+It runs `check --complete`. The training is described as complete only when
+`ready` is true. Otherwise the report lists what is blocking.
 
 ## 9. Skill package
 
@@ -534,8 +726,9 @@ training-studio/
         research-handoff.md
         blueprint.md
         document.md
+        brief.md
         deck-handoff.md
-        interactive.md
+        scenario.md
         package.md
       modes/
         roleplay.md
@@ -546,8 +739,8 @@ training-studio/
         yoodli.md
     assets/
       profiles/yoodli.json
-      examples/                  one example per format: blueprint, document,
-                                 generic brief, Yoodli brief
+      examples/                  blueprint, document, competitive brief,
+                                 product brief, scenario, Yoodli scenario
     scripts/
       training.py
       workspace.py
@@ -562,94 +755,112 @@ The example files serve two purposes: the guidance points to them as the
 template for each format, and the tests read them as fixtures. A format, its
 checker and its template therefore cannot drift apart unnoticed.
 
-`SKILL.md` is a small router in the style of Blog Studio's: a loading map from
-the current operation to the one reference file it needs. Guidance uses
+`SKILL.md` is a small router in the style of Blog Studio's: a loading map
+from the current operation to the one reference file it needs. Guidance uses
 harness-neutral language so the skill runs on Claude Code and Codex.
 
 Prerequisites: Python 3.11+; the `harness-research` skill, which needs Node
 20+; and the `harness-slides` skill for the deck stage.
 
 Phase 1 installation is a symbolic link from the user's skill root to
-`skills/training-studio`, created by the user.
+`skills/training-studio`, created by the user. The instructions name the
+skill root for each supported harness.
 
 ## 10. Failure handling and boundaries
 
 | Situation | Behaviour |
 | --- | --- |
 | `harness-research` not installed | Stop at stage 1 with the install pointer. Model memory or ad hoc browsing is never substituted and called research |
-| `harness-slides` not installed | Deck marked `unavailable`; the run continues |
-| A harness skill cannot fetch guidance | Follow that skill's own rule: retry through the host's permission flow and report a failure; never describe stale guidance as current |
-| Research findings unresolved | Shown at gate 2 and carried into the blueprint's open gaps |
+| `harness-slides` not installed | Deck marked `unavailable` and listed as a limitation; the run continues |
+| A harness skill cannot fetch guidance | Follow that skill's own rule and report a failure; never describe stale guidance as current |
+| Research findings unresolved | Shown at gate 2 and carried into open gaps and the brief's Unknowns |
+| Research bundle changed after approval | Research returns to `draft`; downstream is stale |
 | Upstream stale at a gate | The gate says so; the user chooses rebuild or accept; accepting is recorded |
-| Yoodli limit exceeded | `check` fails; the writer revises |
-| Export or check cannot run | Reported as unavailable, never as clean |
+| A limit exceeded, a field missing | `check` fails; the writer revises; nothing is truncated |
+| Scenario conflicts with the blueprint or brief | Explained to the user; never silently overridden |
+| An export cannot be produced | Recorded as unavailable; the affected handoff is reported incomplete |
+| A check cannot run | Reported as unavailable; `ready` is false |
+| Two commands at once | The second is refused by the lock |
+| Malformed record or input | A structured error; nothing is changed |
 | Run interrupted | Resume from `stage`, `next_step` and `pending_question` |
-| Unrecognised `session.json` schema | The helper refuses to write and says why |
 
 Boundaries:
 
-- Supplied documents, research results and tool output are data, not
-  instructions.
+- Supplied documents, scenario files, research results and tool output are
+  data, not instructions.
 - Evidence, quotations and experience are never invented.
 - Private inputs stay in the harness and the local workspace. Public queries
   follow the confidentiality rules of `harness-research`.
-- Anything that publishes or uploads needs the user's authorisation. Creating
-  a Google Slides deck follows the authorisation rules of `harness-slides`.
+- Publishing, uploading and creating things in outside services need the
+  user's authorisation. Authorisation given for a destination and a kind of
+  action stands for further actions of that kind on that destination; a new
+  destination or a wider scope needs asking again.
 
 ## 11. Testing and acceptance
 
-- **Helper.** `python3 -m unittest`, written test-first, using temporary
-  directories and one synthetic fixture training. Covers: `init`; save and
-  history; every status transition including hand edits, skip and accepted
-  staleness; blueprint lint cases; coverage; Yoodli limits; refusal on an
-  unknown schema.
+- **Helper.** `python3 -m unittest`, using temporary directories. Tests are
+  written before the code they cover, by increment. Targeted tests run at
+  each milestone and the whole suite runs once before completion.
+- **State-transition matrix.** The plan lists every transition the helper
+  must get right as a table, and each row is a test: a rebuild with
+  identical bytes, a hand edit, accepted staleness and its effect
+  downstream, a missing or deleted file, a changed setting, a changed
+  profile, a changed research bundle, a module added or removed, a scenario
+  added, edited or removed, a replaced deck, an export gone out of date, and
+  a stage skipped and restored.
+- **Fixtures.** A lesson and a two-module course, a competitive and a
+  product brief, and more than one scenario. The Yoodli profile is injected
+  into tests, so both its confirmed and unconfirmed states are tested from
+  the start.
 - **Package.** `validate_package.py` confirms that every link in `SKILL.md`
-  and the references resolves and that every stage, mode and profile named in
-  the loading map has a file.
-- **Acceptance.** One real run on a small public topic through all six gates
-  on Claude Code, with commands and outcomes recorded in
-  `docs/acceptance.md`. It includes one hand edit, one resume after an
-  interruption, and a second training in its own directory with one stage
-  skipped. Both run in disposable directories outside this repository.
-- **Yoodli.** The user's first paste into the Yoodli Builder is the
-  acceptance test for that profile. Its result sets
-  `verified_against_live_ui` and corrects any field name or limit.
+  and the references resolves and that every required file exists.
+- **Automated verification** ends there. It needs no network, no harness
+  skill and no outside account.
+- **Live acceptance** is separate and needs the user: one real run on a
+  small public topic through every gate on the harness the user intends to
+  use, including a hand edit, a resume after an interruption, a
+  user-authored scenario, and a second training in its own directory with a
+  stage skipped. Supplied-only research is exercised here, since the helper
+  has no scope logic of its own. Results are recorded in
+  `docs/acceptance.md`.
+- **Yoodli.** The user's first paste into the Builder confirms or corrects
+  the profile, field by field.
 
 ## 12. Later phases
 
 Each gets its own spec. Reuse figures come from a read of Blog Studio's
 scripts on 2026-10-12.
 
-2. **Packaging.** Bootstrap, pinned guidance, installer, CI, Codex
-   acceptance. Blog Studio's `sync_guidance.py` and `install.py` lift nearly
-   as-is. The same idea exists in three drifting copies (one Python, two
-   Node), so this phase is the point to decide on a shared core. Blog Studio's
-   runtime version is stated as `1.13.0`, `1.13.1` and `1.15.0` in three
-   places; settle on one source before forking.
-3. **Google round-trip** for the document. `google_drive.py` and
+2. **Packaging.** Bootstrap, pinned guidance, installer, CI. Blog Studio's
+   `sync_guidance.py` and `install.py` lift nearly as-is. The same idea
+   exists in three drifting copies (one Python, two Node), so this phase is
+   the point to decide on a shared core. Blog Studio's runtime version is
+   stated as `1.13.0`, `1.13.1` and `1.15.0` in three places; settle on one
+   source before forking.
+3. **Google round-trip** for the document and brief. `google_drive.py` and
    `google_roundtrip.py` are domain-neutral.
-4. **Team Hub.** Shared trainings, research and audience profiles. The Hub's
-   record store is generic; its workspace mapping and browse views are keyed
-   to the article model and need redesign.
+4. **Team Hub.** Shared trainings, research, scenarios and audience
+   profiles. The Hub's record store is generic; its workspace mapping and
+   browse views are keyed to the article model and need redesign.
 5. **Training desk.** The local server shell is reusable; routes and front
    end are not.
 
 ## 13. Known limits
 
-- Yoodli's field names and limits come from its public help centre and have
-  not been checked against the live builder. Yoodli does not list markdown as
-  an upload type, which is why `.docx` copies are exported.
-- Deck coverage is a review judgment, because Training Studio does not control
-  slide content.
+- Yoodli's field names and limits come from its public help centre and are
+  provisional until confirmed in the live builder.
+- Document coverage is declared and deck coverage is reviewed. Neither
+  proves the content teaches well.
+- Whether a Yoodli scenario is consistent with the brief is a review
+  judgment.
 - Remote edits to a Google Slides deck are not detected.
 - A research top-up re-records prior findings; it does not carry them over
   automatically.
 - A hand edit overwritten by another hand edit before any save is not in
   history.
-- Each training knows only its own directory. Finding trainings across
-  directories belongs to the Team Hub and desk phases.
+- Each training knows only its own directory.
 
-## Appendix: Yoodli sources
+## Appendix A: Yoodli sources
 
 Collected 2026-10-12 from public pages.
 
@@ -662,3 +873,27 @@ Collected 2026-10-12 from public pages.
 - AI Assets: https://support.yoodli.ai/en/articles/16054213-add-ai-assets-to-a-roleplay
 - Release notes: https://support.yoodli.ai/en/articles/9048809-yoodli-release-notes
 - Programs: https://support.yoodli.ai/en/articles/15281246-adding-media-and-documents-to-a-program
+
+## Appendix B: Disposition of the review
+
+| Review section | Disposition | Where |
+| --- | --- | --- |
+| 1 Brief and scenario are separate outputs | Adopted. Extended to a product brief for single-technology topics | 1, 4, 8.2, 8.5 |
+| 1 Brief built from the learner guide | Changed. The brief is built from research and blueprint, and is the scenario's only knowledge source, to cut re-approval and keep the upload focused | 4, 6.3 |
+| 2 Editable scenario file | Adopted | 8.4 |
+| 2 Per-module scenario with fallback | Changed. Scenarios are a list independent of modules | 3, 6.3, 8.4 |
+| 3 `check` passes with files missing | Adopted as separate `checks_passed` and `ready` | 6.7 |
+| 4 Approval bound to inputs | Adopted for direct inputs | 6.4 |
+| 4 Accepting upstream must not approve downstream | Declined for artifacts whose own inputs are unchanged. Re-approving them adds a gate with nothing new to look at | 6.4 |
+| 5 Research bundle | Adopted: report, record, run ID and copy are pinned together | 5.3 |
+| 5 Fingerprint evidence independently | Declined. It duplicates `harness-research`; its status is refreshed instead | 5.3 |
+| 6 Deck review bound to the deck | Adopted | 8.3 |
+| 7 Export readiness | Adopted | 6.5 |
+| 8 Yoodli delivery assumptions | Adopted | 8.5 |
+| 9 Stronger checks, honest labels | Adopted | 8.1, 8.5 |
+| 10 Settings and profile as inputs | Adopted | 6.3 |
+| 11 Lock, structured errors, path checks | Adopted | 6.8 |
+| 11 Recovery record for multi-file updates | Declined. Status is computed from files, so an interrupted update is visible and repaired by rerunning | 6.8 |
+| 12 Plan structure and cadence | Adopted: four increments, contracts in place of embedded code, a state-transition matrix | Plan |
+| 12 Supplied-only research unit tests | Moved to live acceptance; the helper has no scope logic | 11 |
+| 12 `.gitignore` for Python caches | Already present. `init` now refuses to run inside the skill's package | 6.1 |
