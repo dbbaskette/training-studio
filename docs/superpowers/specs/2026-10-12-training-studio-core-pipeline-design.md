@@ -174,6 +174,14 @@ file. That skill starts a new, empty run whenever a registered input changes,
 so a typo fix would discard live findings. Training Studio tracks that
 dependency itself.
 
+Questions are asked neutrally. One that embeds a claim can come back
+contradicted, and a contradicted finding can back only a correction or a
+response to an objection; where the truth is something to teach, the neutral
+question that establishes it is asked as well.
+
+`check` verifies the plan is one `harness-research` will accept: 1 to 30
+questions, each with a usable ID and text, and no registered input files.
+
 Gate 1 presents the questions as a readable list, not as JSON.
 
 ### 5.3 Research handoff
@@ -258,12 +266,17 @@ valkey-training/
     product-brief.md, product-brief.docx
     deck-handoff.md, deck.pptx
     scenario.md, scenarios/, yoodli/
+    .harness-slides/
   301/
     the same set
   sources/
   .training-studio/
   .harness-research/
 ```
+
+Each level's deck is its own `harness-slides` task with the level's folder as
+its project, because that skill keeps one workspace per project directory.
+Research stays one task at the top.
 
 A training is plain or levelled, decided at intake. Levels can be added to or
 removed from a levelled training later; removing one stops tracking its
@@ -481,6 +494,12 @@ a failure. An unavailable deliverable or export is a limitation that the
 package must state; it is never counted as done.
 `check --complete` exits non-zero unless `ready` is true.
 
+A question still waiting on the user blocks readiness. An artifact accepted
+as it was after its inputs changed is listed under limitations with the
+reason given. Scenario files that were passed over are named in a warning.
+`approve` reports any checks that are failing at that moment, so an approval
+is never silent about them.
+
 Output is compact by default (section 9.1): `check` lists the checks that
 did not pass and gives a count of those that did. `check --all` lists every
 check.
@@ -680,7 +699,8 @@ reads its slides and records which slides address each objective. The record
 is bound to the hash of the deck and of the blueprint it was reviewed
 against. If either changes, the review no longer applies and coverage is
 reported as unavailable until the deck is reviewed again. Objective IDs must
-exist and slide numbers must be positive integers.
+exist and slide numbers must be positive integers. The helper refuses a deck file that is not a real
+PowerPoint file, so a placeholder can never be recorded as the deck.
 
 For Google Slides, the local record tracks `deck-link.md`, with the deck's
 identity and the time of review. Edits made in Google after approval are not
@@ -752,7 +772,8 @@ the pasteable blocks. `check` verifies that:
 - every field is within its limit.
 
 `check` reports the character count of each limited field. The counts shown
-in the file are taken from that output.
+in the file are taken from that output, and `check` fails a stated count that is not the
+real one.
 
 **Objectives exercised** are reported, not enforced. A scenario the user
 wrote need not touch every objective. `check` lists which objectives the
@@ -1066,3 +1087,17 @@ Collected 2026-10-12 from public pages.
 | 12 Plan structure and cadence | Adopted: four increments, contracts in place of embedded code, a state-transition matrix | Plan |
 | 12 Supplied-only research unit tests | Moved to live acceptance; the helper has no scope logic | 11 |
 | 12 `.gitignore` for Python caches | Already present. `init` now refuses to run inside the skill's package | 6.1 |
+
+## Appendix C: Changes after the guidance dry run
+
+After implementation, an independent agent followed the skill end to end
+using only the guidance, with stand-ins for research and the deck. It
+finished both levels of a two-level training and reported 18 findings. The
+resulting changes: each level's deck is its own `harness-slides` task; a
+placeholder cannot be recorded as the deck; the research plan is checked;
+stated character counts are verified; a pending question blocks readiness;
+accepted staleness and ignored scenario files are reported; `approve` names
+failing checks; and resume duties, level-to-level checkpoints, the handling
+of a user's free-form scenario and the history folder names are now stated
+in the guidance. A dry run is not acceptance: the stand-ins mean research
+and deck building were not exercised.

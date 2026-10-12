@@ -35,6 +35,17 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
     def file_of(name: str) -> str:
         return workspace.artifact(root, session, name)['file']
 
+    plan = read(root, workspace.SHARED['research-plan'][0])
+    if plan is not None:
+        try:
+            outcomes.append(checks.check_research_plan(json.loads(plan)))
+        except ValueError:
+            outcomes.append(checks.result('research-plan.items',
+                                          ['The plan is not valid JSON.']))
+    warnings += [f'{path} is not used as a scenario: it is outside a level folder or its '
+                 'name is not lowercase letters, digits and hyphens.'
+                 for path in workspace.scenarios(root, session)['ignored']]
+
     for level in session['levels'] or [None]:
         def named(base: str) -> str:
             return workspace.qualify(base, level)
@@ -72,6 +83,12 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
             if output is None:
                 continue
             yoodli_texts.append(output)
+            ident = base.partition(':')[2]
+            actual = checks.parse_scenario(source)['mode']
+            warnings += [f"The practice plan lists {named(base)} as {entry['mode']}; "
+                         f'its scenario file says {actual}. The scenario file decides.'
+                         for entry in parsed['practice']
+                         if entry['id'] == ident and entry['mode'] != actual]
             results = checks.check_yoodli(output, profile, checks.parse_scenario(source),
                                           set(parsed['objectives']),
                                           base.replace('scenario:', 'yoodli:', 1))
@@ -97,7 +114,8 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
           'status': status} for name, status in state.items()],
         workspace.export_states(root, session), outcomes,
         [stage for stage in workspace.SKIPPABLE if stage not in wanted],
-        session['unavailable'], without_scenario)
+        session['unavailable'], without_scenario, session.get('pending_question'),
+        session['decisions'])
     failed = [outcome for outcome in outcomes if outcome['status'] == 'failed']
     passed = [outcome for outcome in outcomes if outcome['status'] == 'passed']
     return {
@@ -184,6 +202,7 @@ def parser() -> argparse.ArgumentParser:
     pin.add_argument('--task', required=True)
     pin.add_argument('--runtime', required=True)
     pin.add_argument('--run')
+    pin.add_argument('--level', help='the level this task belongs to, for a per-level deck')
 
     check = commands.add_parser('check', help='run the checks and report readiness')
     check.add_argument('--complete', action='store_true',
@@ -208,7 +227,10 @@ def dispatch(args: argparse.Namespace, root: Path) -> dict:
         state = workspace.status(root)['artifacts'][args.artifact]
         return {'artifact': args.artifact, 'sha256': entry['sha256'], 'status': state}
     if args.command == 'approve':
-        return workspace.approve(root, args.artifact, args.accept_stale)
+        outcome = workspace.approve(root, args.artifact, args.accept_stale)
+        outcome['failing_checks'] = [item['check'] for item in run_checks(root)['checks']
+                                     if item['status'] == 'failed']
+        return outcome
     if args.command == 'export':
         return workspace.export(root, args.artifact, args.file, args.unavailable)
     if args.command == 'skip':
@@ -218,7 +240,8 @@ def dispatch(args: argparse.Namespace, root: Path) -> dict:
                                     args.no_question, args.deck_target, args.brand,
                                     args.brief_kind, args.level, args.levels)
     if args.command == 'pin':
-        return workspace.pin(root, args.skill, args.task, args.runtime, args.run)
+        return workspace.pin(root, args.skill, args.task, args.runtime, args.run,
+                             args.level)
     return run_checks(root, args.all)
 
 

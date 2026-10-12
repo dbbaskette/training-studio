@@ -4,7 +4,7 @@ Draft the questions `harness-research` will answer, and have the user approve th
 
 ## Draft
 
-Write `.training-studio/research-plan.json` in the format `harness-research` accepts:
+Write `.training-studio/research-plan.json` in the format `harness-research` accepts. It is the one file under `.training-studio/` that you write.
 
 ```json
 {
@@ -23,6 +23,7 @@ Write `.training-studio/research-plan.json` in the format `harness-research` acc
 }
 ```
 
+- **`purpose`** is always `planning`. It is a `harness-research` field, not the training's purpose.
 - **`scope`** is `supplied-only` when intake allows supplied documents only, and `public-web` otherwise.
 - **`sources`** has one entry per selected document, as `harness-research` defines them, with paths relative to the training directory.
 - **`items`** holds 1 to 30 questions. Each `id` is lowercase letters, digits and hyphens. The blueprint and the brief cite these IDs, so name each for its subject: `instance-min`, not `q7`.
@@ -41,6 +42,8 @@ A general research run collects facts. A training needs more.
 6. **Comparison**, for a competitive brief only. Which dimensions matter to a buyer? How does each side do on each? Licensing and cost. Migration effort. Where is the alternative stronger? Ask for the date and version of every answer: comparison facts go out of date fast.
 
 Weight the mix to the purpose: more objections for field enablement, more prerequisites and examples for technical upskilling. With levels, one plan serves them all; weight it toward the deepest level. Ask one thing per question, and prefer questions a source can answer with a passage.
+
+Ask neutral questions. One that embeds a claim, such as "Do rolling restarts guarantee zero downtime?", can come back `contradicted`, and a contradicted finding can back only a correction or a response to an objection. Where the truth is something to teach, also ask the neutral question that establishes it: "What happens to a single-instance app during a rolling restart?"
 
 If the topic needs more than 30 questions, it is too large for one training. Say so and propose a split, each part in its own directory.
 

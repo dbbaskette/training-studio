@@ -14,7 +14,7 @@ Every stage ends at a gate. Nothing downstream starts until the user approves.
    - anything stale, and what changed upstream,
    - open gaps and limitations they should know about.
 5. Offer the choices: approve, revise (they say what), rebuild, or skip the stage.
-6. `training.py checkpoint --question "<the question you asked>"`, so a resumed session asks it again.
+6. `training.py checkpoint --question "<the question you asked>" --next "Waiting for approval of <artifact>"`, so a resumed session knows it is at this gate and asks again.
 
 A failed check you cannot fix is shown, never hidden.
 
@@ -34,9 +34,11 @@ An approval covers the content and what it was built from. Rebuilding against ch
 | 1 | `research-plan` | The questions as a readable list grouped by area, and the source scope. Never JSON |
 | 2 | `research` | Counts of supported, contradicted and unresolved findings; each unresolved question; source gaps |
 | 3 | `blueprint` | Lesson or course, and why; objectives; module outline; practice plan; open gaps. Offer a research top-up if a gap matters |
-| 4 | `document` | Length and structure; whether the export was produced |
-| 5 | `brief` | Where it is weakest; what is under Unknowns; whether the export was produced |
+| 4 | `document` | Length and structure; what you found reading each section against its coverage comment |
+| 5 | `brief` | Where it is weakest; what is under Unknowns |
 | 6 | `deck` | Where the deck is; the reviewed coverage of objectives |
 | 7 | `scenario:<id>` then `yoodli:<id>`, for each scenario | Whose file it is; mode; which goal carries each success criterion; counts against limits |
 
-With levels, gate 3 presents every level's blueprint together and approves each separately. Gates 4 to 7 then repeat for one level at a time, lowest first.
+Exports are made after approval, so a gate never promises one. Say whether each was made once it has been tried.
+
+With levels, gate 3 presents every level's blueprint together and approves each separately. Gates 4 to 7 then repeat for one level at a time, lowest first; the levels reference has the checkpoint that moves from one level to the next.

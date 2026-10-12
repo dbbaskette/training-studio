@@ -6,7 +6,7 @@ The last stage writes the index and reports whether the training is ready. It ha
 
 Run `training.py check --complete --all` and `training.py status`.
 
-- `ready` is true only when every wanted artifact is approved, nothing is stale, no check failed or could not run, and no export is out of date.
+- `ready` is true only when every wanted artifact is approved, nothing is stale, no check failed or could not run, no export is out of date, and no question is waiting on the user.
 - `blocking` lists each reason it is not ready.
 - `limitations` lists what was skipped at the user's request or could not be produced.
 
@@ -25,7 +25,7 @@ If `ready` is false, resolve what you can, tell the user what remains, and do no
    A stage that was skipped or unavailable shows that word, not a tick.
 6. **Open gaps**, from the blueprints, and **limitations**, from `check`.
 7. **Using the scenarios.** Where the scenario files and Yoodli files are; that building the roleplay in Yoodli's Builder is the baseline; and that Yoodli's limits are provisional until the user confirms a paste.
-8. **Research.** A link to `research-report.md` and the date it was approved.
+8. **Research.** A link to `research-report.md`, with the approval date and the count of findings by status, both from `research` in `training.py status`.
 
 `README.md` is derived. Rewrite it when anything changes; never `save` it.
 

@@ -41,7 +41,7 @@ Save with `training.py save document --built` the first time and `--from <file>`
 On approval:
 
 1. `training.py approve document`.
-2. Export it: `pandoc document.md -o document.docx` if `pandoc` is on the path, otherwise the harness's own document capability. Then `training.py export document`. If neither works: `training.py export document --unavailable "<why>"`.
+2. Export it: `pandoc document.md -o document.docx` if `pandoc` is on the path, otherwise the harness's own document capability. Then `training.py export document`. If neither works: `training.py export document --unavailable "<why>"`. Tell the user which happened.
 3. `training.py checkpoint --no-question --stage brief --next "Write the brief"`.
 
 Export again after any later change to `document.md`. The export is a copy; the markdown is the source.

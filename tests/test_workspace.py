@@ -283,7 +283,7 @@ class SaveTests(PlainCase):
 
     def test_save_pins_the_inputs_including_settings(self):
         self.build(*CHAIN)
-        self.write('deck.pptx', 'deck v1')
+        self.write('deck.pptx', helpers.DECK)
         entry = workspace.save(self.root, 'deck', built=True)
         self.assertEqual(entry['built_from'], {
             'blueprint': workspace.sha256_file(self.root / 'blueprint.md'),
@@ -310,7 +310,7 @@ class SaveTests(PlainCase):
 
     def test_deck_coverage_is_bound_to_the_deck_and_blueprint(self):
         self.build(*CHAIN)
-        self.write('deck.pptx', 'deck v1')
+        self.write('deck.pptx', helpers.DECK)
         entry = workspace.save(self.root, 'deck', built=True, coverage={'O1': [2], 'O2': []})
         review = entry['reviewed_coverage']
         self.assertEqual(review['objectives'], {'O1': [2], 'O2': []})
@@ -320,7 +320,7 @@ class SaveTests(PlainCase):
 
     def test_row_22_bad_coverage_is_refused_and_nothing_is_recorded(self):
         self.build(*CHAIN)
-        self.write('deck.pptx', 'deck v1')
+        self.write('deck.pptx', helpers.DECK)
         for coverage, message in (({'O9': [1]}, 'O9 is not an objective'),
                                   ({'O1': [0]}, 'positive whole numbers'),
                                   ({'O1': 'three'}, 'positive whole numbers')):
@@ -362,7 +362,7 @@ class StatusTests(PlainCase):
 
     def test_row_11_a_brand_change_touches_only_the_deck(self):
         self.approved(*CHAIN, 'brief')
-        self.write('deck.pptx', 'deck v1')
+        self.write('deck.pptx', helpers.DECK)
         workspace.save(self.root, 'deck', built=True)
         workspace.approve(self.root, 'deck')
         workspace.checkpoint(self.root, brand='Tanzu')
@@ -655,6 +655,13 @@ class CheckpointTests(PlainCase):
         self.assertEqual(pins['harness-research'],
                          {'task': 't-1', 'runtime': '/opt/runtime', 'run': 'run-1'})
         self.assertEqual(workspace.status(self.root)['pins'], pins)
+
+    def test_row_54_a_text_file_is_not_a_deck(self):
+        self.build(*CHAIN)
+        self.write('deck.pptx', 'A placeholder until the real deck is built.')
+        with self.assertRaisesRegex(WorkspaceError, 'is not a PowerPoint file'):
+            workspace.save(self.root, 'deck', built=True)
+        self.assertNotIn('deck', workspace.load(self.root)['artifacts'])
 
     def test_pin_refuses_other_skills(self):
         with self.assertRaisesRegex(WorkspaceError, 'harness-research'):

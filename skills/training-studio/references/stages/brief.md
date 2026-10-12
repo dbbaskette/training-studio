@@ -31,7 +31,7 @@ In the visible text, cite with numbered references that resolve in Sources. Give
 - **Comparison is a table.** One row per dimension that matters to a buyer, a column for each side, and the evidence.
 - **Differentiators are only what the research supports.** A difference you cannot cite goes under Unknowns.
 - **Qualification questions cut both ways.** Include the ones whose answer means this is the wrong choice.
-- **Each objection is in the customer's words**, with a response that rests on evidence. Never include an objection the brief cannot answer from its own sections.
+- **Each objection is in the words of whoever would raise it**, with a response that rests on evidence. Never include an objection the brief cannot answer from its own sections.
 - **Unknowns is never empty.** List what the research could not establish, including the blueprint's open gaps that concern the subject. If nothing was left unresolved, say that.
 - **Write to the level.** With levels, a 101 brief is short and plain; a 401 brief goes to internals and trade-offs.
 

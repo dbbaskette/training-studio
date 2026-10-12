@@ -11,22 +11,24 @@ A level is a depth tier of the same subject. Each assumes the one before.
 
 ## What is shared and what is per level
 
-Intake and research are done once. Everything from the blueprint down is produced for each level, in that level's folder:
+Intake and research are done once. Everything from the blueprint down is produced for each level, in that level's folder: `301/blueprint.md`, `301/document.md`, `301/scenario.md`, `301/yoodli/`.
 
-```
-301/blueprint.md      301/document.md     301/product-brief.md
-301/deck.pptx         301/scenario.md     301/scenarios/   301/yoodli/
-```
+Artifact names carry the level: `blueprint@301`, `document@301`, `brief@301`, `deck@301`, `scenario:main@301`, `yoodli:main@301`. So do check names.
 
-Artifact names carry the level: `blueprint@301`, `document@301`, `brief@301`, `deck@301`, `scenario:main@301`, `yoodli:main@301`. Checks do too: `blueprint.structure@301`.
-
-Levels are independent. Nothing in one level is an input to another, so editing one never makes another stale. A scenario file at the top of the directory belongs to no level and is ignored.
+Levels are independent: editing one never makes another stale. A scenario file at the top of the directory belongs to no level and is ignored.
 
 ## Order of work
 
 1. Research once, weighted toward the deepest level asked for. That level needs questions about mechanisms, limits and failure modes. If the levels together need more than 30 questions, propose two directories, for example 101 with 201 and 301 with 401.
-2. Draft the blueprint for every level before any is approved, and present them together. Overlap and gaps between levels show here and nowhere else.
-3. Then finish one level at a time, lowest first: document, brief, deck, scenarios. Record the level in hand with `training.py checkpoint --level 301`.
+2. Draft the blueprint for every level before any is approved, and present them together. Overlap and gaps between levels show only here.
+3. Then finish one level at a time, lowest first: document, brief, deck, scenarios.
+
+Stage files end with a checkpoint written for a plain training. With levels, use these where they differ:
+
+- After every blueprint is approved: `training.py checkpoint --no-question --stage document --level 101 --next "Write the 101 learner guide"`.
+- After a level's scenario gate, if a level remains: the same command with the next level. After the last level, go on to `--stage package`.
+
+One `README.md` covers the whole training, at the top. `deck-handoff.md` sits in the level's folder. Each level's deck is its own `harness-slides` task: give that skill the level's folder as its project, and record it with `training.py pin harness-slides --level 301 --task <id> --runtime <path>`.
 
 ## Writing a level
 
