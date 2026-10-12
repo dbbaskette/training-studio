@@ -612,9 +612,21 @@ function openFirstIfRoom() {
   if (WIDE.matches && !view.open && view.trainings.length) open(view.trainings[0].path);
 }
 
-async function begin() {
+function linkToken() {
   const found = /(?:^#|&)token=([A-Za-z0-9_-]+)/.exec(window.location.hash);
-  view.token = found ? found[1] : '';
+  return found ? found[1] : '';
+}
+
+async function begin() {
+  view.token = linkToken();
+  // A new link pasted into a tab that is already open changes only the fragment.
+  window.addEventListener('hashchange', () => {
+    const next = linkToken();
+    if (next && next !== view.token) {
+      view.token = next;
+      readAll().then(openFirstIfRoom);
+    }
+  });
   byId('refresh').addEventListener('click', readAll);
   byId('preview-close').addEventListener('click', () => byId('preview').close());
   byId('preview').addEventListener('click', (event) => {
