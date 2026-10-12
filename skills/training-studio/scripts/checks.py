@@ -30,6 +30,45 @@ def tagged(pattern: re.Pattern, text: str, token: re.Pattern) -> list[str]:
     return [found for group in pattern.findall(text) for found in token.findall(group)]
 
 
+# --- research plan --------------------------------------------------------------
+
+QUESTION_ID = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
+PLAN_SCOPES = ('public-web', 'supplied-only')
+
+
+def check_research_plan(plan) -> dict:
+    """Check a research plan is one harness-research will accept. `plan` is the parsed JSON."""
+    name = 'research-plan.items'
+    if not isinstance(plan, dict):
+        return result(name, ['The plan must be a JSON object.'])
+    problems = []
+    if plan.get('purpose') != 'planning':
+        problems.append('"purpose" must be "planning".')
+    if plan.get('scope') not in PLAN_SCOPES:
+        problems.append('"scope" must be one of: ' + ', '.join(PLAN_SCOPES))
+    if 'input_files' in plan:
+        problems.append('Leave out "input_files"; registering intake there makes '
+                        'harness-research discard its findings when intake is edited.')
+    items = plan.get('items')
+    if not isinstance(items, list) or not 1 <= len(items) <= 30:
+        problems.append('"items" must hold 1 to 30 questions.')
+        return result(name, problems)
+    seen = set()
+    for position, item in enumerate(items, start=1):
+        identifier = item.get('id') if isinstance(item, dict) else None
+        if not isinstance(identifier, str) or not QUESTION_ID.match(identifier):
+            problems.append(f'Question {position} needs an "id" of lowercase letters, '
+                            'digits and hyphens.')
+        elif identifier in seen:
+            problems.append(f'Question ID {identifier} is used more than once.')
+        else:
+            seen.add(identifier)
+        question = item.get('question') if isinstance(item, dict) else None
+        if not isinstance(question, str) or not question.strip():
+            problems.append(f'Question {position} has no question text.')
+    return result(name, problems)
+
+
 # --- blueprint ----------------------------------------------------------------
 
 def parse_blueprint(text: str) -> dict:
@@ -403,6 +442,26 @@ def fenced_fields(text: str) -> tuple[dict[tuple[str, ...], str], list[str]]:
     return fields, problems
 
 
+STATED_COUNT = re.compile(r'\b([\d,]+) of [\d,]+ characters\b')
+
+
+def stated_counts(text: str) -> dict[tuple[str, ...], int]:
+    """Character counts the file states beside its fields, keyed like the fields."""
+    stated, path, inside = {}, [], False
+    for line in text.splitlines():
+        if line.startswith('```'):
+            inside = not inside
+        elif not inside:
+            head = HEADING.match(line)
+            if head:
+                path = path[:len(head.group(1)) - 2] + [head.group(2)]
+            else:
+                found = STATED_COUNT.search(line)
+                if found:
+                    stated[tuple(path)] = int(found.group(1).replace(',', ''))
+    return stated
+
+
 def goal_comments(text: str) -> dict[str, dict]:
     """For each goal heading: the success criteria it carries and objectives it assesses."""
     goals, current, in_goals, inside = {}, None, False, False
@@ -468,6 +527,14 @@ def check_yoodli(text: str, profile: dict, scenario: dict | None,
 
     sizes, used = [], {'context_chars', 'personas_max'}
     counts = {'Context': len(value('Context'))}
+    stated = stated_counts(text)
+
+    def confirm(path: tuple[str, ...], actual: int) -> None:
+        if path in stated and stated[path] != actual:
+            sizes.append(f'{" / ".join(path)} states {stated[path]} characters '
+                         f'but has {actual}.')
+
+    confirm(('Context',), counts['Context'])
     if counts['Context'] > limits['context_chars']['value']:
         sizes.append(f'Context is {counts["Context"]} characters; '
                      f'the limit is {limits["context_chars"]["value"]}.')
@@ -478,6 +545,7 @@ def check_yoodli(text: str, profile: dict, scenario: dict | None,
         for field, limit in YOODLI_GOAL_LIMITS:
             used.add(limit)
             size = counts[f'{goal} {field}'] = len(value('Goals', goal, field))
+            confirm(('Goals', goal, field), size)
             if size > limits[limit]['value']:
                 sizes.append(f'{goal}: {field} is {size} characters; '
                              f'the limit is {limits[limit]["value"]}.')
@@ -555,7 +623,8 @@ def practice(parsed: dict, yoodli_texts: list[str]) -> dict:
 
 def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dict],
               skipped: list[str], unavailable: dict[str, str],
-              without_scenario: list[str]) -> dict:
+              without_scenario: list[str], pending_question: str | None = None,
+              decisions: list[dict] | None = None) -> dict:
     """Whether the training is complete, what blocks it, and what it had to leave out.
 
     `artifacts` lists each artifact's name, stage and status. `without_scenario` names the
@@ -570,7 +639,12 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
             blocking.append(f"{outcome['check']} failed")
         elif outcome['status'] == 'unavailable':
             blocking.append(f"{outcome['check']} could not run: {outcome['problems'][0]}")
+    if pending_question:
+        blocking.append(f'A question is waiting on the user: {pending_question}')
     limitations = [f'{stage} was skipped' for stage in skipped]
+    limitations += [f"{decision['artifact']} was accepted as it was after its inputs "
+                    f"changed: {decision['reason']}" for decision in decisions or []
+                    if decision.get('decision') == 'accepted-stale']
     limitations += [f'{stage} unavailable: {reason}' for stage, reason in unavailable.items()]
     approved = {item['name'] for item in artifacts if item['status'] == 'approved'}
     scenario_wanted = 'scenario' not in skipped and 'scenario' not in unavailable

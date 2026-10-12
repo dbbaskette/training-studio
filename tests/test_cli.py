@@ -60,8 +60,8 @@ class Flow(TrainingCase):
     def research(self, *init_args) -> None:
         self.cli('init', '--title', 'Rolling restarts', *init_args)
         self.make('intake', 'intake.md', '# Intake\n\n## Topic\nRolling restarts\n')
-        plan = {'topic': 'Rolling restarts', 'items': helpers.RESEARCH['items']}
-        self.make('research-plan', '.training-studio/research-plan.json', json.dumps(plan))
+        self.make('research-plan', '.training-studio/research-plan.json',
+                  json.dumps(helpers.PLAN))
         self.write('.harness-research/research.json', json.dumps(helpers.RESEARCH))
         self.make('research', '.harness-research/research-report.md', '# Research brief\n')
 
@@ -83,7 +83,7 @@ class Flow(TrainingCase):
     def deck(self, level: str | None = None, objectives=('O1', 'O2', 'O3')) -> None:
         at = f'@{level}' if level else ''
         folder = f'{level}/' if level else ''
-        self.write(f'{folder}deck.pptx', 'stand-in for a built deck')
+        self.write(f'{folder}deck.pptx', helpers.DECK)
         coverage = self.root.parent / 'coverage.json'
         coverage.write_text(json.dumps({objective: [2] for objective in objectives}))
         self.cli('save', f'deck{at}', '--built', '--coverage', str(coverage))
@@ -141,7 +141,7 @@ class ContractTests(TrainingCase):
 
     def test_unreadable_input_is_a_structured_error(self):
         self.run_cli('init', '--title', 'Topic')
-        self.write('deck.pptx', 'deck')
+        self.write('deck.pptx', helpers.DECK)
         bad = self.write('coverage.json', '{not json')
         self.assertIn('error', self.run_cli('save', 'deck', '--coverage', str(bad), expect=2))
         missing = self.run_cli('save', 'deck', '--coverage', 'nowhere.json', expect=2)
@@ -212,7 +212,7 @@ class CheckTests(Flow):
         report = self.check()
         self.assertTrue(report['checks_passed'])
         self.assertFalse(report['ready'])
-        self.assertEqual((report['passed'], report['checks']), (4, []))
+        self.assertEqual((report['passed'], report['checks']), (5, []))
         for reason in ('document is not-started', 'brief is not-started',
                        'deck is not-started', 'No scenario file found.'):
             self.assertIn(reason, report['blocking'])
@@ -238,7 +238,7 @@ class CheckTests(Flow):
         report = self.check('--complete')
         self.assertEqual((report['checks_passed'], report['ready'], report['blocking']),
                          (True, True, []))
-        self.assertEqual(report['passed'], 12)
+        self.assertEqual(report['passed'], 13)
         self.assertEqual(report['checks'], [])
         self.assertEqual(report['limitations'], ['yoodli:main has no export'])
         self.assertEqual(report['practice'],
@@ -246,7 +246,7 @@ class CheckTests(Flow):
         self.assertEqual(len(report['warnings']), 1)
         self.assertIn('provisional', report['warnings'][0])
         everything = self.check('--all')
-        self.assertEqual(len(everything['checks']), 12)
+        self.assertEqual(len(everything['checks']), 13)
         self.assertEqual(self.by_name(everything)['document.coverage']['basis'], 'declared')
 
     def test_a_two_module_course_reaches_ready(self):
@@ -281,7 +281,7 @@ class CheckTests(Flow):
     def test_row_20_replacing_the_deck_voids_its_coverage_review(self):
         self.research()
         self.complete()
-        self.write('deck.pptx', 'a different deck')
+        self.write('deck.pptx', helpers.DECK + 'a different deck')
         self.cli('save', 'deck', '--built')
         report = self.check()
         self.assertEqual(self.by_name(report)['deck.coverage']['status'], 'unavailable')
@@ -355,6 +355,105 @@ class CheckTests(Flow):
         self.assertEqual(report['limitations'][:3],
                          ['brief was skipped', 'deck was skipped', 'scenario was skipped'])
         self.assertEqual(report['practice'], {})
+
+
+class DryRunFindingTests(Flow):
+    """Behaviour added after an assistant followed the guidance end to end."""
+
+    def test_row_51_a_pending_question_blocks_readiness(self):
+        self.research()
+        self.complete()
+        self.cli('checkpoint', '--question', 'Is the client timeout section right?')
+        report = self.check('--complete', expect=1)
+        self.assertEqual(report['blocking'], ['A question is waiting on the user: '
+                                              'Is the client timeout section right?'])
+        self.cli('checkpoint', '--no-question')
+        self.assertTrue(self.check('--complete')['ready'])
+
+    def test_row_52_an_accepted_stale_artifact_is_listed_as_a_limitation(self):
+        self.research()
+        self.complete()
+        self.write('blueprint.md', example('blueprint.md') + '\nA note.\n')
+        self.cli('approve', 'blueprint')
+        for name in ('document', 'brief'):
+            self.cli('approve', name, '--accept-stale', 'The note changes nothing taught')
+        report = self.check()
+        self.assertIn('document was accepted as it was after its inputs changed: '
+                      'The note changes nothing taught', report['limitations'])
+
+    def test_row_53_an_invalid_research_plan_fails_its_check(self):
+        self.cli('init', '--title', 'Rolling restarts')
+        self.make('intake', 'intake.md', 'v1\n')
+        plan = dict(helpers.PLAN, input_files=['intake.md'],
+                    items=[{'id': 'Q0', 'question': ''}])
+        self.write('.training-studio/research-plan.json', json.dumps(plan))
+        failed = self.by_name(self.check(expect=1))['research-plan.items']
+        self.assertEqual(len(failed['problems']), 3)
+        self.write('.training-studio/research-plan.json', '{not json')
+        failed = self.by_name(self.check(expect=1))['research-plan.items']
+        self.assertEqual(failed['problems'], ['The plan is not valid JSON.'])
+
+    def test_row_54_a_placeholder_cannot_stand_in_for_the_deck(self):
+        self.research()
+        self.content()
+        self.write('deck.pptx', 'A placeholder until the real deck is built.')
+        refusal = self.cli('save', 'deck', '--built', expect=2)
+        self.assertIn('is not a PowerPoint file', refusal['error'])
+        self.assertEqual(self.cli('status')['artifacts']['deck'], 'draft')
+
+    def test_row_55_each_level_pins_its_own_deck_task(self):
+        self.cli('init', '--title', 'Topic', '--levels', '101,201')
+        self.cli('pin', 'harness-slides', '--task', 'a', '--runtime', '/r', '--level', '101')
+        pins = self.cli('pin', 'harness-slides', '--task', 'b', '--runtime', '/r',
+                        '--level', '201')
+        self.assertEqual((pins['harness-slides@101']['task'], pins['harness-slides@201']['task']),
+                         ('a', 'b'))
+        self.assertIn('The level is one of', self.cli(
+            'pin', 'harness-slides', '--task', 'c', '--runtime', '/r', '--level', '301',
+            expect=2)['error'])
+
+    def test_row_57_scenario_files_that_were_passed_over_are_named(self):
+        self.research('--levels', '101')
+        self.write('scenarios/keys-quiz.md', example('scenario.md'))
+        warnings = self.check()['warnings']
+        self.assertTrue(any(text.startswith('scenarios/keys-quiz.md is not used as a scenario')
+                            for text in warnings), warnings)
+
+    def test_a_scenario_whose_mode_differs_from_the_practice_plan_is_flagged(self):
+        self.research()
+        self.content(blueprint=example('blueprint.md').replace('- main: roleplay.',
+                                                               '- main: tutor.'))
+        self.scenario()
+        warnings = self.check()['warnings']
+        self.assertIn('The practice plan lists scenario:main as tutor; its scenario file '
+                      'says roleplay. The scenario file decides.', warnings)
+
+    def test_approving_says_which_checks_are_failing(self):
+        self.research()
+        self.content()
+        self.write('deck.pptx', helpers.DECK)
+        coverage = self.root.parent / 'coverage.json'
+        coverage.write_text(json.dumps({'O1': [2], 'O2': [3], 'O3': []}))
+        self.cli('save', 'deck', '--built', '--coverage', str(coverage))
+        self.assertEqual(self.cli('approve', 'deck')['failing_checks'], ['deck.coverage'])
+
+    def test_status_summarises_the_approved_research(self):
+        self.cli('init', '--title', 'Rolling restarts')
+        self.assertIsNone(self.cli('status')['research'])
+        self.cli('skip', 'deck', '--unavailable', '--reason', 'Not installed')
+        self.research_only()
+        report = self.cli('status')
+        self.assertEqual(report['research']['findings'],
+                         {'supported': 5, 'insufficient': 1, 'pending': 1, 'contradicted': 1})
+        self.assertEqual(report['research']['run'], 'run-1')
+        self.assertEqual(report['unavailable_stages'], {'deck': 'Not installed'})
+
+    def research_only(self) -> None:
+        self.make('intake', 'intake.md', 'v1\n')
+        self.make('research-plan', '.training-studio/research-plan.json',
+                  json.dumps(helpers.PLAN))
+        self.write('.harness-research/research.json', json.dumps(helpers.RESEARCH))
+        self.make('research', '.harness-research/research-report.md', '# Research brief\n')
 
 
 class LevelCheckTests(Flow):

@@ -12,8 +12,11 @@ One directory is one training: the directory the harness was launched in. The he
 Run `training.py status`.
 
 - **`No training in this directory`:** read [intake](references/intake.md).
-- **A status report:** tell the user the title, stage, level, next step, pending question and anything stale, in four lines. Then read only the reference for `stage` and continue from `next_step`.
-- **Any other error:** show it and stop. Never edit `.training-studio/` by hand.
+- **A status report:** tell the user briefly the title, stage, level, next step and anything stale or waiting on them. Then:
+  - read the reference for `stage` in the map below, with gates if `pending_question` is set and levels if the training has them, and continue from `next_step`;
+  - if `pins` has `harness-research`, refresh it with `node "<runtime>/scripts/harness-research.mjs" status --project .` and tell the user if research then shows as `draft`;
+  - if `stage` is `done`, run `training.py check --complete` before saying anything about completeness.
+- **Any other error:** show it and stop. Never edit `session.json` or the history by hand.
 
 ## Loading map
 
@@ -21,14 +24,14 @@ Read the one file for the step in hand, once per session. Open only the artifact
 
 | When | Read | Template |
 | --- | --- | --- |
-| Drafting research questions | [research-plan](references/stages/research-plan.md) | |
-| Running or extending research | [research-handoff](references/stages/research-handoff.md) | |
-| Designing a teaching plan | [blueprint](references/stages/blueprint.md) | [blueprint](assets/examples/blueprint.md) |
-| Writing the learner guide | [document](references/stages/document.md) | [document](assets/examples/document.md) |
-| Writing the brief | [brief](references/stages/brief.md) | [product](assets/examples/product-brief.md) or [competitive](assets/examples/competitive-brief.md) |
-| Building the deck | [deck-handoff](references/stages/deck-handoff.md) | |
-| Scenarios and Yoodli | [scenario](references/stages/scenario.md), the [Yoodli profile](references/profiles/yoodli.md) and one mode: [roleplay](references/modes/roleplay.md), [pitch](references/modes/pitch.md), [tutor](references/modes/tutor.md) or [questionnaire](references/modes/questionnaire.md) | [scenario](assets/examples/scenario.md), [Yoodli](assets/examples/yoodli.md) |
-| Finishing | [package](references/stages/package.md) | |
+| Stage `research-plan`: drafting research questions | [research-plan](references/stages/research-plan.md) | |
+| Stage `research`: running or extending research | [research-handoff](references/stages/research-handoff.md) | |
+| Stage `blueprint`: designing a teaching plan | [blueprint](references/stages/blueprint.md) | [blueprint](assets/examples/blueprint.md) |
+| Stage `document`: writing the learner guide | [document](references/stages/document.md) | [document](assets/examples/document.md) |
+| Stage `brief`: writing the brief | [brief](references/stages/brief.md) | [product](assets/examples/product-brief.md) or [competitive](assets/examples/competitive-brief.md) |
+| Stage `deck`: building the deck | [deck-handoff](references/stages/deck-handoff.md) | |
+| Stage `scenario`: scenarios and Yoodli | [scenario](references/stages/scenario.md), the [Yoodli profile](references/profiles/yoodli.md) and one mode: [roleplay](references/modes/roleplay.md), [pitch](references/modes/pitch.md), [tutor](references/modes/tutor.md) or [questionnaire](references/modes/questionnaire.md) | [scenario](assets/examples/scenario.md), [Yoodli](assets/examples/yoodli.md) |
+| Stage `package` or `done`: finishing | [package](references/stages/package.md) | |
 | Presenting a gate | [gates](references/gates.md) | |
 | The training has levels | [levels](references/levels.md) | |
 | A short command such as status, check, redo or skip | [short-commands](references/short-commands.md) | |

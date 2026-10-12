@@ -40,6 +40,8 @@ Status is computed from the files each time. A hand edit shows as `draft` on the
 
 Do not use `--built` or `--from` to make a stale flag go away. They say the artifact was rebuilt against its current inputs, and the rebuild then needs approval again.
 
+**When the user has edited a file themselves:** `status` shows it as `draft` and what depends on it as `stale`. Tell them. If they are still working, `training.py save <artifact>` records the edit and approves nothing. When they are done, `training.py approve <artifact>` records it and approves it. Then rebuild what became stale, or ask whether to accept it as it is.
+
 ## Exports
 
 `document`, `brief` and each `yoodli:<id>` have an export, a `.docx` beside the source. Make it with `pandoc <source> -o <export>` if `pandoc` is on the path, otherwise with the harness's own document capability.
@@ -51,8 +53,8 @@ Do not use `--built` or `--from` to make a stale flag go away. They say the arti
 
 ## History and other rules
 
-- Earlier versions are in `.training-studio/history/<artifact>/<sha256>.<extension>`, in the order given by `events` in `session.json`. Restore one with `training.py save <artifact> --from <that file>`.
-- Never edit `session.json` or anything under `.training-studio/`.
+- Earlier versions are in `.training-studio/history/`, in a folder named for the artifact with `:` and `@` written as `-` (`document-201`, `scenario-main-101`), each file named by its SHA-256. `events` in `session.json` gives the order. Restore one with `training.py save <artifact> --from <that file>`.
+- Never edit `session.json` or the history. The research plan is the only file under `.training-studio/` that you write.
 - One command at a time. A second is refused while the first holds the lock.
 - A refusal is `{"error": ...}` with exit code 2. Show it to the user as it is.
 - The helper never commits to git. Commit for the user only when they ask.

@@ -21,13 +21,13 @@ One page, with these headings:
 ## Run
 
 1. Load the `harness-slides` skill and follow its entrypoint with this directory as the project. Start a task the first time; on a later visit, continue the pinned task through that skill's resume entrypoint.
-2. `training.py pin harness-slides --task <id> --runtime <path>`.
+2. `training.py pin harness-slides --task <id> --runtime <path>`. With levels, use the level's folder as the project and add `--level <level>`.
 3. Give it `deck-handoff.md` and the source files, and follow its own guidance. Intake is settled: answer its intake questions from the handoff. Its own draft and review steps with the user still apply.
 4. Creating or changing a Google Slides deck follows that skill's authorisation rules.
 
 ## Record
 
-- **PowerPoint:** `training.py save deck --from <the built .pptx>`.
+- **PowerPoint:** `training.py save deck --from <the built .pptx>`. The helper refuses a file that is not a real PowerPoint file. If the deck could not be built, mark it unavailable; never record a placeholder.
 - **Google Slides:** write `deck-link.md` with the deck's URL, title and ID, then `training.py save deck --built`.
 
 ## Review coverage

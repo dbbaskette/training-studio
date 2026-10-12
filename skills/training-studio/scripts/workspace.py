@@ -31,6 +31,7 @@ SHARED = {
 }
 PER_LEVEL = ('blueprint', 'document', 'brief', 'deck')
 RESEARCH_RECORD = '.harness-research/research.json'
+PPTX_SIGNATURE = b'PK\x03\x04'
 RESEARCH_COPY = 'research-report.md'
 SHARED_DELIVERABLES = ('README.md', 'intake.md', RESEARCH_COPY)
 LEVEL_DELIVERABLES = ('blueprint.md', 'document.md', 'document.docx', 'competitive-brief.md',
@@ -394,6 +395,10 @@ def record(root: Path, session: dict, name: str, built: bool) -> dict:
     path = managed(root, spec['file'])
     if sha256_file(path) is None:
         raise WorkspaceError(f"Nothing to record: {spec['file']} does not exist.")
+    if spec['file'].endswith('.pptx') and path.read_bytes()[:4] != PPTX_SIGNATURE:
+        raise WorkspaceError(f"{spec['file']} is not a PowerPoint file. A placeholder cannot "
+                             'stand in for the deck; if it could not be built, mark the deck '
+                             'unavailable.')
     known = session['artifacts'].get(name, {})
     pins = pinned_inputs(root, session, name) if built or 'built_from' not in known else None
     entry = session['artifacts'].setdefault(name, {})
@@ -524,6 +529,18 @@ def export_states(root: Path, session: dict) -> dict[str, str]:
     return states
 
 
+def research_summary(session: dict) -> dict | None:
+    """When research was approved, its run, and how many findings have each status."""
+    approved = session['artifacts'].get('research', {}).get('approved')
+    if not approved or not session.get('research'):
+        return None
+    counts: dict[str, int] = {}
+    for value in (session.get('findings') or {}).values():
+        counts[value] = counts.get(value, 0) + 1
+    return {'approved_at': approved['at'], 'run': session['research']['run'],
+            'findings': counts}
+
+
 def status(root: Path) -> dict:
     session = load(root)
     state = statuses(root, session)
@@ -537,8 +554,9 @@ def status(root: Path) -> dict:
         'next_step': session.get('next_step'),
         'pending_question': session.get('pending_question'),
         'settings': session['settings'],
-        'unavailable': session['unavailable'],
+        'unavailable_stages': session['unavailable'],
         'pins': session['pins'],
+        'research': research_summary(session),
         'artifacts': state,
         'files': {name: artifact(root, session, name)['file'] for name in state},
         'exports': export_states(root, session),
@@ -728,13 +746,18 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
 
 
 @mutating
-def pin(root: Path, skill: str, task: str, runtime: str, run: str | None = None) -> dict:
-    """Record the harness skill task this training resumes with."""
+def pin(root: Path, skill: str, task: str, runtime: str, run: str | None = None,
+        level: str | None = None) -> dict:
+    """Record the harness skill task this training, or one of its levels, resumes with."""
     session = load(root)
     check_choice(skill, PINNABLE, 'A pinned skill')
-    session['pins'][skill] = {'task': task, 'runtime': runtime}
+    if level is not None and level not in session['levels']:
+        raise WorkspaceError('The level is one of: ' + (', '.join(session['levels'])
+                                                        or 'none; this is a plain training'))
+    key = qualify(skill, level)
+    session['pins'][key] = {'task': task, 'runtime': runtime}
     if run:
-        session['pins'][skill]['run'] = run
+        session['pins'][key]['run'] = run
     log(session, 'pin', skill=skill, task=task)
     store(root, session)
     return session['pins']

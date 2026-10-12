@@ -43,6 +43,38 @@ def without_section(text: str, title: str) -> str:
     return '\n'.join(kept) + '\n'
 
 
+class ResearchPlanTests(unittest.TestCase):
+    def problems(self, **changes) -> list:
+        return checks.check_research_plan(dict(helpers.PLAN, **changes))['problems']
+
+    def test_a_valid_plan_passes(self):
+        result = checks.check_research_plan(helpers.PLAN)
+        self.assertEqual((result['check'], result['status']), ('research-plan.items', 'passed'))
+
+    def test_the_plan_must_be_what_harness_research_accepts(self):
+        self.assertEqual(self.problems(purpose='teaching'), ['"purpose" must be "planning".'])
+        self.assertEqual(self.problems(scope='everything'),
+                         ['"scope" must be one of: public-web, supplied-only'])
+        self.assertTrue(self.problems(input_files=['intake.md'])[0].startswith(
+            'Leave out "input_files"'))
+        self.assertEqual(checks.check_research_plan([])['problems'],
+                         ['The plan must be a JSON object.'])
+
+    def test_one_to_thirty_questions(self):
+        question = {'id': 'a', 'question': 'What?'}
+        many = [dict(question, id=f'q{n}') for n in range(31)]
+        for items in ([], many, 'none'):
+            self.assertEqual(self.problems(items=items), ['"items" must hold 1 to 30 questions.'])
+
+    def test_each_question_needs_a_usable_id_and_text(self):
+        items = [{'id': 'Q0', 'question': 'What?'}, {'id': 'cost', 'question': ' '},
+                 {'id': 'cost', 'question': 'How much?'}]
+        self.assertEqual(self.problems(items=items), [
+            'Question 1 needs an "id" of lowercase letters, digits and hyphens.',
+            'Question 2 has no question text.',
+            'Question ID cost is used more than once.'])
+
+
 class BlueprintTests(unittest.TestCase):
     def lint(self, text=BLUEPRINT, findings=helpers.FINDINGS, level=None):
         return checks.lint_blueprint(text, findings, level)
@@ -385,15 +417,22 @@ class YoodliTests(unittest.TestCase):
     def test_each_limit_is_enforced_with_its_count(self):
         over = YOODLI.replace('You are Priya Nair', 'x' * 10000 + ' You are', 1)
         self.assertEqual(self.problems('limits', over),
-                         ['Context is 10656 characters; the limit is 10000.'])
+                         ['Context states 666 characters but has 10656.',
+                          'Context is 10656 characters; the limit is 10000.'])
         over = YOODLI.replace('States the batch-by-batch', 'y' * 1000 + ' States')
         self.assertEqual(self.problems('limits', over),
-                         ['Goal 1: Achieved is 1039 characters; the limit is 1000.'])
+                         ['Goals / Goal 1 / Achieved states 57 characters but has 1039.',
+                          'Goal 1: Achieved is 1039 characters; the limit is 1000.'])
         persona = YOODLI[YOODLI.index('### Persona 1'):YOODLI.index('## Objections')]
         extra = ''.join(persona.replace('Persona 1', f'Persona {n}') for n in (2, 3, 4))
         self.assertEqual(self.problems('limits', YOODLI.replace('## Objections',
                                                                 extra + '## Objections')),
                          ['4 personas; the limit is 3.'])
+
+    def test_row_56_a_stated_count_must_be_the_real_count(self):
+        text = YOODLI.replace('666 of 10,000 characters', '12 of 10,000 characters')
+        self.assertEqual(self.problems('limits', text),
+                         ['Context states 12 characters but has 666.'])
 
     def test_every_success_criterion_must_be_carried_by_a_goal(self):
         text = YOODLI.replace('<!-- criterion: 3 4 -->', '<!-- criterion: 3 -->')

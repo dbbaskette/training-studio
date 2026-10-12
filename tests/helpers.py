@@ -15,7 +15,9 @@ CONTENT = {
     'blueprint': ('# Blueprint\n\n## Objectives\n### O1 — Recall a thing [recall]\n'
                   '### O2 — Explain a thing [explain]\n\n## M1 — Basics (20 min)\n'),
     'research-plan': '{"topic": "T", "items": []}\n',
+    'deck': 'PK\x03\x04 deck v1\n',
 }
+DECK = CONTENT['deck']
 RESEARCH = {
     'schema': 1,
     'owner': 'harness-research',
@@ -50,6 +52,13 @@ FINDINGS = {
     'zero-downtime': 'contradicted',
     'other-platform': 'supported',
     'licensing': 'supported',
+}
+PLAN = {
+    'topic': 'Rolling restarts',
+    'purpose': 'planning',
+    'scope': 'public-web',
+    'sources': [],
+    'items': [dict(item, public_query=None, claim=None) for item in RESEARCH['items']],
 }
 CHAIN = ('intake', 'research-plan', 'research', 'blueprint', 'document')
 

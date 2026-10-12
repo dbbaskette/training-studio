@@ -49,7 +49,7 @@ Changing a setting affects only what uses it. A new brand makes the deck stale a
 
 ## Ready, or not
 
-`check` reports two things. **Checks passed** means nothing it could check has failed. **Ready** means the training is complete: every wanted file is approved, nothing is stale, no check failed or could not run, and no Word copy is out of date. It lists what is blocking, and separately what was left out because you skipped it or it could not be produced.
+`check` reports two things. **Checks passed** means nothing it could check has failed. **Ready** means the training is complete: every wanted file is approved, nothing is stale, no check failed or could not run, and no Word copy is out of date. A question still waiting on you also blocks it. It lists what is blocking, and separately what was left out because you skipped it, it could not be produced, or you accepted it as it was after something it was built from changed.
 
 Some checks are stronger than others, and the report says which:
 
@@ -77,7 +77,7 @@ valkey-training/
   .harness-slides/         owned by harness-slides
 ```
 
-With levels, `intake.md`, `research-report.md` and `sources/` stay at the top, and everything from `blueprint.md` down sits in a folder per level: `101/`, `301/`.
+With levels, `intake.md`, `research-report.md` and `sources/` stay at the top, and everything from `blueprint.md` down sits in a folder per level: `101/`, `301/`. Each level's deck is built as its own harness-slides task inside that folder.
 
 Every version of every file that was saved or approved is kept under `.training-studio/history/`, so an earlier version can be restored.
 

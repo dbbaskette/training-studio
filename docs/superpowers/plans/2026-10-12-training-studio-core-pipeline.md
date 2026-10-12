@@ -138,7 +138,7 @@ All commands print JSON. A refusal, malformed JSON, a missing or unreadable file
 | `export ARTIFACT` | `--file PATH` or `--unavailable REASON` |
 | `skip STAGE` | `--reason R`, `--unavailable`, `--clear` |
 | `checkpoint` | `--stage`, `--level`, `--next`, `--question` or `--no-question`, `--deck-target`, `--brand`, `--brief-kind`, `--levels` (levelled trainings only) |
-| `pin SKILL` | `--task`, `--runtime`, `--run` |
+| `pin SKILL` | `--task`, `--runtime`, `--run`, `--level` (one `harness-slides` task per level) |
 | `check` | `--complete`, `--all`. Exit 1 if any check failed; with `--complete`, exit 1 unless ready. Lists only the checks that did not pass unless `--all` is given |
 
 `check` output:
@@ -157,13 +157,15 @@ All commands print JSON. A refusal, malformed JSON, a missing or unreadable file
 }
 ```
 
-`status` returns one status per artifact as a flat map. Neither command returns the session record or its event log.
+`status` returns one status per artifact as a flat map, the stages marked unavailable as `unavailable_stages`, and a `research` summary once research is approved: its approval time, run and the count of findings by status. Neither command returns the session record or its event log. `approve` also returns `failing_checks`, the checks failing at that moment.
 
 Readiness (spec 6.7):
 
 - Every artifact of a wanted stage must be `approved`; otherwise `blocking` gets `<artifact> is <status>`.
 - A wanted scenario stage with no scenario file is blocking.
 - A failed check is blocking. A check that could not run is blocking, unless it belongs to a skipped or unavailable stage.
+- A pending question is blocking.
+- An artifact approved with `--accept-stale` is a limitation, with its reason.
 - An `outdated` export is blocking. When the scenario stage is wanted, the brief's export must be `current`; if it is `unavailable`, that is a limitation reading "Yoodli handoff incomplete: no brief export"; if `missing`, it is blocking.
 - Skipped and unavailable stages, and other `missing` or `unavailable` exports, are limitations.
 - `ready` is true when `blocking` is empty.
@@ -173,6 +175,8 @@ Readiness (spec 6.7):
 Every format has an example under `assets/examples/`. The example is the template the guidance links to and the fixture the tests read.
 
 **Blueprint.** As revision 1, with three changes. In a levelled training the `## Frame` section has a line `Level: 301`, which must match the level of the folder; a mismatch or a missing line fails `blueprint.structure`. When two levels state the same objective, ignoring case and spacing, `check` adds a warning naming both. The assessment line is `- O1: Check: <question> | Observe: <what practice should show>`. The section `## Practice plan` replaces `## Interactive plan`; each line is `- <scenario-id>: <mode>. Objectives: O2, O3. <note>`, and the section is optional. Checks: `blueprint.structure`, `blueprint.objectives`, `blueprint.key-points`, `blueprint.citations`. In a levelled training every check name carries its level, as in `blueprint.structure@301` and `yoodli:main.fields@301`. A practice-plan line with an unknown mode or objective fails `blueprint.structure`. Carry over the parser and lint from revision 1 and drop the per-module mode requirement.
+
+**Research plan.** `research-plan.items`: the plan is a JSON object with `purpose` `planning`, a known `scope`, no `input_files`, and 1 to 30 items, each with a unique lowercase ID and question text.
 
 **Document.** As revision 1. The check is renamed `document.coverage` and its result carries `"basis": "declared"`.
 
@@ -201,7 +205,7 @@ An evidence section names its findings in `<!-- findings: licensing migration-ef
 **Yoodli scenario.** First line after the title: `<!-- scenario: <id> -->`. Headings and fenced `text` blocks as revision 1: `## Roleplay name`, `## Type`, `## Description`, `## Context`, `## Personas` with `### Persona N` and `#### Name`, `Role`, `Demeanor`, `Background`, `Behaviors`, `## Objections`, `## Goals` with `### Goal N` and `#### Name`, `Type`, `Explanation`, `Achieved`, `Missed`, then `## AI assets`, `## Knowledge-based goal source`, `## Settings`. Under each `### Goal N`, outside the blocks: `<!-- criterion: 2 -->` (required, one or more numbers) and `<!-- assesses: O3 -->` (optional).
 
 - `yoodli:<id>.fields`: required fields present; every persona has all five fields; the type equals `profile.mode_types[mode]` for the scenario's mode; goal types are in the profile; no duplicate heading path; no unterminated fence.
-- `yoodli:<id>.limits`: every limited field is within its limit. The result carries `counts`.
+- `yoodli:<id>.limits`: every limited field is within its limit, and every count the file states is the real one. The result carries `counts`.
 - `yoodli:<id>.mapping`: every success criterion number in the scenario file appears in some goal's `criterion` comment; no goal names a criterion out of range; every `assesses` objective exists in the blueprint.
 
 **Coverage and practice.**
@@ -296,6 +300,13 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 48 | Levels 101 and 301; 101 complete, 301 not started | `check --complete` | `ready` false; blocking names the 301 artifacts |
 | 49 | Levels 101 and 301 whose blueprints state the same objective | `check` | a warning names both levels; no check fails |
 | 50 | `301/blueprint.md` whose frame says `Level: 201` | `check` | `blueprint.structure@301` fails |
+| 51 | Everything approved | `checkpoint --question Q` | `ready` false until `--no-question` |
+| 52 | A stale artifact approved with `--accept-stale R` | `check` | limitations name the artifact and R |
+| 53 | A research plan with 31 items, a bad ID, empty text or `input_files` | `check` | `research-plan.items` fails |
+| 54 | `deck.pptx` that is not a PowerPoint file | `save deck` | refused; nothing recorded |
+| 55 | Levels 101 and 201 | `pin harness-slides --level` for each | two pins, one per level |
+| 56 | A Yoodli file stating "12 of 10,000 characters" for a 666-character field | `check` | the limits check fails |
+| 57 | A levelled training with a top-level `scenarios/x.md` | `check` | a warning names the file |
 
 ### A8. Guidance
 
@@ -420,6 +431,8 @@ git commit -m "Add the command line, readiness report and guidance"
 - [ ] **Step 6: Record and commit.** List problems found and follow-ups in `docs/acceptance.md`, run the suite, and commit.
 
 Steps 3 to 5 need the user and their accounts. Do not simulate them.
+
+**Guidance dry run (done).** Before live acceptance, an independent agent followed the skill end to end with only the guidance, using stand-ins for research and the deck. Its 18 findings led to rows 51 to 57 of A7 and to the guidance changes listed in Appendix C of the spec. It does not replace steps 3 to 5.
 
 ## Spec coverage
 
