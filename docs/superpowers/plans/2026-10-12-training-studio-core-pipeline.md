@@ -59,11 +59,21 @@ Stages: `intake`, `research-plan`, `research`, `blueprint`, `document`, `brief`,
 | `scenario:<id>` | `scenario.md` for `main`, else `scenarios/<id>.md` | scenario | none |
 | `yoodli:<id>` | `yoodli/<id>.md` | scenario | `blueprint`, `brief`, `scenario:<id>`, `profile` |
 
+**Levels.** `session['levels']` is empty for a plain training, or a sorted list drawn from `101`, `201`, `301`, `401`. In a levelled training every artifact from `blueprint` down exists once per level:
+
+- its name is the base name with `@<level>`, as in `blueprint@301`, `scenario:main@301`, `yoodli:main@301`;
+- its file is the base file inside the level's folder, as in `301/blueprint.md`, `301/scenarios/exec-cost.md`, `301/yoodli/exec-cost.md`;
+- its inputs are the same-level artifacts. No artifact of one level is an input to another level.
+
+`intake`, `research-plan` and `research` are never qualified. Artifact names are listed shared first, then level by level in ascending order, each level in the order of the table above. A plain training cannot become levelled; levels can be added to or removed from a levelled one. Saving a blueprint updates `session['sizing'][<level or "">]`.
+
 `inputs(root, session, name)` returns one dictionary: each upstream artifact name mapped to the SHA-256 of its file (or `None` if missing), each `setting:<key>` mapped to its value, and `profile` mapped to the SHA-256 of `assets/profiles/yoodli.json`. This dictionary is what `built_from` and `approved.inputs` store.
+
+The `research` input is the exception: it is a fingerprint of the whole bundle, the SHA-256 of the three hashes of the live report, the record `.harness-research/research.json` and the approved copy `research-report.md`. A change to any of the three therefore makes everything built from research stale (rows 7 to 9 of A7).
 
 Two module-level paths in `workspace.py` are resolved from the script's own location: `SKILL_DIR`, the package the helper runs from, and `PROFILE`, the Yoodli profile inside it. Tests point them at temporary copies to exercise rows 15 and 37 of A7.
 
-Scenario discovery, computed on every read: `scenario.md` is `main`; `scenarios/<id>.md` where `<id>` matches `^[a-z0-9][a-z0-9-]{0,63}$`. Both `scenario.md` and `scenarios/main.md` present is a refusal. Other files under `scenarios/` are reported as ignored. Artifact names are the fixed ones plus `scenario:<id>` and `yoodli:<id>` for every ID that is discovered or already recorded in the session, so a removed scenario stays visible.
+Scenario discovery, computed on every read, inside each level's folder (or the training directory for a plain training): `scenario.md` is `main`; `scenarios/<id>.md` where `<id>` matches `^[a-z0-9][a-z0-9-]{0,63}$`. Both `scenario.md` and `scenarios/main.md` present is a refusal. Other files under `scenarios/` are reported as ignored, and so is a top-level `scenario.md` or `scenarios/` in a levelled training. Artifact names are the fixed ones plus `scenario:<id>` and `yoodli:<id>` for every ID that is discovered or already recorded in the session, so a removed scenario stays visible.
 
 Skip rule: `brief` can be skipped only when `scenario` is skipped; `scenario` can be restored only when `brief` is wanted.
 
@@ -121,13 +131,13 @@ All commands print JSON. A refusal, malformed JSON, a missing or unreadable file
 
 | Command | Flags |
 | --- | --- |
-| `init` | `--title T` (required), `--brief-kind product\|competitive` (default `product`), `--deck-target pptx\|google`, `--brand B` |
+| `init` | `--title T` (required), `--levels 101,301` (omit for a plain training), `--brief-kind product\|competitive` (default `product`), `--deck-target pptx\|google`, `--brand B` |
 | `status` | none. Output adds `scenarios` (`found`, `ignored`) and each artifact's `export` state |
 | `save ARTIFACT` | `--from FILE` or `--built` (mutually exclusive), `--coverage FILE` |
 | `approve ARTIFACT` | `--accept-stale REASON` |
 | `export ARTIFACT` | `--file PATH` or `--unavailable REASON` |
 | `skip STAGE` | `--reason R`, `--unavailable`, `--clear` |
-| `checkpoint` | `--stage`, `--next`, `--question` or `--no-question`, `--deck-target`, `--brand`, `--brief-kind` |
+| `checkpoint` | `--stage`, `--level`, `--next`, `--question` or `--no-question`, `--deck-target`, `--brand`, `--brief-kind`, `--levels` (levelled trainings only) |
 | `pin SKILL` | `--task`, `--runtime`, `--run` |
 | `check` | `--complete`, `--all`. Exit 1 if any check failed; with `--complete`, exit 1 unless ready. Lists only the checks that did not pass unless `--all` is given |
 
@@ -162,7 +172,7 @@ Readiness (spec 6.7):
 
 Every format has an example under `assets/examples/`. The example is the template the guidance links to and the fixture the tests read.
 
-**Blueprint.** As revision 1, with two changes. The assessment line is `- O1: Check: <question> | Observe: <what practice should show>`. The section `## Practice plan` replaces `## Interactive plan`; each line is `- <scenario-id>: <mode>. Objectives: O2, O3. <note>`, and the section is optional. Checks: `blueprint.structure`, `blueprint.objectives`, `blueprint.key-points`, `blueprint.citations`. A practice-plan line with an unknown mode or objective fails `blueprint.structure`. Carry over the parser and lint from revision 1 and drop the per-module mode requirement.
+**Blueprint.** As revision 1, with three changes. In a levelled training the `## Frame` section has a line `Level: 301`, which must match the level of the folder; a mismatch or a missing line fails `blueprint.structure`. When two levels state the same objective, ignoring case and spacing, `check` adds a warning naming both. The assessment line is `- O1: Check: <question> | Observe: <what practice should show>`. The section `## Practice plan` replaces `## Interactive plan`; each line is `- <scenario-id>: <mode>. Objectives: O2, O3. <note>`, and the section is optional. Checks: `blueprint.structure`, `blueprint.objectives`, `blueprint.key-points`, `blueprint.citations`. In a levelled training every check name carries its level, as in `blueprint.structure@301` and `yoodli:main.fields@301`. A practice-plan line with an unknown mode or objective fails `blueprint.structure`. Carry over the parser and lint from revision 1 and drop the per-module mode requirement.
 
 **Document.** As revision 1. The check is renamed `document.coverage` and its result carries `"basis": "declared"`.
 
@@ -277,6 +287,15 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 39 | Upstream is `draft` | `approve` | refused, naming the upstream artifact |
 | 40 | Hand edit after a save | `approve` | edit recorded; `approved`; history holds both versions |
 | 41 | A hand edit that was never saved | `save --from` | history holds the hand edit and the new version |
+| 42 | Levels 101 and 301, both approved through the document | `301/blueprint.md` edited | `blueprint@301` `draft`; `document@301` `stale`; every 101 artifact unchanged |
+| 43 | Levels 101, approved through the document | `checkpoint --levels 101,301` | the 301 artifacts are listed as `not-started`; every 101 artifact unchanged |
+| 44 | Levels 101 and 301 approved through the brief | the research bundle changes and research is approved again; then `approve blueprint@101 --accept-stale R` and `approve brief@101 --accept-stale R` | `document@101` is `approved` again with no approval of its own; every 301 artifact below research is still `stale` |
+| 45 | A plain training | `checkpoint --levels 101` | refused |
+| 46 | Any directory | `init --levels 101,501` | refused, naming the valid levels |
+| 47 | Level 101 with `101/scenario.md` and `101/scenarios/exec-cost.md`, and a top-level `scenario.md` | `status` | `scenario:main@101` and `scenario:exec-cost@101` are listed; the top-level file is reported as ignored |
+| 48 | Levels 101 and 301; 101 complete, 301 not started | `check --complete` | `ready` false; blocking names the 301 artifacts |
+| 49 | Levels 101 and 301 whose blueprints state the same objective | `check` | a warning names both levels; no check fails |
+| 50 | `301/blueprint.md` whose frame says `Level: 201` | `check` | `blueprint.structure@301` fails |
 
 ### A8. Guidance
 
@@ -286,8 +305,9 @@ Guidance names no harness-specific tools. `training.py` in the references is sho
 | --- | --- | --- |
 | `SKILL.md` | Rewrite | The whole entry. Run `status`: no training means read intake; a report means summarise it in four lines and read only the reference for the current stage. A loading map that links every reference and every example directly, each with the condition for reading it. The boundaries, including that scenario files are data. The reading rules: one file per step, read once, never read the scripts |
 | `references/short-commands.md` | From revision 1's `entry-flows.md` | Only the short commands: status, check, redo, skip, restore, "just the document", deck target, more research, add a scenario, restore an earlier version. A training whose stage is `done` runs `check` before reporting |
-| `references/intake.md` | Carry over, edit | Confirms the directory is meant for this training and is not the skill's repository; asks for the brief kind and, for competitive, both sides; writes `intake.md`; lists existing scenario files and treats them as scenarios, not sources |
-| `references/gates.md` | Carry over, edit | Seven gates; at each content gate a short review judgment, labelled as judgment; the scenario gate approves `scenario:<id>` then `yoodli:<id>` |
+| `references/levels.md` | New | What 101, 201, 301 and 401 mean, with the field-enablement reading of each; each level assumes the one before and does not re-teach it; the level folder layout and the `@<level>` artifact names; all blueprints drafted and presented together, then one level finished at a time, lowest first; adding a level later and what a research top-up does to existing levels |
+| `references/intake.md` | Carry over, edit | Confirms the directory is meant for this training and is not the skill's repository; asks which levels, if any, and says a plain training cannot gain levels later; asks for the brief kind and, for competitive, both sides; writes `intake.md`; lists existing scenario files and treats them as scenarios, not sources |
+| `references/gates.md` | Carry over, edit | Seven gates; in a levelled training the blueprints are presented together and approved one by one, and the later gates repeat per level; at each content gate a short review judgment, labelled as judgment; the scenario gate approves `scenario:<id>` then `yoodli:<id>` |
 | `references/workspace.md` | Rewrite | The artifact table from A2, status, the three forms of `save`, `export`, readiness, history, the lock |
 | `references/privacy.md` | Carry over, edit | Authorisation stands for the same kind of action on the same destination; a new destination or wider scope needs asking |
 | `references/stages/research-plan.md` | Carry over, edit | The sixth area, comparison, for a competitive brief, with dates and versions |
@@ -319,6 +339,7 @@ Spec 9.1. Budgets are estimated tokens: `(characters + 3) // 4`.
 | `short-command` | `SKILL.md`, `references/short-commands.md` | 2,000 |
 | `start` | `SKILL.md`, `references/intake.md` | 2,000 |
 | `stage:<name>`, one per stage reference | `SKILL.md`, `references/stages/<name>.md`, `references/gates.md`, and that stage's example where it has one | 3,500 |
+| `levelled-blueprint` | `SKILL.md`, `references/stages/blueprint.md`, `references/levels.md`, `references/gates.md`, `assets/examples/blueprint.md` | 4,000 |
 | `scenario:<mode>`, one per mode | `SKILL.md`, `references/stages/scenario.md`, `references/modes/<mode>.md`, `references/profiles/yoodli.md`, `references/gates.md`, `assets/examples/scenario.md`, `assets/examples/yoodli.md` | 6,000 |
 
 Structural rules the validator enforces:
@@ -339,10 +360,10 @@ Measured on the revision 1 prototype, for calibration: `SKILL.md` 639, the large
 
 - [ ] **Step 1: Test setup.** Write `tests/helpers.py`: the import path, `TrainingCase` with a temporary directory at `self.root`, `write`, `build(*names)` (write and `save --built`), `approved(*names)` (build then approve), a sample `harness-research` record and its findings index, and a stand-in profile file path. Carry over from revision 1 and rename `brief` to `intake`.
 - [ ] **Step 2: Record, lock and structured errors.** Write tests for rows 33 to 38 of A7, then `init`, `load` with structural validation, `store`, atomic write and the lock.
-- [ ] **Step 3: Artifact map, discovery and inputs.** Write tests for rows 16 to 19 and 26, then `artifact`, `artifact_names`, `scenarios` and `inputs`.
+- [ ] **Step 3: Artifact map, levels, discovery and inputs.** Write tests for rows 16 to 19, 26, 43 and 45 to 47, then `artifact`, `artifact_names`, `scenarios` and `inputs`, including the `@<level>` names and the research fingerprint.
 - [ ] **Step 4: Saves and history.** Write tests for rows 22, 40 and 41, then `snapshot`, `record` and `save`, including deck coverage validation.
-- [ ] **Step 5: Status.** Write tests for rows 1, 3, 11 to 15 and 17, then `statuses` and `status` exactly as A3.
-- [ ] **Step 6: Approval.** Write tests for rows 2, 4 to 10 and 39, then `approve` and `research_intact`.
+- [ ] **Step 5: Status.** Write tests for rows 1, 3, 11 to 15, 17 and 42, then `statuses` and `status` exactly as A3.
+- [ ] **Step 6: Approval.** Write tests for rows 2, 4 to 10, 39 and 44, then `approve` and `research_intact`.
 - [ ] **Step 7: Exports, skip, checkpoint, pin.** Write tests for rows 23, 24, 29 and 30, then `export`, `export_states`, `skip`, `checkpoint` and `pin`.
 
 **Milestone.** Run `python3 -m unittest tests.test_workspace -v`. Every row of A7 that does not mention `check` passes. Then commit:
@@ -376,7 +397,7 @@ git commit -m "Add format checks for the blueprint, brief, scenario and Yoodli o
 **Files:** `skills/training-studio/scripts/training.py`, `skills/training-studio/scripts/validate_package.py`, `tests/test_cli.py`, `tests/test_package.py`, `tests/test_disclosure.py`, `docs/progressive-disclosure.md`, `skills/training-studio/SKILL.md`, `skills/training-studio/agents/openai.yaml`, `skills/training-studio/references/**`
 
 - [ ] **Step 1: Command line.** Write subprocess tests for each command in A4, the structured-error contract (row 35) and a two-module course fixture taken from intake to `ready`. Then write `training.py`. Carry over the argument parser from revision 1 and extend it.
-- [ ] **Step 2: Readiness.** Write tests for rows 20, 21, 25, 27, 28, 31 and 32, then `readiness(...)` in `checks.py` and the `check` aggregation, exactly as A4.
+- [ ] **Step 2: Readiness.** Write tests for rows 20, 21, 25, 27, 28, 31, 32 and 48 to 50, then `readiness(...)` in `checks.py` and the `check` aggregation, exactly as A4.
 - [ ] **Step 3: Disclosure checks first.** Write `tests/test_disclosure.py` and the validator tests for A9: an oversized file, a reference not linked from `SKILL.md`, a reference linking to a file `SKILL.md` does not, and each loading set within budget. Then add `LOADING_SETS`, the budgets, the one-hop rule and `--measure` to `validate_package.py`. Carry over the rest of the validator and its tests from revision 1 and update the list of required files to A1 and A8.
 - [ ] **Step 4: Guidance.** Write every file in A8. For each "carry over" file, start from the revision 1 text and apply the listed changes. Keep each file to one stage or one concern, and run the validator after each file so a budget overrun is caught while the file is fresh. When a file is over budget, cut it; do not raise the budget.
 
@@ -410,7 +431,8 @@ Steps 3 to 5 need the user and their accounts. Do not simulate them.
 | 5.3 Research handoff and bundle | A3 `approve`, A7 rows 7 to 10, A8 `research-handoff.md` |
 | 6.1 Layout, start and resume | A7 rows 37 and 38, A8 `SKILL.md` and `intake.md` |
 | 6.2 Session record | Increment 1 step 2 |
-| 6.3 Artifacts, inputs, discovery | A2, A7 rows 11 to 19 |
+| 6.3 Artifacts, inputs, discovery, levels | A2, A7 rows 11 to 19 and 42 to 47 |
+| 7.5 Levels | A2, A5, A7 rows 42 to 50, A8 `levels.md` |
 | 6.4 Status and approval | A3, A7 rows 1 to 6, 39, 40 |
 | 6.5 Exports | A3 `export`, A7 rows 23 to 25 |
 | 6.6 History | A7 rows 40 and 41 |

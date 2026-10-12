@@ -19,6 +19,11 @@ Given a topic, it produces:
 6. practice scenarios, each defined in an editable file, and a Yoodli scenario
    built from each one.
 
+A training can be produced at one or more **levels**: 101, 201, 301 and 401.
+Research is done once and shared. Everything else is produced separately for
+each level, in that level's own folder. A training with no levels is a single
+set of outputs.
+
 The user approves each stage before the next begins. Work is saved in a
 directory the user creates for that training, and can stop and resume at any
 gate.
@@ -47,7 +52,9 @@ video.
 | Training purpose | Field enablement, technical upskilling or general knowledge, chosen per run | One skill serves all three |
 | Brief kind | Competitive or product, chosen at intake | A comparison topic and a single-technology topic need different reference documents |
 | Unit of work | Lesson or multi-module course, proposed after research and confirmed at the blueprint gate | Size depends on what the research supports |
-| Approval gates | One per stage: research plan, research, blueprint, document, brief, deck, scenario | User preference for control over speed |
+| Levels | Optional: any of 101, 201, 301 and 401. Research is shared; blueprint, document, brief, deck and scenarios are per level | User request. Levels serve different depths and audiences, so each needs its own deliverables |
+| Order across levels | All blueprints are reviewed together, then each level is finished in turn, lowest first | Overlap and gaps between levels show at the blueprint; a complete level arrives early |
+| Approval gates | One per stage: research plan, research, blueprint, document, brief, deck, scenario. Stages after research repeat for each level | User preference for control over speed |
 | Approval lineage | An approval covers an artifact's content and its direct inputs | A rebuild against changed inputs needs approval again; accepting an unchanged upstream artifact does not force re-approval of everything below it |
 | Practice | Scenario files the user can write or edit, discovered by the skill; a Yoodli scenario built from each | User requirement |
 | Scenario scope | Scenarios are a list independent of modules; each exercises the objectives its success criteria map to | One scenario per module would stamp the same scenario onto every module of a course |
@@ -71,6 +78,11 @@ video.
 | 6 | Deck | `harness-slides` | Google Slides or `deck.pptx` | The deck |
 | 7 | Scenario | Training Studio and the user | Scenario files, a Yoodli scenario for each, and exports | Each scenario with its Yoodli output |
 | 8 | Package | Training Studio | `README.md` index and readiness report | None; it reports |
+
+**With levels,** stages 0 to 2 happen once. Stage 3 is done for every level,
+and the blueprints are presented together and approved one by one. Stages 4
+to 7 then run for one level at a time, lowest first. Stage 8 covers the whole
+training.
 
 Rules:
 
@@ -112,6 +124,7 @@ asked again.
 `intake.md` holds what shapes research and teaching:
 
 - topic,
+- levels: none, or any of 101, 201, 301 and 401,
 - brief kind: `product`, or `competitive` with the two sides named,
 - audience: role and what they already know,
 - purpose: field enablement, technical upskilling or general knowledge,
@@ -149,6 +162,12 @@ examples. For a competitive brief they also cover comparison: the dimensions
 that matter, licensing and cost, migration effort, and where the alternative
 is stronger. Comparison facts date quickly, so those questions ask for the
 date and version of what they find.
+
+One plan serves every level. It is weighted toward the deepest level
+requested, which needs questions about mechanisms, limits and failure modes.
+If the levels together need more than 30 questions, the training is split
+across directories, for example 101 with 201 in one and 301 with 401 in
+another.
 
 `intake.md` is deliberately not registered as a `harness-research` input
 file. That skill starts a new, empty run whenever a registered input changes,
@@ -225,6 +244,32 @@ valkey-training/               the directory the harness was launched in
 
 The training directory is the `--project` directory for both harness skills.
 
+**With levels,** the shared files stay at the top and each level has a folder
+holding the same set of outputs:
+
+```
+valkey-training/
+  README.md
+  intake.md
+  research-report.md
+  101/
+    blueprint.md
+    document.md, document.docx
+    product-brief.md, product-brief.docx
+    deck-handoff.md, deck.pptx
+    scenario.md, scenarios/, yoodli/
+  301/
+    the same set
+  sources/
+  .training-studio/
+  .harness-research/
+```
+
+A training is plain or levelled, decided at intake. Levels can be added to or
+removed from a levelled training later; removing one stops tracking its
+folder and leaves the files in place. A plain training cannot become
+levelled, because that would mean moving approved files.
+
 When the skill starts, it looks for `.training-studio/session.json` in the
 working directory. If the record exists, the skill resumes that training and
 shows its status. If not, it begins intake for a new one. `init` refuses to
@@ -243,8 +288,9 @@ run:
   "schema": 1,
   "id": "valkey-for-redis-teams",
   "title": "Valkey for Redis teams",
-  "size": "lesson",
-  "modules": ["m1"],
+  "levels": [],
+  "level": null,
+  "sizing": {"": {"size": "lesson", "modules": ["m1"]}},
   "stage": "brief",
   "next_step": "Present the brief for approval",
   "pending_question": null,
@@ -277,8 +323,10 @@ run:
 ```
 
 `stage` is one of `intake`, `research-plan`, `research`, `blueprint`,
-`document`, `brief`, `deck`, `scenario`, `package`, `done`. It is a marker
-for resuming. It never stands in for computed status or readiness.
+`document`, `brief`, `deck`, `scenario`, `package`, `done`. `level` is the
+level being worked on, in a levelled training. Both are markers for
+resuming. They never stand in for computed status or readiness. `sizing`
+holds the size and modules read from each level's blueprint.
 
 The helper validates the record's structure on every load, not only its
 schema number, and refuses to write to a record it does not recognise.
@@ -303,6 +351,14 @@ makes only the deck stale; changing the Yoodli profile makes only the Yoodli
 outputs stale; editing a scenario file makes only its own Yoodli output
 stale.
 
+**Levels.** In a levelled training, every artifact from `blueprint` down
+exists once per level. Its name carries the level, as in `blueprint@301` and
+`yoodli:main@301`; its file sits in that level's folder; and its inputs are
+the artifacts of the same level. `intake`, `research-plan` and `research`
+are shared. Levels are independent in the record: nothing in one level is an
+input to another, so editing the 301 blueprint leaves all 101 work as it
+was.
+
 `deck-handoff.md` and `README.md` are derived and untracked. Exports are
 tracked separately (section 6.5).
 
@@ -310,7 +366,9 @@ tracked separately (section 6.5).
 `main`. Each `scenarios/<id>.md` has the ID of its file name, which must be
 lowercase letters, digits and hyphens. Having both `scenario.md` and
 `scenarios/main.md` is refused as ambiguous. Other markdown files are never
-picked up as scenarios. The set is computed on every read, so adding or
+picked up as scenarios. In a levelled training, discovery runs inside each
+level's folder, and a scenario file at the top belongs to no level and is
+reported as ignored. The set is computed on every read, so adding or
 removing a file is seen at once. A Yoodli output whose scenario file has been
 removed stays listed and shows as stale.
 
@@ -347,6 +405,12 @@ unchanged plan therefore stays approved when that plan is accepted as it is;
 a blueprint that reads the changed intake directly does not.
 
 `approve` refuses when any upstream artifact is neither approved nor skipped.
+
+**When shared research changes,** for example after a top-up for a new
+level, every level's blueprint and brief become stale, because both read
+research directly. Accepting a level's blueprint as it is restores that
+level's document and deck with no further approval, since their own inputs
+are unchanged. The brief is accepted or rebuilt separately.
 
 ### 6.5 Exports
 
@@ -513,10 +577,33 @@ finding whose evidence snapshots are unchanged from the saved prior run, and
 investigates only the new questions. Gate 2 is then repeated and the
 blueprint rebuilt against the re-approved bundle.
 
+### 7.5 Levels
+
+A level is a depth tier of the same subject. Each assumes the one before.
+
+| Level | Depth | In field enablement |
+| --- | --- | --- |
+| 101 | What it is, why it matters, core vocabulary. No prerequisites | Positioning and the pitch |
+| 201 | How it works, common tasks, standard use cases | Discovery, qualification, demonstration |
+| 301 | Architecture, tuning, troubleshooting, trade-offs | Technical deep dive; objections from engineers |
+| 401 | Internals, design at scale, edge cases | Architecture workshops; competitive displacement |
+
+Each level has its own blueprint, sized on its own (section 7.2). Its frame
+states its level and what it assumes the learner already has. A level does
+not re-teach what an earlier level covers; it names it as assumed.
+
+The blueprints for all requested levels are drafted before any is approved
+and are presented together, because that is where overlap and gaps between
+levels can be seen.
+
+`check` verifies that a levelled blueprint states the level of its folder,
+and warns when two levels state the same objective.
+
 ## 8. Deliverables
 
 Each has its own guidance file, loaded only when its stage runs, and an
-example file that serves as both template and test fixture.
+example file that serves as both template and test fixture. In a levelled
+training each level has its own set, written to that level's depth.
 
 ### 8.1 Document
 
@@ -709,6 +796,9 @@ from export state; declared document coverage, reviewed deck coverage and
 objectives exercised by the scenarios, each labelled by its basis; open
 gaps; limitations; and how to use the scenario files.
 
+In a levelled training the index has a section per level, and readiness
+covers every level: one unfinished level makes `ready` false.
+
 It runs `check --complete`. The training is described as complete only when
 `ready` is true. Otherwise the report lists what is blocking.
 
@@ -722,6 +812,7 @@ training-studio/
     SKILL.md                     the whole entry: start or resume, loading map
     references/
       short-commands.md
+      levels.md
       intake.md
       gates.md
       workspace.md
@@ -774,7 +865,7 @@ layered, and each layer is read only when its condition is met.
 | 1 | `SKILL.md` | The skill is invoked | 1,000 |
 | 2 | One stage reference | That stage is being worked | 1,000 each |
 | 3 | `gates.md` | The first gate of a session is presented | 1,000 |
-| 3 | `workspace.md`, `privacy.md`, `short-commands.md` | Only for what each covers: an unusual workspace operation, a public search or upload, a short command | 1,000 each |
+| 3 | `workspace.md`, `privacy.md`, `short-commands.md`, `levels.md` | Only for what each covers: an unusual workspace operation, a public search or upload, a short command, a levelled training at intake or blueprint | 1,000 each |
 | 4 | One mode file; the Yoodli profile reference | The scenario stage, and only the mode in use | 1,000 each |
 | 5 | One example file | That format is being written for the first time in a session | 1,200 each |
 | 6 | Helper scripts | Never read. They are run, and only their output enters context | none |
@@ -874,10 +965,12 @@ Boundaries:
   must get right as a table, and each row is a test: a rebuild with
   identical bytes, a hand edit, accepted staleness and its effect
   downstream, a missing or deleted file, a changed setting, a changed
-  profile, a changed research bundle, a module added or removed, a scenario
-  added, edited or removed, a replaced deck, an export gone out of date, and
+  profile, a changed research bundle, a module added or removed, a level
+  added, a level edited without disturbing another, a scenario added, edited
+  or removed, a replaced deck, an export gone out of date, and
   a stage skipped and restored.
-- **Fixtures.** A lesson and a two-module course, a competitive and a
+- **Fixtures.** A plain training and a two-level one, a lesson and a
+  two-module course, a competitive and a
   product brief, and more than one scenario. The Yoodli profile is injected
   into tests, so both its confirmed and unconfirmed states are tested from
   the start.
@@ -932,6 +1025,9 @@ scripts on 2026-10-12.
 - A hand edit overwritten by another hand edit before any save is not in
   history.
 - Each training knows only its own directory.
+- All levels of a training share one research run of at most 30 questions.
+- A plain training cannot be converted to a levelled one.
+- A stage is skipped for every level or for none.
 
 ## Appendix A: Yoodli sources
 
