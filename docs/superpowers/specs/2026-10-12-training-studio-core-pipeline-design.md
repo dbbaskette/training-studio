@@ -300,7 +300,7 @@ Commands, all returning JSON:
 | --- | --- |
 | `init` | Creates `.training-studio/session.json` in the working directory; refuses if a deliverable's filename is already taken |
 | `status` | Stage, next step, pending question, status of every artifact |
-| `save` | Records an artifact's content, snapshotting to history; for the deck, also accepts the reviewed coverage record |
+| `save` | Records an artifact's content, snapshotting to history. `--from FILE` replaces the artifact and `--built` records a file written in place; both re-pin what it was built from. A plain `save` records a hand edit and keeps the earlier pins, so saving an edit never clears staleness. For the deck, also accepts the reviewed coverage record |
 | `approve` | Records approval of the current content; refuses a stale artifact unless accepted with a reason |
 | `skip` | Marks a stage skipped or clears the mark, with a reason |
 | `checkpoint` | Sets stage, next step and pending question |
@@ -497,7 +497,9 @@ date and a `verified_against_live_ui` flag, initially `false`:
 and fails a generic file that lacks a section its mode requires. Required
 Yoodli fields are roleplay name, type, description, context and at least one
 goal, plus at least one persona for Objection Handling and Pitch. The writer
-revises; nothing is truncated silently.
+revises; nothing is truncated silently. `check` also reports the character
+count of each limited field, and the counts shown in the file are taken from
+that output rather than counted by eye.
 
 **Courses.** Each module gets its own pair. Gate 6 presents all pairs
 together and approval is recorded per artifact, so one module can be redone
@@ -542,7 +544,10 @@ training-studio/
         questionnaire.md
       profiles/
         yoodli.md
-    assets/profiles/yoodli.json
+    assets/
+      profiles/yoodli.json
+      examples/                  one example per format: blueprint, document,
+                                 generic brief, Yoodli brief
     scripts/
       training.py
       workspace.py
@@ -552,6 +557,10 @@ training-studio/
   tests/
   docs/
 ```
+
+The example files serve two purposes: the guidance points to them as the
+template for each format, and the tests read them as fixtures. A format, its
+checker and its template therefore cannot drift apart unnoticed.
 
 `SKILL.md` is a small router in the style of Blog Studio's: a loading map from
 the current operation to the one reference file it needs. Guidance uses
