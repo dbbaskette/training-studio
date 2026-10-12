@@ -72,7 +72,7 @@ class TrainingCase(unittest.TestCase):
         import workspace
         for name in names:
             session = workspace.load(self.root)
-            content = CONTENT.get(name, f'{name} v1\n')
+            content = CONTENT.get(name.partition('@')[0], f'{name} v1\n')
             self.write(workspace.artifact(self.root, session, name)['file'], content)
             workspace.save(self.root, name, built=True)
 

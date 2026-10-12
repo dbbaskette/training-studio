@@ -358,15 +358,15 @@ Measured on the revision 1 prototype, for calibration: `SKILL.md` 639, the large
 
 **Files:** `tests/helpers.py`, `tests/test_workspace.py`, `skills/training-studio/scripts/workspace.py`
 
-- [ ] **Step 1: Test setup.** Write `tests/helpers.py`: the import path, `TrainingCase` with a temporary directory at `self.root`, `write`, `build(*names)` (write and `save --built`), `approved(*names)` (build then approve), a sample `harness-research` record and its findings index, and a stand-in profile file path. Carry over from revision 1 and rename `brief` to `intake`.
-- [ ] **Step 2: Record, lock and structured errors.** Write tests for rows 33 to 38 of A7, then `init`, `load` with structural validation, `store`, atomic write and the lock.
-- [ ] **Step 3: Artifact map, levels, discovery and inputs.** Write tests for rows 16 to 19, 26, 43 and 45 to 47, then `artifact`, `artifact_names`, `scenarios` and `inputs`, including the `@<level>` names and the research fingerprint.
-- [ ] **Step 4: Saves and history.** Write tests for rows 22, 40 and 41, then `snapshot`, `record` and `save`, including deck coverage validation.
-- [ ] **Step 5: Status.** Write tests for rows 1, 3, 11 to 15, 17 and 42, then `statuses` and `status` exactly as A3.
-- [ ] **Step 6: Approval.** Write tests for rows 2, 4 to 10, 39 and 44, then `approve` and `research_intact`.
-- [ ] **Step 7: Exports, skip, checkpoint, pin.** Write tests for rows 23, 24, 29 and 30, then `export`, `export_states`, `skip`, `checkpoint` and `pin`.
+- [x] **Step 1: Test setup.** Write `tests/helpers.py`: the import path, `TrainingCase` with a temporary directory at `self.root`, `write`, `build(*names)` (write and `save --built`), `approved(*names)` (build then approve), a sample `harness-research` record and its findings index, and a stand-in profile file path. Carry over from revision 1 and rename `brief` to `intake`.
+- [x] **Step 2: Record, lock and structured errors.** Write tests for rows 33 to 38 of A7, then `init`, `load` with structural validation, `store`, atomic write and the lock.
+- [x] **Step 3: Artifact map, levels, discovery and inputs.** Write tests for rows 16 to 19, 26, 43 and 45 to 47, then `artifact`, `artifact_names`, `scenarios` and `inputs`, including the `@<level>` names and the research fingerprint.
+- [x] **Step 4: Saves and history.** Write tests for rows 22, 40 and 41, then `snapshot`, `record` and `save`, including deck coverage validation.
+- [x] **Step 5: Status.** Write tests for rows 1, 3, 11 to 15, 17 and 42, then `statuses` and `status` exactly as A3.
+- [x] **Step 6: Approval.** Write tests for rows 2, 4 to 10, 39 and 44, then `approve` and `research_intact`.
+- [x] **Step 7: Exports, skip, checkpoint, pin.** Write tests for rows 23, 24, 29 and 30, then `export`, `export_states`, `skip`, `checkpoint` and `pin`.
 
-**Milestone.** Run `python3 -m unittest tests.test_workspace -v`. Every row of A7 that does not mention `check` passes. Then commit:
+**Milestone.** Run `python3 -m unittest discover -s tests -p 'test_workspace.py' -v`. Every row of A7 that does not mention `check` passes. Then commit:
 
 ```bash
 git add tests skills/training-studio/scripts/workspace.py
@@ -385,7 +385,7 @@ git commit -m "Add the workspace helper with lineage-bound approval"
 - [ ] **Step 6: Yoodli scenario.** Write tests, then `fenced_fields`, `check_yoodli(text, profile, scenario, objectives, label)`: the example passes with real counts; a persona with only a name; a duplicate heading; an unterminated fence; a type that does not match the mode; a criterion not carried; a criterion out of range; an unknown objective; each limit exceeded; the provisional warning present with an unverified profile and absent with a verified one.
 - [ ] **Step 7: Deck coverage and practice.** Write tests, then `deck_coverage` with its hash binding and `practice(blueprint, yoodli_texts)`, including the warning for an unexercised `handle` objective.
 
-**Milestone.** Run `python3 -m unittest tests.test_checks -v`. All pass, and every example passes its own check. Then commit:
+**Milestone.** Run `python3 -m unittest discover -s tests -p 'test_checks.py' -v`. All pass, and every example passes its own check. Then commit:
 
 ```bash
 git add tests skills/training-studio/assets skills/training-studio/scripts/checks.py
@@ -401,7 +401,7 @@ git commit -m "Add format checks for the blueprint, brief, scenario and Yoodli o
 - [ ] **Step 3: Disclosure checks first.** Write `tests/test_disclosure.py` and the validator tests for A9: an oversized file, a reference not linked from `SKILL.md`, a reference linking to a file `SKILL.md` does not, and each loading set within budget. Then add `LOADING_SETS`, the budgets, the one-hop rule and `--measure` to `validate_package.py`. Carry over the rest of the validator and its tests from revision 1 and update the list of required files to A1 and A8.
 - [ ] **Step 4: Guidance.** Write every file in A8. For each "carry over" file, start from the revision 1 text and apply the listed changes. Keep each file to one stage or one concern, and run the validator after each file so a budget overrun is caught while the file is fresh. When a file is over budget, cut it; do not raise the budget.
 
-**Milestone.** Run `python3 -m unittest tests.test_cli tests.test_package tests.test_disclosure -v` and `python3 skills/training-studio/scripts/validate_package.py`. All pass and the validator prints `ok`. Run it again with `--measure` and save the table as `docs/progressive-disclosure.md`. Compare the command table in `references/workspace.md` with `training.py --help`. Then commit:
+**Milestone.** Run `python3 -m unittest discover -s tests -v` and `python3 skills/training-studio/scripts/validate_package.py`. All pass and the validator prints `ok`. Run it again with `--measure` and save the table as `docs/progressive-disclosure.md`. Compare the command table in `references/workspace.md` with `training.py --help`. Then commit:
 
 ```bash
 git add tests skills/training-studio docs/progressive-disclosure.md
