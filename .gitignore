@@ -3,9 +3,10 @@
 .env.*
 !.env.example
 
-# Harness session bookkeeping
+# Harness session bookkeeping and parallel worktrees
 .claude/.cc-writes
 .claude/worktrees/
+.worktrees/
 
 # Python and editor caches
 __pycache__/
