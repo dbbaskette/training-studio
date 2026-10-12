@@ -1,0 +1,4 @@
+interface:
+  display_name: "Training Studio"
+  short_description: "Turn a topic into researched training at one or more levels"
+  default_prompt: "Use $training-studio to build or resume the training in this directory, and stop for my approval at each stage."

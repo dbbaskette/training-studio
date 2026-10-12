@@ -47,6 +47,8 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
         own = sorted(name for name in found if workspace.split(name)[1] == level)
         if 'scenario' in wanted and 'scenario' not in session['unavailable'] and not own:
             without_scenario.append(level or '')
+        for name in own if 'scenario' in wanted else []:
+            add(checks.check_scenario(read(root, found[name]), workspace.split(name)[0]))
         blueprint = read(root, file_of(named('blueprint')))
         if blueprint is None:
             continue
@@ -66,7 +68,6 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
         for name in own if 'scenario' in wanted else []:
             base = workspace.split(name)[0]
             source = read(root, found[name])
-            add(checks.check_scenario(source, base))
             output = read(root, file_of(name.replace('scenario:', 'yoodli:', 1)))
             if output is None:
                 continue

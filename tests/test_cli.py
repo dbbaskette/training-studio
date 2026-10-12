@@ -225,6 +225,13 @@ class CheckTests(Flow):
                          (True, False, 0))
         self.assertIn('intake is not-started', report['blocking'])
 
+    def test_a_scenario_is_checked_before_any_blueprint_exists(self):
+        self.cli('init', '--title', 'Rolling restarts')
+        self.write('scenario.md', example('scenario.md').replace('## Opening', '## Start'))
+        report = self.check(expect=1)
+        self.assertEqual(self.by_name(report)['scenario:main.sections']['problems'],
+                         ['Section "Opening" is missing or empty.'])
+
     def test_a_lesson_reaches_ready(self):
         self.research()
         self.complete()
@@ -240,7 +247,7 @@ class CheckTests(Flow):
         self.assertIn('provisional', report['warnings'][0])
         everything = self.check('--all')
         self.assertEqual(len(everything['checks']), 12)
-        self.assertEqual(everything['checks'][4]['basis'], 'declared')
+        self.assertEqual(self.by_name(everything)['document.coverage']['basis'], 'declared')
 
     def test_a_two_module_course_reaches_ready(self):
         self.research()
