@@ -57,8 +57,9 @@ class Flow(TrainingCase):
         self.cli('save', artifact, '--built')
         self.cli('approve', artifact)
 
-    def research(self, *init_args) -> None:
-        self.cli('init', '--title', 'Rolling restarts', *init_args)
+    def research(self, *init_args, yoodli: bool = True) -> None:
+        self.cli('init', '--title', 'Rolling restarts', *init_args,
+                 *(['--yoodli'] if yoodli else []))
         self.make('intake', 'intake.md', '# Intake\n\n## Topic\nRolling restarts\n')
         self.make('research-plan', '.training-studio/research-plan.json',
                   json.dumps(helpers.PLAN))
@@ -89,11 +90,12 @@ class Flow(TrainingCase):
         self.cli('save', f'deck{at}', '--built', '--coverage', str(coverage))
         self.cli('approve', f'deck{at}')
 
-    def scenario(self, level: str | None = None) -> None:
+    def scenario(self, level: str | None = None, yoodli: bool = True) -> None:
         at = f'@{level}' if level else ''
         folder = f'{level}/' if level else ''
         self.make(f'scenario:main{at}', f'{folder}scenario.md', example('scenario.md'))
-        self.make(f'yoodli:main{at}', f'{folder}yoodli/main.md', example('yoodli.md'))
+        if yoodli:
+            self.make(f'yoodli:main{at}', f'{folder}yoodli/main.md', example('yoodli.md'))
 
     def complete(self, level: str | None = None) -> None:
         self.content(level)
@@ -181,7 +183,7 @@ class CommandTests(Flow):
     def test_settings_skips_pins_and_checkpoints_round_trip(self):
         self.cli('init', '--title', 'Topic', '--levels', '101')
         self.cli('checkpoint', '--stage', 'blueprint', '--level', '101', '--next', 'Draft it',
-                 '--question', 'Approve?', '--brand', 'Tanzu', '--deck-target', 'google',
+                 '--question', 'Approve?', '--brand', 'Acme', '--deck-target', 'google',
                  '--levels', '101,201')
         self.cli('pin', 'harness-research', '--task', 't-1', '--runtime', '/opt/r')
         self.cli('skip', 'deck', '--reason', 'Not needed')
@@ -189,7 +191,7 @@ class CommandTests(Flow):
         self.assertEqual((report['stage'], report['level'], report['levels']),
                          ('blueprint', '101', ['101', '201']))
         self.assertEqual(report['pending_question'], 'Approve?')
-        self.assertEqual(report['settings']['brand'], 'Tanzu')
+        self.assertEqual(report['settings']['brand'], 'Acme')
         self.assertEqual(report['files']['deck@201'], '201/deck-link.md')
         self.assertEqual(report['artifacts']['deck@101'], 'skipped')
         self.assertEqual(report['pins']['harness-research']['task'], 't-1')
@@ -241,8 +243,9 @@ class CheckTests(Flow):
         self.assertEqual(report['passed'], 13)
         self.assertEqual(report['checks'], [])
         self.assertEqual(report['limitations'], ['yoodli:main has no export'])
-        self.assertEqual(report['practice'],
-                         {'exercised': ['O1', 'O2', 'O3'], 'not_exercised': []})
+        self.assertEqual(report['practice'], {'basis': 'Yoodli goals',
+                                              'exercised': ['O1', 'O2', 'O3'],
+                                              'not_exercised': []})
         self.assertEqual(len(report['warnings']), 1)
         self.assertIn('provisional', report['warnings'][0])
         everything = self.check('--all')
@@ -344,7 +347,7 @@ class CheckTests(Flow):
                       report['limitations'])
 
     def test_skipped_stages_are_limitations(self):
-        self.research()
+        self.research(yoodli=False)
         self.cli('skip', 'scenario', '--reason', 'Later')
         self.cli('skip', 'brief', '--reason', 'Later')
         self.cli('skip', 'deck', '--reason', 'Later')
@@ -355,6 +358,56 @@ class CheckTests(Flow):
         self.assertEqual(report['limitations'][:3],
                          ['brief was skipped', 'deck was skipped', 'scenario was skipped'])
         self.assertEqual(report['practice'], {})
+
+
+class OptionalYoodliTests(Flow):
+    """Yoodli is an optional stage, off unless asked for (matrix rows 58 to 62)."""
+
+    def without_yoodli(self) -> None:
+        self.research(yoodli=False)
+        self.content()
+        self.deck()
+        self.scenario(yoodli=False)
+
+    def test_row_61_a_training_is_complete_without_yoodli(self):
+        self.without_yoodli()
+        report = self.check('--complete')
+        self.assertEqual((report['ready'], report['blocking'], report['limitations']),
+                         (True, [], []))
+        self.assertEqual(report['passed'], 10)
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual(report['practice'], {'basis': 'practice plan',
+                                              'exercised': ['O1', 'O2', 'O3'],
+                                              'not_exercised': []})
+        status = self.cli('status')
+        self.assertFalse(any(name.startswith('yoodli:') for name in status['artifacts']))
+        self.assertEqual(status['settings']['stages'], ['document', 'brief', 'deck', 'scenario'])
+
+    def test_without_yoodli_a_missing_brief_export_does_not_block(self):
+        self.without_yoodli()
+        (self.root / 'product-brief.docx').unlink()
+        report = self.check('--complete')
+        self.assertTrue(report['ready'])
+        self.assertEqual(report['limitations'], ['brief has no export'])
+
+    def test_row_62_turning_yoodli_on_later_reopens_the_training(self):
+        self.without_yoodli()
+        self.cli('skip', 'yoodli', '--clear')
+        report = self.check('--complete', expect=1)
+        self.assertEqual(report['blocking'], ['yoodli:main is not-started'])
+        self.make('yoodli:main', 'yoodli/main.md', example('yoodli.md'))
+        report = self.check('--complete')
+        self.assertTrue(report['ready'])
+        self.assertEqual(report['practice']['basis'], 'Yoodli goals')
+
+    def test_turning_yoodli_off_again_hides_it(self):
+        self.research()
+        self.complete()
+        self.cli('skip', 'yoodli', '--reason', 'Not using Yoodli after all')
+        report = self.check('--complete')
+        self.assertTrue(report['ready'])
+        self.assertFalse(any('yoodli' in text.lower() for text in report['limitations']))
+        self.assertTrue((self.root / 'yoodli' / 'main.md').is_file())
 
 
 class DryRunFindingTests(Flow):
@@ -465,8 +518,8 @@ class LevelCheckTests(Flow):
         self.assertIn('blueprint@301 is not-started', report['blocking'])
         self.assertIn('No scenario file found for level 301.', report['blocking'])
         self.assertFalse(any('@101' in reason for reason in report['blocking']))
-        self.assertEqual(report['practice'],
-                         {'101': {'exercised': ['O1', 'O2', 'O3'], 'not_exercised': []}})
+        self.assertEqual(report['practice'], {'101': {
+            'basis': 'Yoodli goals', 'exercised': ['O1', 'O2', 'O3'], 'not_exercised': []}})
 
     def test_both_levels_complete_is_ready(self):
         self.research('--levels', '101,301')

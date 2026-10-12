@@ -12,11 +12,11 @@ from workspace import WorkspaceError
 
 
 class PlainCase(TrainingCase):
-    """A plain training, initialised."""
+    """A plain training with the optional Yoodli stage on, initialised."""
 
     def setUp(self):
         super().setUp()
-        workspace.init(self.root, 'Topic')
+        workspace.init(self.root, 'Topic', yoodli=True)
 
 
 class LevelCase(TrainingCase):
@@ -24,7 +24,7 @@ class LevelCase(TrainingCase):
 
     def setUp(self):
         super().setUp()
-        workspace.init(self.root, 'Topic', levels=['301', '101'])
+        workspace.init(self.root, 'Topic', levels=['301', '101'], yoodli=True)
 
     def through(self, last: str, *levels: str) -> None:
         """Approve the shared artifacts, then each level's chain up to `last`."""
@@ -365,7 +365,7 @@ class StatusTests(PlainCase):
         self.write('deck.pptx', helpers.DECK)
         workspace.save(self.root, 'deck', built=True)
         workspace.approve(self.root, 'deck')
-        workspace.checkpoint(self.root, brand='Tanzu')
+        workspace.checkpoint(self.root, brand='Acme')
         state = self.state()
         self.assertEqual((state['deck'], state['document'], state['brief']),
                          ('stale', 'approved', 'approved'))
@@ -592,23 +592,25 @@ class ExportTests(PlainCase):
 
 
 class SkipTests(PlainCase):
-    def test_row_29_the_brief_cannot_be_skipped_while_scenario_is_wanted(self):
-        with self.assertRaisesRegex(WorkspaceError, 'knowledge source'):
-            workspace.skip(self.root, 'brief', reason='Deck only')
+    def test_row_29_the_brief_and_scenarios_stay_while_yoodli_is_wanted(self):
+        for stage in ('brief', 'scenario'):
+            with self.assertRaisesRegex(WorkspaceError, 'Turn Yoodli off'):
+                workspace.skip(self.root, stage, reason='Deck only')
 
-    def test_row_30_scenario_cannot_be_restored_before_the_brief(self):
-        workspace.skip(self.root, 'scenario', reason='Deck only')
+    def test_row_30_yoodli_cannot_be_turned_on_without_the_brief(self):
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
         workspace.skip(self.root, 'brief', reason='Deck only')
-        with self.assertRaisesRegex(WorkspaceError, 'Restore the brief first'):
-            workspace.skip(self.root, 'scenario', clear=True)
+        with self.assertRaisesRegex(WorkspaceError, 'Restore the brief and the scenarios'):
+            workspace.skip(self.root, 'yoodli', clear=True)
 
     def test_skipped_stages_report_skipped(self):
         self.write('scenario.md', '# Scenario\n')
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
         workspace.skip(self.root, 'scenario', reason='Not now')
         workspace.skip(self.root, 'document', reason='Not now')
         state = self.state()
-        self.assertEqual((state['document'], state['scenario:main'], state['yoodli:main']),
-                         ('skipped', 'skipped', 'skipped'))
+        self.assertEqual((state['document'], state['scenario:main']), ('skipped', 'skipped'))
+        self.assertNotIn('yoodli:main', state)
 
     def test_the_deck_builds_from_research_when_the_document_is_skipped(self):
         workspace.skip(self.root, 'document', reason='Deck only')
@@ -623,7 +625,7 @@ class SkipTests(PlainCase):
     def test_clearing_restores_the_stage_in_pipeline_order(self):
         workspace.skip(self.root, 'deck', reason='Later')
         outcome = workspace.skip(self.root, 'deck', clear=True)
-        self.assertEqual(outcome['stages'], ['document', 'brief', 'deck', 'scenario'])
+        self.assertEqual(outcome['stages'], ['document', 'brief', 'deck', 'scenario', 'yoodli'])
 
     def test_only_deliverable_stages_can_be_skipped(self):
         with self.assertRaisesRegex(WorkspaceError, 'document, brief, deck, scenario'):
@@ -632,6 +634,37 @@ class SkipTests(PlainCase):
     def test_a_skip_needs_a_reason(self):
         with self.assertRaisesRegex(WorkspaceError, 'Give a reason'):
             workspace.skip(self.root, 'deck')
+
+
+class OptionalYoodliTests(TrainingCase):
+    """Yoodli is off unless asked for (matrix rows 58 to 60)."""
+
+    def setUp(self):
+        super().setUp()
+        workspace.init(self.root, 'Topic')
+        self.write('scenario.md', '# Scenario: mine\n')
+
+    def test_row_58_yoodli_is_off_by_default(self):
+        state = self.state()
+        self.assertEqual(state['scenario:main'], 'draft')
+        self.assertFalse(any(name.startswith('yoodli:') for name in state))
+        self.assertEqual(sorted(workspace.status(self.root)['exports']), ['brief', 'document'])
+
+    def test_row_59_turning_yoodli_on_lists_its_artifacts(self):
+        outcome = workspace.skip(self.root, 'yoodli', clear=True)
+        self.assertEqual(outcome['stages'][-1], 'yoodli')
+        self.assertEqual(self.state()['yoodli:main'], 'not-started')
+
+    def test_row_60_without_yoodli_the_brief_is_not_tied_to_scenarios(self):
+        workspace.skip(self.root, 'brief', reason='Guide only')
+        self.assertEqual(self.state()['scenario:main'], 'draft')
+        self.assertEqual(self.state()['brief'], 'skipped')
+
+    def test_init_can_turn_yoodli_on(self):
+        other = self.root.parent / 'other'
+        other.mkdir()
+        session = workspace.init(other, 'Topic', yoodli=True)
+        self.assertEqual(session['settings']['stages'][-1], 'yoodli')
 
 
 class CheckpointTests(PlainCase):
@@ -665,7 +698,7 @@ class CheckpointTests(PlainCase):
 
     def test_pin_refuses_other_skills(self):
         with self.assertRaisesRegex(WorkspaceError, 'harness-research'):
-            workspace.pin(self.root, 'blog-studio', task='t', runtime='/r')
+            workspace.pin(self.root, 'another-skill', task='t', runtime='/r')
 
 
 class LevelCheckpointTests(LevelCase):

@@ -75,20 +75,23 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
         if 'brief' in wanted and brief is not None:
             add(checks.check_brief(brief, session['settings']['brief_kind'],
                                    session['findings']))
-        yoodli_texts = []
+        yoodli_texts, idents = [], set()
         for name in own if 'scenario' in wanted else []:
             base = workspace.split(name)[0]
             source = read(root, found[name])
-            output = read(root, file_of(name.replace('scenario:', 'yoodli:', 1)))
-            if output is None:
-                continue
-            yoodli_texts.append(output)
             ident = base.partition(':')[2]
+            idents.add(ident)
             actual = checks.parse_scenario(source)['mode']
             warnings += [f"The practice plan lists {named(base)} as {entry['mode']}; "
                          f'its scenario file says {actual}. The scenario file decides.'
                          for entry in parsed['practice']
                          if entry['id'] == ident and entry['mode'] != actual]
+            if 'yoodli' not in wanted:
+                continue
+            output = read(root, file_of(name.replace('scenario:', 'yoodli:', 1)))
+            if output is None:
+                continue
+            yoodli_texts.append(output)
             results = checks.check_yoodli(output, profile, checks.parse_scenario(source),
                                           set(parsed['objectives']),
                                           base.replace('scenario:', 'yoodli:', 1))
@@ -102,7 +105,8 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
                 parsed, review, workspace.sha256_file(root / file_of(deck)),
                 workspace.sha256_file(root / file_of(named('blueprint')))))
         if 'scenario' in wanted:
-            exercised = checks.practice(parsed, yoodli_texts)
+            exercised = (checks.practice(parsed, yoodli_texts) if 'yoodli' in wanted
+                         else checks.practice_from_plan(parsed, idents))
             warnings += [f'{level}: {text}' if level else text
                          for text in exercised.pop('warnings')]
             practice[level or ''] = exercised
@@ -113,9 +117,10 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
         [{'name': name, 'stage': workspace.artifact(root, session, name)['stage'],
           'status': status} for name, status in state.items()],
         workspace.export_states(root, session), outcomes,
-        [stage for stage in workspace.SKIPPABLE if stage not in wanted],
+        [stage for stage in workspace.SKIPPABLE
+         if stage not in wanted and stage not in workspace.OPTIONAL],
         session['unavailable'], without_scenario, session.get('pending_question'),
-        session['decisions'])
+        session['decisions'], 'yoodli' in wanted)
     failed = [outcome for outcome in outcomes if outcome['status'] == 'failed']
     passed = [outcome for outcome in outcomes if outcome['status'] == 'passed']
     return {
@@ -153,6 +158,8 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument('--brief-kind', default='product')
     init.add_argument('--deck-target')
     init.add_argument('--brand')
+    init.add_argument('--yoodli', action='store_true',
+                      help='also build a Yoodli scenario from each scenario file (optional)')
 
     commands.add_parser('status', help='stage, next step and the status of every artifact')
 
@@ -214,7 +221,7 @@ def parser() -> argparse.ArgumentParser:
 def dispatch(args: argparse.Namespace, root: Path) -> dict:
     if args.command == 'init':
         workspace.init(root, args.title, args.levels, args.brief_kind, args.deck_target,
-                       args.brand)
+                       args.brand, args.yoodli)
         return workspace.status(root)
     if args.command == 'status':
         return workspace.status(root)

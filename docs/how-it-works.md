@@ -13,7 +13,8 @@ This page explains what Training Studio does behind the conversation. For the fu
 | 4 | Document | Training Studio | The learner guide |
 | 5 | Brief | Training Studio | A product or competitive brief |
 | 6 | Deck | The harness-slides skill | Google Slides or PowerPoint |
-| 7 | Scenario | You and Training Studio | Scenario files and a Yoodli scenario for each |
+| 7 | Scenario | You and Training Studio | Scenario files |
+| 7a | Yoodli, optional | Training Studio | A Yoodli scenario for each scenario file |
 | 8 | Package | Training Studio | The index and a readiness report |
 
 Stages 1 to 7 each end at a gate where you approve, revise, rebuild or skip. With levels, stages 0 to 2 happen once, all the blueprints are reviewed together, and stages 4 to 7 then run one level at a time.
@@ -70,7 +71,7 @@ valkey-training/
   deck-handoff.md          the note given to harness-slides
   deck.pptx                or deck-link.md for Google Slides
   scenario.md              your scenario; more go under scenarios/
-  yoodli/main.md           the Yoodli scenario built from scenario.md
+  yoodli/main.md           optional: the Yoodli scenario built from scenario.md
   sources/                 the documents you selected
   .training-studio/        the session record and every earlier version
   .harness-research/       owned by harness-research

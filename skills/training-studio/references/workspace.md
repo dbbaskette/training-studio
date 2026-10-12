@@ -14,7 +14,7 @@ Deliverables are visible files in the training directory. Bookkeeping is under `
 | `brief` | `product-brief.md` or `competitive-brief.md` | `blueprint`, `research`, the brief kind |
 | `deck` | `deck.pptx`, or `deck-link.md` for Google Slides | `blueprint`, `document`, the deck target and brand |
 | `scenario:<id>` | `scenario.md` (the ID is `main`) or `scenarios/<id>.md` | nothing; the user owns it |
-| `yoodli:<id>` | `yoodli/<id>.md` | `blueprint`, `brief`, `scenario:<id>`, the Yoodli profile |
+| `yoodli:<id>`, only when the optional Yoodli stage is on | `yoodli/<id>.md` | `blueprint`, `brief`, `scenario:<id>`, the Yoodli profile |
 
 `deck-handoff.md` and `README.md` are derived: regenerate them, never `save` them.
 

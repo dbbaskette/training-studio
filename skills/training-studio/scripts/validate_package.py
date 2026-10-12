@@ -34,7 +34,7 @@ REQUIRED = (
     'references/gates.md',
     'references/workspace.md',
     'references/privacy.md',
-    *(f'references/stages/{stage}.md' for stage in (*STAGE_TEMPLATES, 'scenario')),
+    *(f'references/stages/{stage}.md' for stage in (*STAGE_TEMPLATES, 'scenario', 'yoodli')),
     *(f'references/modes/{mode}.md' for mode in MODES),
     'references/profiles/yoodli.md',
     'scripts/training.py',
@@ -64,7 +64,10 @@ def loading_sets() -> dict[str, tuple[list[str], int]]:
     for mode in MODES:
         sets[f'scenario:{mode}'] = (
             ['SKILL.md', 'references/stages/scenario.md', f'references/modes/{mode}.md',
-             'references/profiles/yoodli.md', gates, 'assets/examples/scenario.md',
+             gates, 'assets/examples/scenario.md'], 4000)
+        sets[f'yoodli:{mode}'] = (
+            ['SKILL.md', 'references/stages/yoodli.md', 'references/profiles/yoodli.md',
+             f'references/modes/{mode}.md', gates, 'assets/examples/scenario.md',
              'assets/examples/yoodli.md'], 6000)
     return sets
 

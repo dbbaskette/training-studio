@@ -17,14 +17,14 @@ If `ready` is false, resolve what you can, tell the user what remains, and do no
 1. **Title, audience, purpose, size and levels**, from intake and the blueprints.
 2. **Objectives**, in plain language. With levels, a section per level.
 3. **What is here.** A table of every artifact: what it is, its file as a link, and its status.
-4. **Ready to upload.** Each export whose state is `current`, with its path. List no file that is not `current`. If the brief's export is missing or unavailable, say the Yoodli handoff is incomplete and what the user can do instead.
+4. **Exports.** Each export whose state is `current`, with its path. List no file that is not `current`. If Yoodli is on and the brief's export is missing or unavailable, say the Yoodli handoff is incomplete and what the user can do instead.
 5. **Coverage**, one row per objective, with the basis of each column in its heading:
    - "Document (declared)", from the `document.coverage` check.
    - "Deck (reviewed)", from the recorded review.
-   - "Practice (exercised)", from the `practice` report.
+   - "Practice (exercised)", from the `practice` report, naming its `basis`.
    A stage that was skipped or unavailable shows that word, not a tick.
 6. **Open gaps**, from the blueprints, and **limitations**, from `check`.
-7. **Using the scenarios.** Where the scenario files and Yoodli files are; that building the roleplay in Yoodli's Builder is the baseline; and that Yoodli's limits are provisional until the user confirms a paste.
+7. **Using the scenarios.** Where the scenario files are, and that each works with any AI that can play a role, with the brief as its reference. If Yoodli is on: where the Yoodli files are, that building the roleplay in Yoodli's Builder is the baseline, and that Yoodli's limits are provisional until the user confirms a paste.
 8. **Research.** A link to `research-report.md`, with the approval date and the count of findings by status, both from `research` in `training.py status`.
 
 `README.md` is derived. Rewrite it when anything changes; never `save` it.
@@ -37,6 +37,6 @@ Then `training.py checkpoint --stage done --next "Nothing pending"`. The marker 
 
 ## Afterwards
 
-When the user reports how a paste into Yoodli went, note each field name or limit that differed. A successful paste confirms the fields were accepted. It says nothing about factual grounding or the quality of the goals.
+If Yoodli was used: when the user reports how a paste into Yoodli went, note each field name or limit that differed. A successful paste confirms the fields were accepted. It says nothing about factual grounding or the quality of the goals.
 
 Corrections belong in the skill's `assets/profiles/yoodli.json` and its Yoodli profile reference, which are changed in the skill's repository, not from a training directory. Tell the user what to change there.

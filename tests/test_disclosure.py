@@ -20,9 +20,10 @@ class DisclosureTests(unittest.TestCase):
         stages = {path.stem for path in (helpers.SKILL / 'references' / 'stages').glob('*.md')}
         modes = {path.stem for path in (helpers.SKILL / 'references' / 'modes').glob('*.md')}
         budgeted = {label.partition(':')[2] for label in SETS if label.startswith('stage:')}
-        self.assertEqual(stages - {'scenario'}, budgeted)
-        self.assertEqual(modes, {label.partition(':')[2] for label in SETS
-                                 if label.startswith('scenario:')})
+        self.assertEqual(stages - {'scenario', 'yoodli'}, budgeted)
+        for stage in ('scenario', 'yoodli'):
+            self.assertEqual(modes, {label.partition(':')[2] for label in SETS
+                                     if label.startswith(f'{stage}:')})
 
     def test_the_entry_is_one_file_within_its_budget(self):
         self.assertLessEqual(SIZES['SKILL.md'], validate_package.BUDGET['skill'])

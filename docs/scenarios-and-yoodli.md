@@ -41,7 +41,9 @@ Other markdown files are never picked up as scenarios. Editing a scenario makes 
 
 ## The Yoodli scenario
 
-For each scenario, Training Studio writes `yoodli/<name>.md`. It lays your scenario out in the order of Yoodli's roleplay Builder: roleplay name, type, description, context, personas, objections, goals, AI assets and settings. Each value sits in its own block so it copies cleanly, with a character count beside the fields that have a limit.
+This is optional and off unless you ask for it. Say "also make Yoodli scenarios" at the start, or "add Yoodli" later. Without it, the scenario files are the practice deliverable and nothing about Yoodli is required.
+
+When it is on, for each scenario Training Studio writes `yoodli/<name>.md`. It lays your scenario out in the order of Yoodli's roleplay Builder: roleplay name, type, description, context, personas, objections, goals, AI assets and settings. Each value sits in its own block so it copies cleanly, with a character count beside the fields that have a limit.
 
 Each goal carries one or more of your success criteria. Every criterion has a goal.
 

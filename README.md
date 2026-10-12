@@ -13,7 +13,7 @@ For each training:
 - **A learner guide**: a document people read.
 - **A brief**: a short reference about the subject. It is a product brief for one technology, or a competitive brief when you are comparing two.
 - **A slide deck** that works both presented and handed out.
-- **Practice scenarios**: a role-play situation you can write or edit yourself, and a version ready to build in [Yoodli](https://yoodli.ai).
+- **Practice scenarios**: a role-play situation you can write or edit yourself. If you use [Yoodli](https://yoodli.ai), it can also prepare a version ready to build there.
 
 You can ask for one or more **levels**, from 101 (introduction) to 401 (expert). Each level gets its own set of material.
 
@@ -71,7 +71,7 @@ mkdir valkey-training
 
 At each stop you can approve it, ask for changes, or skip that stage.
 
-**6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, `scenario.md` and a `yoodli/` folder, with Word copies where they could be made. `README.md` in your folder lists everything and says whether the training is complete.
+**6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, and `scenario.md`, with Word copies where they could be made. If you asked for Yoodli scenarios there is a `yoodli/` folder too. `README.md` in your folder lists everything and says whether the training is complete.
 
 ## Things you can say
 
@@ -131,7 +131,9 @@ Save it as `scenario.md` in your training folder, or put several under `scenario
 
 ## Using the scenarios in Yoodli
 
-For each scenario, Training Studio writes a file under `yoodli/` laid out in the same order as Yoodli's roleplay builder, so you can copy each part into its field. It also tells you which file to upload as the AI's reference material. You build the roleplay in Yoodli yourself; Training Studio does not upload anything. See [scenarios and Yoodli](docs/scenarios-and-yoodli.md).
+This part is optional. A scenario file already works with any AI that can play a role. If you use Yoodli, say "also make Yoodli scenarios" when you start, or "add Yoodli" at any time.
+
+For each scenario, Training Studio then writes a file under `yoodli/` laid out in the same order as Yoodli's roleplay builder, so you can copy each part into its field. It also tells you which file to upload as the AI's reference material. You build the roleplay in Yoodli yourself; Training Studio does not upload anything. See [scenarios and Yoodli](docs/scenarios-and-yoodli.md).
 
 ## If something goes wrong
 

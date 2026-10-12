@@ -488,7 +488,17 @@ class DeckAndPracticeTests(unittest.TestCase):
 
     def test_practice_reports_what_the_scenarios_exercise(self):
         self.assertEqual(checks.practice(PARSED, [YOODLI]),
-                         {'exercised': ['O1', 'O2', 'O3'], 'not_exercised': [], 'warnings': []})
+                         {'basis': 'Yoodli goals', 'exercised': ['O1', 'O2', 'O3'],
+                          'not_exercised': [], 'warnings': []})
+
+    def test_without_yoodli_practice_comes_from_the_practice_plan(self):
+        self.assertEqual(checks.practice_from_plan(PARSED, {'main'}),
+                         {'basis': 'practice plan', 'exercised': ['O1', 'O2', 'O3'],
+                          'not_exercised': [], 'warnings': []})
+        report = checks.practice_from_plan(PARSED, {'another'})
+        self.assertEqual(report['not_exercised'], ['O1', 'O2', 'O3'])
+        self.assertEqual(report['warnings'],
+                         ['O3 is a handle objective that no scenario exercises.'])
 
     def test_an_unexercised_handle_objective_is_a_warning(self):
         report = checks.practice(PARSED, [YOODLI.replace('<!-- assesses: O3 -->\n', '')])

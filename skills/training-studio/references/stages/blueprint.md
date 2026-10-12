@@ -47,7 +47,7 @@ Under each module heading, one item per line:
 
 One line per objective: `- O1: Check: <knowledge-check question> | Observe: <what a practice session should show>`
 
-The check goes into the document. The observation guides the scenario's goals. Make each ask for the behaviour its objective names: explaining a procedure is not evidence that someone can perform it.
+The check goes into the document; the observation guides the scenarios. Each must ask for the behaviour its objective names: explaining a procedure is not evidence of being able to perform it.
 
 ## Practice plan
 

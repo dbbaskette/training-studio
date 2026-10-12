@@ -19,7 +19,7 @@ Levels are independent: editing one never makes another stale. A scenario file a
 
 ## Order of work
 
-1. Research once, weighted toward the deepest level asked for. That level needs questions about mechanisms, limits and failure modes. If the levels together need more than 30 questions, propose two directories, for example 101 with 201 and 301 with 401.
+1. Research once, weighted toward the deepest level asked for. That level needs questions about mechanisms, limits and failure modes. If the levels together need more than 30 questions, propose splitting them across two directories.
 2. Draft the blueprint for every level before any is approved, and present them together. Overlap and gaps between levels show only here.
 3. Then finish one level at a time, lowest first: document, brief, deck, scenarios.
 
@@ -34,18 +34,10 @@ One `README.md` covers the whole training, at the top. `deck-handoff.md` sits in
 
 - The blueprint's frame carries `Level: 301` and says what the learner is assumed to have from earlier levels.
 - A level does not re-teach an earlier one. It names that material as assumed. `check` warns when two levels state the same objective.
-- Each level is sized on its own: a 101 may be a lesson and a 301 a course.
-- The brief for a level is written to that level's depth.
+- Each level is sized on its own, and its brief is written to its depth.
 
 ## Adding a level later
 
 `training.py checkpoint --levels 101,301` adds 301 and leaves 101 as it is. A plain training cannot be given levels; it needs a new directory.
 
-If the new level needs more research, the top-up changes the shared research. Every existing level's blueprint and brief then show as stale. For a level whose content the new findings do not touch, ask the user, then accept each as it is:
-
-```sh
-training.py approve blueprint@101 --accept-stale "<their reason>"
-training.py approve brief@101 --accept-stale "<their reason>"
-```
-
-That level's document, deck and scenarios return to approved by themselves, because their own inputs did not change.
+If the new level needs more research, the top-up changes the shared research. Every existing level's blueprint and brief then show as stale. For a level the new findings do not touch, ask the user, then accept each as it is: `training.py approve blueprint@101 --accept-stale "<their reason>"`, and the same for `brief@101`. That level's document, deck and scenarios then return to approved by themselves, because their own inputs did not change.
