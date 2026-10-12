@@ -377,13 +377,13 @@ git commit -m "Add the workspace helper with lineage-bound approval"
 
 **Files:** `skills/training-studio/assets/**`, `skills/training-studio/scripts/checks.py`, `tests/test_checks.py`
 
-- [ ] **Step 1: Examples.** Write the six example files for one coherent lesson. Use a competitive topic for `competitive-brief.md` and a single product for `product-brief.md`. Mark each as illustrative and unresearched. Carry over `blueprint.md` and `document.md` from revision 1 with the A5 changes.
-- [ ] **Step 2: Profile.** Re-read the two Yoodli pages named in A6, then write `assets/profiles/yoodli.json`.
-- [ ] **Step 3: Blueprint and document.** Carry over the revision 1 tests and code for the blueprint lint and document coverage. Apply the A5 changes and add tests for a practice-plan line with an unknown mode and with an unknown objective.
-- [ ] **Step 4: Brief.** Write tests, then `check_brief(text, kind, findings)`: both examples pass; a missing section, sections out of order, an empty Unknowns, an evidence section with no findings, an unknown finding, an unsupported finding, a `contradicted` finding allowed only in section 6, and `unavailable` with no findings index.
-- [ ] **Step 5: Scenario.** Write tests, then `parse_scenario(text)` and `check_scenario(text, label)`: the example passes; each required section missing; no success criteria; an unknown mode; mode defaults to `roleplay`.
-- [ ] **Step 6: Yoodli scenario.** Write tests, then `fenced_fields`, `check_yoodli(text, profile, scenario, objectives, label)`: the example passes with real counts; a persona with only a name; a duplicate heading; an unterminated fence; a type that does not match the mode; a criterion not carried; a criterion out of range; an unknown objective; each limit exceeded; the provisional warning present with an unverified profile and absent with a verified one.
-- [ ] **Step 7: Deck coverage and practice.** Write tests, then `deck_coverage` with its hash binding and `practice(blueprint, yoodli_texts)`, including the warning for an unexercised `handle` objective.
+- [x] **Step 1: Examples.** Write the six example files for one coherent lesson. Use a competitive topic for `competitive-brief.md` and a single product for `product-brief.md`. Mark each as illustrative and unresearched. Carry over `blueprint.md` and `document.md` from revision 1 with the A5 changes.
+- [x] **Step 2: Profile.** Re-read the two Yoodli pages named in A6, then write `assets/profiles/yoodli.json`.
+- [x] **Step 3: Blueprint and document.** Carry over the revision 1 tests and code for the blueprint lint and document coverage. Apply the A5 changes and add tests for a practice-plan line with an unknown mode and with an unknown objective.
+- [x] **Step 4: Brief.** Write tests, then `check_brief(text, kind, findings)`: both examples pass; a missing section, sections out of order, an empty Unknowns, an evidence section with no findings, an unknown finding, an unsupported finding, a `contradicted` finding allowed only in section 6, and `unavailable` with no findings index.
+- [x] **Step 5: Scenario.** Write tests, then `parse_scenario(text)` and `check_scenario(text, label)`: the example passes; each required section missing; no success criteria; an unknown mode; mode defaults to `roleplay`.
+- [x] **Step 6: Yoodli scenario.** Write tests, then `fenced_fields`, `check_yoodli(text, profile, scenario, objectives, label)`: the example passes with real counts; a persona with only a name; a duplicate heading; an unterminated fence; a type that does not match the mode; a criterion not carried; a criterion out of range; an unknown objective; each limit exceeded; the provisional warning present with an unverified profile and absent with a verified one.
+- [x] **Step 7: Deck coverage and practice.** Write tests, then `deck_coverage` with its hash binding and `practice(blueprint, yoodli_texts)`, including the warning for an unexercised `handle` objective.
 
 **Milestone.** Run `python3 -m unittest discover -s tests -p 'test_checks.py' -v`. All pass, and every example passes its own check. Then commit:
 

@@ -26,12 +26,18 @@ RESEARCH = {
         {'id': 'health-checks', 'question': 'What starts the next batch?'},
         {'id': 'vendor-claim', 'question': 'Is zero downtime guaranteed?'},
         {'id': 'rollback', 'question': 'How is a failed restart rolled back?'},
+        {'id': 'zero-downtime', 'question': 'Do rolling restarts guarantee zero downtime?'},
+        {'id': 'other-platform', 'question': 'How does the alternative restart apps?'},
+        {'id': 'licensing', 'question': 'How is each platform licensed?'},
     ],
     'results': {
         'availability': {'status': 'supported'},
         'instance-min': {'status': 'supported'},
         'health-checks': {'status': 'supported'},
         'vendor-claim': {'status': 'insufficient'},
+        'zero-downtime': {'status': 'contradicted'},
+        'other-platform': {'status': 'supported'},
+        'licensing': {'status': 'supported'},
     },
     'inputs': {},
 }
@@ -41,6 +47,9 @@ FINDINGS = {
     'health-checks': 'supported',
     'vendor-claim': 'insufficient',
     'rollback': 'pending',
+    'zero-downtime': 'contradicted',
+    'other-platform': 'supported',
+    'licensing': 'supported',
 }
 CHAIN = ('intake', 'research-plan', 'research', 'blueprint', 'document')
 

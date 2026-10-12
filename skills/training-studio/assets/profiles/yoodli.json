@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "profile": "yoodli",
+  "types": ["Custom", "Tutor", "Pitch", "Objection Handling", "Questionnaire", "Interview"],
+  "mode_types": {
+    "roleplay": "Objection Handling",
+    "pitch": "Pitch",
+    "tutor": "Tutor",
+    "questionnaire": "Questionnaire"
+  },
+  "persona_fields": ["Name", "Role", "Demeanor", "Background", "Behaviors"],
+  "persona_required_types": ["Objection Handling", "Pitch"],
+  "goal_types": ["Binary", "Rated", "Compound", "Knowledge-Based", "Screenshare"],
+  "prerequisites": [
+    {
+      "for": "Custom goals",
+      "needs": "An organisation on an Enterprise plan",
+      "source": "https://support.yoodli.ai/en/articles/11556965-creating-custom-goals",
+      "retrieved": "2026-10-12"
+    },
+    {
+      "for": "AI Assets",
+      "needs": "A content creator or organisation admin, editing an organisation roleplay in the Builder",
+      "source": "https://support.yoodli.ai/en/articles/16054213-add-ai-assets-to-a-roleplay",
+      "retrieved": "2026-10-12"
+    },
+    {
+      "for": "Roleplay Agent",
+      "needs": "An organisation owner or admin, in an organisation with the Conversational Roleplay feature enabled",
+      "source": "https://support.yoodli.ai/en/articles/15960287-create-roleplays-with-roleplay-agent",
+      "retrieved": "2026-10-12"
+    }
+  ],
+  "roleplay_agent": {
+    "drafts": ["title", "description", "context", "personas", "objections", "rubric goals"],
+    "creates_custom_goals": false,
+    "edits_existing_roleplays": false,
+    "files_max": 5,
+    "urls_max": 1,
+    "source": "https://support.yoodli.ai/en/articles/15960287-create-roleplays-with-roleplay-agent",
+    "retrieved": "2026-10-12"
+  },
+  "ai_assets": {
+    "strict_mode_uses_more_capacity": true,
+    "show_to_user_disabled_for": ["Word", "PowerPoint", "Excel", "audio"],
+    "markdown_listed": false,
+    "source": "https://support.yoodli.ai/en/articles/16054213-add-ai-assets-to-a-roleplay",
+    "retrieved": "2026-10-12"
+  },
+  "limits": {
+    "context_chars": {
+      "value": 10000,
+      "source": "https://support.yoodli.ai/en/articles/9048809-yoodli-release-notes",
+      "retrieved": "2026-10-12",
+      "verified": null
+    },
+    "personas_max": {
+      "value": 3,
+      "source": "https://support.yoodli.ai/en/articles/11565137-create-custom-roleplays-with-the-builder",
+      "retrieved": "2026-10-12",
+      "verified": null
+    },
+    "goal_explanation_chars": {
+      "value": 2500,
+      "source": "https://support.yoodli.ai/en/articles/16443435-building-a-tutor-roleplay-in-yoodli",
+      "retrieved": "2026-10-12",
+      "verified": null
+    },
+    "goal_achieved_chars": {
+      "value": 1000,
+      "source": "https://support.yoodli.ai/en/articles/16443435-building-a-tutor-roleplay-in-yoodli",
+      "retrieved": "2026-10-12",
+      "verified": null
+    },
+    "goal_missed_chars": {
+      "value": 1000,
+      "source": "https://support.yoodli.ai/en/articles/16443435-building-a-tutor-roleplay-in-yoodli",
+      "retrieved": "2026-10-12",
+      "verified": null
+    }
+  }
+}
