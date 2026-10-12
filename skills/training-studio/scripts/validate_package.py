@@ -35,6 +35,7 @@ REQUIRED = (
     'references/gates.md',
     'references/workspace.md',
     'references/privacy.md',
+    'references/google.md',
     *(f'references/stages/{stage}.md' for stage in (*STAGE_TEMPLATES, 'scenario', 'yoodli')),
     *(f'references/modes/{mode}.md' for mode in MODES),
     'references/profiles/yoodli.md',
@@ -43,6 +44,8 @@ REQUIRED = (
     'scripts/checks.py',
     'scripts/home.py',
     'scripts/sync_guidance.py',
+    'scripts/gdocs.py',
+    'scripts/cmd_google.py',
 )
 GUIDANCE_PARTS = ('SKILL.md', 'references/', 'assets/')
 
@@ -58,6 +61,7 @@ def loading_sets() -> dict[str, tuple[list[str], int]]:
     sets = {
         'short-command': (['SKILL.md', 'references/short-commands.md'], 2000),
         'start': (['SKILL.md', 'references/intake.md'], 2000),
+        'google': (['SKILL.md', 'references/google.md'], 2000),
     }
     for stage, templates in STAGE_TEMPLATES.items():
         sets[f'stage:{stage}'] = (

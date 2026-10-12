@@ -17,6 +17,8 @@ skills/training-studio/
     home.py                 the per-user data folder and the registry of trainings
     sync_guidance.py        fetches, pins and verifies guidance
     cmd_*.py                optional command modules, discovered automatically
+    cmd_google.py           the `google` commands
+    gdocs.py                the Google Docs round-trip: sync rules, comment anchors, transports
     validate_package.py     package and disclosure checks
 bootstrap/training-studio/  the small entry an installed copy uses
 guidance/manifest.json      which script version the guidance needs
@@ -50,6 +52,7 @@ The validator confirms the package is whole: required files exist, links resolve
 | `tests/test_disclosure.py` | Every loading set against its budget |
 | `tests/test_installer.py` | The installer, against a temporary home directory |
 | `tests/test_sync.py` | Guidance sync, against a local git repository |
+| `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
 
 Tests named `test_row_NN` implement a row of the state-transition matrix in section A7 of the plan. A change to status, approval, inputs or readiness adds or updates a row and its test.
 

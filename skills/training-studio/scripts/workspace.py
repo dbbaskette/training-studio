@@ -451,8 +451,13 @@ def check_coverage(root: Path, session: dict, name: str, coverage) -> None:
 
 @mutating
 def save(root: Path, name: str, source: Path | None = None, built: bool = False,
-         coverage: dict | None = None) -> dict:
-    """Record an artifact. `source` replaces the file first; `built` marks a rebuild."""
+         coverage: dict | None = None, edit: bool = False) -> dict:
+    """Record an artifact. `source` replaces the file first; `built` marks a rebuild.
+
+    `edit` says the text from `source` is someone's edit, not a rebuild: the old version
+    still goes to history, but what the artifact was built from is left as it was, so an
+    edit can never clear staleness.
+    """
     session = load(root)
     spec = artifact(root, session, name)
     path = managed(root, spec['file'])
@@ -469,7 +474,7 @@ def save(root: Path, name: str, source: Path | None = None, built: bool = False,
         pinned_inputs(root, session, name)
         snapshot(root, name, path)
         write_atomic(path, source.read_bytes())
-    entry = record(root, session, name, built=built or source is not None)
+    entry = record(root, session, name, built=built or (source is not None and not edit))
     if coverage is not None:
         blueprint = artifact(root, session, qualify('blueprint', split(name)[1]))['file']
         entry['reviewed_coverage'] = {'deck_sha256': entry['sha256'],
