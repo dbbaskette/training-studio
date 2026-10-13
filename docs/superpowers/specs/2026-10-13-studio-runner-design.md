@@ -1,7 +1,7 @@
 # Studio Runner: design for a decision
 
 Date: 2026-10-13
-Status: accepted on 2026-10-13. The owner chose the runner (approach B in section 4). Milestone 0 was run the same day: it passed on Claude with changes, folded in below, and could not be run on Codex. Nothing else is built yet.
+Status: accepted on 2026-10-13. The owner chose the runner (approach B in section 4). Milestone 0 was run the same day on both agents and ended "go, with changes"; the changes are folded in below. Nothing else is built yet.
 
 ## 1. The decision
 
@@ -115,8 +115,8 @@ With that rule, gate enforcement does not depend on a model following instructio
 
 ### 5.3 One agent step, start to finish
 
-1. **Prepare.** The runner makes a staging folder and copies in the step's inputs and nothing else.
-2. **Brief.** It writes the worker's instructions: the guidance for this one step, the inputs, and what to hand back. The guidance is the text of today's stage reference. The worker is not asked to discover skills.
+1. **Prepare.** The runner makes an empty staging folder and gathers the step's inputs and nothing else.
+2. **Brief.** It writes the worker's instructions: the guidance for this one step, the inputs, and what to hand back. The guidance is written for a worker: it is today's stage reference without the helper commands, which the worker cannot and must not run. The worker is not asked to discover skills.
 3. **Run.** The adapter starts the agent in the staging folder under the run's policy, with a turn limit, a time limit and a spending limit.
 4. **Hand back.** The worker returns its work by calling a tool: `submit_artifact`, `submit_finding`, `save_source` or `ask_person`. The runner validates each call with the checks that exist today and answers with the problems, so the worker can fix them and try again.
 5. **Keep.** When the checks pass, the runner copies the result into the training directory and records it through the core.
@@ -142,7 +142,7 @@ Both implement one interface: start a job with instructions, a folder, a policy,
 | How it is started | `claude -p --restricted --output-format stream-json` | `codex exec --json` |
 | Folder | The folder it is started in | `--cd` |
 | Instructions | `--append-system-prompt` and the prompt | The prompt |
-| Files limited to the folder | `--restricted` confines the file tools, for reading and writing. No shell is given | `--sandbox workspace-write`, which limits writing only |
+| Files | No shell and no file tools: the worker has only the runner's tools | The same. With its shell off, Codex cannot read a file at all |
 | Network | None: no shell and no fetching tool. Research gets a search tool | Off unless enabled for the run with `-c` |
 | Ignores the person's own setup | `--restricted` and `--strict-mcp-config`; an organisation's managed policy still applies | `--ignore-user-config` and `--ignore-rules`, and no instruction files in the folder |
 | Nothing can ask a question | `--permission-prompts none` | Approval policy `never` |
@@ -151,7 +151,7 @@ Both implement one interface: start a job with instructions, a folder, a policy,
 | Limits | `--max-budget-usd`; the runner enforces the time limit | The runner enforces the time limit |
 | Sign-in | The person's own Claude Code sign-in | The person's own Codex sign-in |
 
-The Claude column was tested in milestone 0 and held. The Codex column is from documentation and help text; none of it has been run.
+Both columns were tested in milestone 0. The Codex column needed more than is shown: a list of features switched off (connected apps, plugins, browser and computer use, sub-agents, hooks, the shell), its web tool disabled outside research, and the runner's tools marked as approved. The exact commands are in the milestone's results.
 
 The adapters are deliberately thin. If a control exists on one side only, the design does not rely on it.
 
@@ -165,7 +165,7 @@ A run has one policy, and each step picks a profile from it.
 | `research` (one question) | Staging folder | No | A search tool; pages only through the runner |
 | `review` (judging rendered slides) | Staging folder | No | None |
 
-No profile has a shell. Milestone 0 showed that drafting, research and review need only file tools and the runner's tools, and that everything needing a command, such as compiling a deck, is a step the runner runs itself. Staging folders are kept out of any shared temporary folder, and each worker is given a temporary folder of its own.
+No profile has a shell or file tools. Milestone 0 showed that drafting, research and review need only the runner's tools: the brief carries the inputs, a runner tool serves anything larger, and results come back through runner tools. Everything needing a command, such as compiling a deck, is a step the runner runs itself. A worker's folder is then only a place to stand; it is still kept out of any shared temporary folder, and each worker is given a temporary folder of its own.
 
 Two things narrow the difference between vendors:
 
@@ -325,9 +325,10 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 
 ## 8. Risks and open questions
 
-- **Codex is untested.** Milestone 0 could not reach it from the network it ran on. Its sandbox limits writing, not reading, and its shell cannot be removed, so the "no shell" rule cannot hold there as it does on Claude. Whether Codex can be confined well enough is open until its half of the spike is run.
+- **Codex workers still see some of the person's setup.** The list of installed skills and the global instruction file reach every Codex worker, so two people's Codex workers can behave differently. The fix is a separate home folder for workers holding only the sign-in; it needs the person's agreement and has not been tried.
+- **Codex is costly per job.** Each job carried 50,000 to 190,000 input tokens of standing instructions, mostly cached.
 - **An agent can be unreachable on a given network.** A run started on one agent stays on it, so a person on a network that blocks that agent cannot continue the run from there.
-- **The account's email address reaches every worker** on Claude. It was the one piece of the person's setup that could not be kept out.
+- **The account's email address reaches every worker** on Claude. The owner accepted this on 2026-10-13.
 - **Pages that need a browser.** Not met in milestone 0; not ruled out.
 - **Judging slides from images.** Both agents must read rendered slides in an unattended run. Codex takes images as input and Claude reads image files; neither has been tried here.
 - **Vendor churn.** Codex's flags and documentation have moved several times this year. Thin adapters limit the damage; they do not remove it.
@@ -351,4 +352,4 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 - Today's team hub folds into the workspace: a published revision is a tag, and shared scenarios and audiences are folders in it.
 - Nothing is pushed without the person saying so, unless a workspace is set to push after each gate.
 - The runner itself is a new repository, in Python, created at milestone 2. Milestones 0 and 1 do not need it.
-- Milestones 1 and 2 are built on Claude, behind the adapter interface. Codex joins when its half of milestone 0 has been run and has passed.
+- Milestones 1 and 2 are built on Claude first, behind the adapter interface, with the Codex adapter following in milestone 2 using the mode milestone 0 arrived at.

@@ -78,13 +78,9 @@ One of three answers, with the evidence:
 
 Run on 2026-10-13 with Claude Code 2.1.287 and Codex 0.162.1.
 
-**Ending: go, with changes, on Claude. Codex is not yet tested.**
+**Ending: go, with changes, on both agents.** On Codex one hard requirement holds only in part, and its workaround is not yet tried.
 
-### Codex could not be run
-
-Every Codex job failed before it started, and so did a plain `codex exec` with none of the spike's options. The computer was on a network whose firewall intercepts the connection to Codex's service and presents a certificate the computer does not trust. That is a control on the network, not a fault to work around. The Codex half of every experiment is still to do, from a network where Codex works.
-
-It is also a finding: being signed in is not enough. Whether an agent can be reached depends on the network a person is on that day.
+Codex could not be reached at first: the computer was on a network whose firewall intercepts the connection to Codex's service. Its half was run later the same day from another network. That is itself a finding: being signed in is not enough, and whether an agent can be reached depends on the network a person is on.
 
 ### Claude
 
@@ -102,7 +98,27 @@ It is also a finding: being signed in is not enough. Whether an agent can be rea
 
 Fourteen jobs in all. Each took between 6 and 70 seconds. The reported cost was about two dollars in total, as an estimate; under a subscription it is usage, not a charge.
 
+### Codex
+
+The options first assumed were not enough. The results below are for a stricter mode, given after the table.
+
+| | Experiment | Result | Detail |
+| --- | --- | --- | --- |
+| 1 | Starts and returns | Pass | 10 seconds. The result matched the schema |
+| 2 | Confined to the folder | Pass | Its sandbox refused every write and delete outside the folder. With a shell it could read anything on the computer; with the shell switched off it had no way to read a file at all |
+| 3 | No network unless given | Pass, once switched off | Shell commands had no network. Its web tool was available by default in every profile and had to be disabled where it is not wanted |
+| 4 | Ignores the person's setup | **Partly** | Connected apps and plugins, which had included the person's mail and files, were removed by switches. The list of every installed skill and the person's global instruction file still reached the worker. In the drafting job it found and tried to run the installed helper |
+| 5 | Uses the runner's tools | Pass, once allowed | Every tool call was refused until the runner's server was marked as approved. Then: refused, fixed, accepted |
+| 6 | Drafting | Accepted first time | A 1,500-word blueprint in 94 seconds, with the unresolved questions listed as gaps |
+| 7 | Research, easy | Pass | Six quoted passages, accepted by the real `harness-research record` |
+| 8 | Research, hard | Pass | The same |
+| 9 | Reads a picture | Pass | All four answers right, in 8 seconds |
+
+Sixteen jobs. Each used between 50,000 and 190,000 input tokens, most of them cached: the instructions and tool descriptions Codex sends with every job are large.
+
 ### What worked as the worker mode
+
+Claude:
 
 ```
 claude -p --restricted --strict-mcp-config --mcp-config <the runner's tools> \
@@ -113,18 +129,33 @@ claude -p --restricted --strict-mcp-config --mcp-config <the runner's tools> \
 
 `--restricted` does most of the work: it ignores the person's settings, removes the tools that run code unless they are named, and confines the file tools to the working folder. `--permission-prompts none` turns anything that would ask a question into a refusal.
 
+Codex:
+
+```
+codex exec --json --cd <folder> --sandbox workspace-write \
+  --ignore-user-config --ignore-rules --skip-git-repo-check --ephemeral \
+  --disable <apps, plugins, browser and computer use, image generation, sub-agents, hooks, \
+             skill search, the shell> \
+  -c web_search="disabled"            (or "live" for research) \
+  -c mcp_servers.runner.command=...   -c mcp_servers.runner.args=... \
+  -c mcp_servers.runner.default_tools_approval_mode="approve"
+```
+
+Nothing here removes the skill list or the global instruction file. Those come from the person's Codex home folder, so the workaround is a separate, empty home for workers that holds only the sign-in. It was not tried, because it means pointing a second folder at the person's sign-in file, and that is theirs to agree to.
+
 ### What the design must change
 
-1. **No shell for workers.** Every experiment that needed a shell was a test of the shell. Drafting, research and review needed only file tools and the runner's tools. Commands are the runner's job. Without a shell there is nothing to sandbox and no way to read outside the folder.
-2. **Research needs no network for the worker's own code.** A search tool plus the runner's `save_source` was enough. The runner fetches; the worker never does.
+1. **Workers get nothing but the runner's tools.** No shell on either agent, and no file tools. On Codex, removing the shell removes all reading of files, so inputs cannot be left in a folder for the worker to find. The same rule on both: the brief carries what the worker needs, a runner tool serves anything larger, and results come back through runner tools. Folders and sandboxes then stop mattering.
+2. **Research needs no network for the worker's own code.** A search tool plus the runner's `save_source` was enough on both. The runner fetches; the worker never does.
 3. **The runner works out where a quote sits.** Workers supplied exact quotes and the runner found the offsets. Nothing was refused for a wrong offset, because no worker had to count one.
 4. **Each research job must be told what the training is about.** Given only its question, the worker answered the easy one from general documentation and missed the product-specific angle the live run found.
-5. **Staging folders must not sit under a shared temporary folder,** and the runner must set each worker's own temporary folder. The first shell test failed for this reason alone: the "outside" folder was inside an area the sandbox allows by default.
-6. **Readiness means reachable, not signed in.** The status screen has to try each agent from the current network.
-7. **The account's email address reaches every worker.** It cannot be switched off with the options tried. Recorded as a known exposure.
+5. **Guidance for workers is written for workers.** Given the skill's stage reference as it stands, the Codex worker tried to run the helper commands it names.
+6. **Staging folders must not sit under a shared temporary folder,** and the runner must set each worker's own temporary folder. The first shell test failed for this reason alone.
+7. **Readiness means reachable, not signed in.** The status screen has to try each agent from the current network.
+8. **Each agent leaks something of the person.** Claude: the account's email address. Codex: the skill list and the global instruction file, until workers have a home of their own.
 
 ### Not answered
 
-- Everything about Codex. Known before testing: its sandbox makes the shared temporary folder writable by default, does not restrict reading, and its shell cannot be removed.
+- Whether a separate Codex home for workers closes the gap in experiment 4.
 - Pages that need a browser to render. The three pages tried did not.
-- Whether the drafted blueprint is good enough, which only a person can say.
+- Whether the drafted blueprints are good enough, which only a person can say. The owner chose to proceed on 2026-10-13.
