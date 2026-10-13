@@ -49,6 +49,25 @@ python3 skills/training-studio/scripts/validate_package.py
 
 The validator confirms the package is whole: required files exist, links resolve, and the progressive-disclosure rules hold.
 
+## Continuous integration
+
+Two workflows run on a pull request.
+
+- **`ci.yml`** runs on GitHub's own runners: Ubuntu and macOS, Python 3.11 and 3.13.
+- **`verify-tart.yml`** runs on disposable virtual machines on the owner's Mac, through an on-demand runner service kept outside this repository. It runs only for the owner's own pull requests from a branch of this repository, and only once that service has been told about this repository. Its filter is read from the base branch, never from the pull request.
+
+Both run the same thing, `scripts/ci/check.sh`: the whole suite, then the package check.
+
+That service pins the exact contents of every workflow here. **A change to either workflow file takes effect only after its new hash is recorded in the service's own configuration,** so say so in the pull request that makes one.
+
+To run the suite by hand in a disposable macOS virtual machine, with Tart and the shared Tart test runner installed:
+
+```bash
+TRAINING_STUDIO_TART_BASE=<a stopped base> bash scripts/ci/tart-macos.sh --dry-run
+```
+
+Drop `--dry-run` to run it. The clone is deleted afterwards; its logs are kept.
+
 ## How the tests are organised
 
 | File | Covers |

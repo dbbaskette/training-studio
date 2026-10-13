@@ -1,0 +1,43 @@
+# Runs on disposable local virtual machines, through the repository owner's on-demand runner
+# service. Nothing runs unless that service is configured for this repository.
+name: Verify on local Tart
+on:
+  # The filter below must come from the trusted base branch, never from a pull request's own
+  # copy of this file. That is what pull_request_target guarantees.
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+concurrency:
+  group: tart-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    # Only the owner's own pull requests, from a branch of this repository.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == github.repository_owner &&
+      github.actor == github.repository_owner
+    name: Local (${{ matrix.platform }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            label: training-studio-tart-macos
+            python: /opt/homebrew/bin/python3.13
+          - platform: linux
+            label: training-studio-tart-linux
+            python: /usr/bin/python3
+    runs-on: [self-hosted, '${{ matrix.label }}']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Run the tests and check the package
+        shell: bash
+        env:
+          CI_PYTHON: ${{ matrix.python }}
+        run: bash scripts/ci/check.sh "$CI_PYTHON"
