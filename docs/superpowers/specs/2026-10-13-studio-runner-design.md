@@ -212,6 +212,7 @@ The page is the product. The people using it include teammates who have never se
 7. **No dead ends.** Every failure says what happened, what was kept, and offers one clear next step.
 8. **Nothing is final by accident.** An approval can be reopened. Because state is in git, reopening is safe.
 9. **Usable by everyone.** Works from the keyboard, readable by a screen reader, never relies on colour alone, comfortable in light and dark and at a narrow width.
+10. **It looks like it belongs on a Mac.** A liquid glass style: translucent navigation and controls over a soft backdrop, with reading kept on solid surfaces. Where a browser cannot do it, or a person has asked for less transparency, more contrast or less motion, it falls back to solid and still.
 
 **The flow**
 

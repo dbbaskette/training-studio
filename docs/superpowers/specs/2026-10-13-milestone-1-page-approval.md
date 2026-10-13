@@ -77,7 +77,9 @@ Rebuild the desk's front end as three screens, following section 5.8 of the pare
 - Plain words. Never "artifact", "stale" or "lineage" on screen. Suggested: "waiting for your review", "out of date", "in progress", "finished", "left out".
 - Updates itself without a reload. The tab title carries a count of what needs the user, and the browser's notification is used, once permission is given, when something new needs them.
 - Works from the keyboard, with visible focus, labelled controls and no meaning carried by colour alone. Light and dark. Usable at phone width.
-- An approved mockup exists for home and a gate. In words: a calm, light page; a short greeting; white cards on a soft background; a "Needs you" card first with one row per item and one button each; an "in progress" card with small stage dots; a single filled button per screen for the main action; the gate as two columns, the document wide on the left and the review narrow on the right, with the decision bar beneath.
+- **The look is a native Mac app in a liquid glass style** (the owner, 2026-10-13, after seeing a plainer mockup). A translucent sidebar and a floating glass toolbar over a soft, slowly drifting backdrop; glass cards for what needs you; capsule controls; a highlight on glass that follows the pointer; system type and the system's accent colour; light and dark as two designed appearances.
+- **Glass is for navigation and controls; reading happens on a solid surface.** The document at a gate, the comparison and any long text are opaque.
+- **The look gives way when it should.** Where the browser cannot blur, or the person has asked for less transparency, more contrast or less motion, surfaces become solid and movement stops. Text on glass keeps its contrast whatever is behind it.
 
 ## 4. Safety
 
