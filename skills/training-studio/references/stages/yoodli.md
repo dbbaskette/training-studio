@@ -26,10 +26,10 @@ For each, present the scenario and its Yoodli file together as the gates referen
 
 - which goal carries each success criterion,
 - the counts against Yoodli's limits, and that the limits are provisional while `check` says so,
-- whether the brief's export is `current`, since it is the file the user uploads,
+- whether the brief's Google Doc or export is `current`, since it is the file the user uploads,
 - your judgment of whether the context and goals agree with the brief.
 
-On approval, for each: `training.py approve yoodli:<id>`. Make a Word copy of the Yoodli file as the workspace reference describes and record it with `training.py export yoodli:<id>`, or `--unavailable "<why>"`.
+On approval, for each: `training.py approve yoodli:<id>`. If `exports` in `training.py status` lists `yoodli:<id>`, make its Word copy as the workspace reference describes and record it with `training.py export yoodli:<id>`, or `--unavailable "<why>"`.
 
 Then `training.py checkpoint --no-question --stage package --next "Write the index"`. With levels, use the checkpoint in the levels reference: another level may remain.
 

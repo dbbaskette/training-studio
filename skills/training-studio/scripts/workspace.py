@@ -549,14 +549,14 @@ def exportable(name: str) -> bool:
 
 def export_wanted(session: dict, name: str) -> bool:
     """Whether an artifact needs a Word copy: the user asked for them, or Yoodli takes it
-    as an upload."""
-    base = split(name)[0]
+    as an upload and no Google Doc stands in for it."""
     settings = session['settings']
-    if base == 'document':
-        return 'word' in settings['copies']
-    if base == 'brief':
-        return 'word' in settings['copies'] or 'yoodli' in settings['stages']
-    return base.startswith('yoodli:')
+    if 'word' in settings['copies']:
+        return exportable(name)
+    if 'google' in settings['copies'] or 'yoodli' not in settings['stages']:
+        return False
+    base = split(name)[0]
+    return base == 'brief' or base.startswith('yoodli:')
 
 
 def export_states(root: Path, session: dict) -> dict[str, str]:
@@ -580,16 +580,30 @@ def export_states(root: Path, session: dict) -> dict[str, str]:
     return states
 
 
-def research_summary(session: dict) -> dict | None:
-    """When research was approved, its run, and how many findings have each status."""
-    approved = session['artifacts'].get('research', {}).get('approved')
-    if not approved or not session.get('research'):
-        return None
+def findings_index(record: dict) -> dict[str, str]:
+    """The status of every research question in a harness-research record."""
+    return {item['id']: record['results'].get(item['id'], {}).get('status', 'pending')
+            for item in record['items']}
+
+
+def research_summary(root: Path, session: dict, approved: bool) -> dict | None:
+    """The research run and how many findings have each status.
+
+    Approved research is summarised as it was approved. Before that, or once it has changed,
+    the summary is of the record as it stands, with no approval date.
+    """
+    entry = session['artifacts'].get('research', {}).get('approved')
+    if approved and entry and session.get('research'):
+        index, run, at = session.get('findings') or {}, session['research']['run'], entry['at']
+    else:
+        found = research_record(root)
+        if found is None:
+            return None
+        index, run, at = findings_index(found), found.get('run'), None
     counts: dict[str, int] = {}
-    for value in (session.get('findings') or {}).values():
+    for value in index.values():
         counts[value] = counts.get(value, 0) + 1
-    return {'approved_at': approved['at'], 'run': session['research']['run'],
-            'findings': counts}
+    return {'approved_at': at, 'run': run, 'findings': counts}
 
 
 def status(root: Path) -> dict:
@@ -607,7 +621,7 @@ def status(root: Path) -> dict:
         'settings': session['settings'],
         'unavailable_stages': session['unavailable'],
         'pins': session['pins'],
-        'research': research_summary(session),
+        'research': research_summary(root, session, state.get('research') == 'approved'),
         'artifacts': state,
         'files': {name: artifact(root, session, name)['file'] for name in state},
         'exports': export_states(root, session),
@@ -670,9 +684,7 @@ def approve(root: Path, name: str, accept_stale: str | None = None) -> dict:
             warnings.append('Could not read the findings index; '
                             'citation checks will report unavailable.')
         else:
-            session['findings'] = {
-                item['id']: found['results'].get(item['id'], {}).get('status', 'pending')
-                for item in found['items']}
+            session['findings'] = findings_index(found)
             pending = sorted(key for key, value in session['findings'].items()
                              if value == 'pending')
             if pending:

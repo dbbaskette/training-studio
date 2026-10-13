@@ -710,7 +710,18 @@ class CopiesTests(TrainingCase):
             workspace.export(self.root, 'document')
         self.assertEqual(workspace.load(self.root)['exports'], {})
 
-    def test_row_66_yoodli_takes_the_brief_as_a_file_whatever_the_copies(self):
+    def test_row_70_with_google_docs_kept_yoodli_asks_for_no_word_copy(self):
+        workspace.init(self.root, 'Topic', yoodli=True, copies=['google'])
+        self.write('scenario.md', '# Scenario: mine\n')
+        self.assertEqual(self.exports(), {})
+        self.approved(*CHAIN, 'brief')
+        self.write('product-brief.docx', 'exported v1')
+        with self.assertRaisesRegex(WorkspaceError, 'Word copies are off'):
+            workspace.export(self.root, 'brief')
+        workspace.checkpoint(self.root, copies=['google', 'word'])
+        self.assertEqual(sorted(self.exports()), ['brief', 'document', 'yoodli:main'])
+
+    def test_row_66_without_copies_yoodli_takes_the_brief_as_a_word_file(self):
         workspace.init(self.root, 'Topic', yoodli=True)
         self.write('scenario.md', '# Scenario: mine\n')
         self.assertEqual(self.exports(), {'brief': 'missing', 'yoodli:main': 'missing'})

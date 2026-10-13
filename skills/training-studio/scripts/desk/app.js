@@ -467,9 +467,10 @@ function practice(training) {
 function research(status) {
   const node = section('Research');
   const summary = status.research;
-  if (!summary) return add(node, make('p', 'quiet', 'The research has not been approved yet.'));
+  if (!summary) return add(node, make('p', 'quiet', 'There is no research to report yet.'));
   const line = make('p', '');
-  add(line, 'Approved ', when(summary.approved_at));
+  if (summary.approved_at) add(line, 'Approved ', when(summary.approved_at));
+  else add(line, 'Not approved yet');
   if (summary.run) add(line, ', from run ', make('span', 'artifact', summary.run));
   add(line, '.');
   add(node, line);

@@ -45,6 +45,8 @@ Weight the mix to the purpose: more objections for field enablement, more prereq
 
 Ask neutral questions. One that embeds a claim, such as "Do rolling restarts guarantee zero downtime?", can come back `contradicted`, and a contradicted finding can back only a correction or a response to an objection. Where the truth is something to teach, also ask the neutral question that establishes it: "What happens to a single-instance app during a rolling restart?"
 
+If the topic names a set, such as "all the X" or "every Y", ask the question that establishes its members. Never assume the list.
+
 If the topic needs more than 30 questions, it is too large for one training. Say so and propose a split, each part in its own directory.
 
 ## Gate 1

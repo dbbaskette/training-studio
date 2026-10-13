@@ -17,8 +17,8 @@ Start with `# Yoodli scenario: <name>` and `<!-- scenario: <id> -->`. Every past
 | `## Personas`, then `### Persona 1` with `#### Name`, `Role`, `Demeanor`, `Background`, `Behaviors` | AI role. All five fields. Required for Objection Handling and Pitch; leave the section out for Tutor and Questionnaire | 3 personas |
 | `## Objections` | Concerns and pushback, one per line | |
 | `## Goals`, then `### Goal 1` with `#### Name`, `Type`, `Explanation`, `Achieved`, `Missed` | Success criteria | Explanation 2,500; Achieved 1,000; Missed 1,000 |
-| `## AI assets` | The brief's export | |
-| `## Knowledge-based goal source` | The brief's export, when used | |
+| `## AI assets` | The brief's upload copy | |
+| `## Knowledge-based goal source` | The same copy, when used | |
 | `## Settings` | Session settings | |
 
 Goal types are Binary for something done or not done, and Rated for something done well or badly. Under each `### Goal`, outside the blocks, put `<!-- criterion: 2 -->` and, where one applies, `<!-- assesses: O3 -->`.
@@ -44,10 +44,10 @@ Prerequisites, from Yoodli's help pages: custom goals need an organisation on an
 
 ## AI assets
 
-If `training.py status` reports the brief's export as `current`, name it as the file to upload. Recommend strict mode, so the AI stays within the brief, and say it uses more of the roleplay's capacity. If the export is not `current`, name no file: write that the knowledge file is not ready, and why.
+The user uploads the brief. Name the copy `training.py status` reports `current`: under `google_docs`, its Google Doc downloaded from Google as a PDF, which Yoodli can also show the learner; otherwise under `exports`, that file.
 
-Training Studio prepares files. Uploading them and creating the roleplay are the user's actions.
+If neither is `current`, name no file: write that the knowledge file is not ready, and why. Recommend strict mode, so the AI stays within the brief, and say it uses more of the roleplay's capacity.
 
 ## What is provisional
 
-Field names and limits come from Yoodli's public help pages. `assets/profiles/yoodli.json` gives each limit its source, the date collected and the date confirmed in the live Builder, empty until the user confirms it. Say in the file that they are provisional while `check` warns that they are.
+Field names and limits come from Yoodli's public help pages. `assets/profiles/yoodli.json` gives each limit's source and the dates it was collected and confirmed in the live Builder. Say in the file that they are provisional while `check` warns that they are.

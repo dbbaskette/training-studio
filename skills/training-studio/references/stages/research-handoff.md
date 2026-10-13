@@ -17,7 +17,7 @@ A failed guidance fetch or a blocked network is handled by that skill's rules. R
 
 ## Gate 2
 
-`training.py save research --built`, then present the gate, taking the numbers from the `harness-research` report and its status output: counts of supported, contradicted, insufficient and unavailable findings; each unresolved question by name; document coverage gaps. Name any question still pending. Approving with questions pending is the user's decision.
+`training.py save research --built`, then present the gate, taking the numbers from the `harness-research` report and its status output: counts of supported, contradicted, insufficient and unavailable findings; each unresolved question by name; document coverage gaps. Name any question still pending. Approving with questions pending is the user's decision. `research` in `training.py status` gives the run and the same counts, with `approved_at` empty until the user approves.
 
 `training.py approve research` approves a bundle: the live report, the record `.harness-research/research.json` and the copy it writes to `research-report.md`. It stores the findings index that citations are checked against. If it warns the index could not be read, tell the user that citation checks will report `unavailable`.
 

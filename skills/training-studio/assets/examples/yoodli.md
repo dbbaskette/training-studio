@@ -6,7 +6,7 @@ Built from `scenario.md`. Illustrative example of the required shape. Its conten
 
 **Builder (the baseline).** Create a roleplay in Yoodli's Builder and paste each block below into the field its heading names. Create the goals as custom goals in the Builder.
 
-**Roleplay Agent (optional).** Give the agent `yoodli/main.docx` and `product-brief.docx`; it takes up to 5 files and 1 public URL. It drafts the name, description, context, personas, objections and rubric goals, but it cannot create new custom goals: create those in the Builder first and ask the agent to add them. Compare its draft with this file field by field.
+**Roleplay Agent (optional).** Give the agent the brief file named under AI assets; it takes up to 5 files and 1 public URL. It drafts the name, description, context, personas, objections and rubric goals, but it cannot create new custom goals: create those in the Builder first and ask the agent to add them. Compare its draft with this file field by field.
 
 Field names and limits come from Yoodli's public help pages and are provisional until confirmed in the live builder.
 
@@ -205,6 +205,8 @@ Gets defensive, blames the customer, or leaves without a next step.
 ```
 
 ## AI assets
+
+<!-- Name the copy this training keeps: a Word file as here, or the brief's Google Doc downloaded as a PDF. -->
 
 Upload `product-brief.docx`. Turn strict mode on so the AI stays within the brief; it uses more of the roleplay's capacity.
 

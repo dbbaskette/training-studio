@@ -65,7 +65,7 @@ mkdir valkey-training
 | The deck | Does it cover every objective? |
 | The scenarios | Is this the conversation you want people to practise? |
 
-At each stop you can approve it, ask for changes, or skip that stage.
+At each stop you can approve it, ask for changes, or skip that stage. What you were shown, and what you decided, is also saved under `reviews/` in your folder.
 
 **6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, and `scenario.md`. If you chose Google Docs or Word copies, the guide and the brief are there too. If you asked for Yoodli scenarios there is a `yoodli/` folder too. `README.md` in your folder lists everything and says whether the training is complete.
 

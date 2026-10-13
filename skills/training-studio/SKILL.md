@@ -48,3 +48,4 @@ Read the one file for the step in hand, once per session, and open only the arti
 - `harness-research` does the research and `harness-slides` builds the deck. If one is missing, say so. Memory or ad hoc browsing is never called research.
 - A check that failed or could not run is not a clean check.
 - Never write training content into this skill's directory.
+- The top level is for deliverables. Working files go in `work/`, gate reviews in `reviews/`.

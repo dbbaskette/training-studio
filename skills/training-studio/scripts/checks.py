@@ -643,7 +643,8 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
 
     `artifacts` lists each artifact's name, stage and status. `without_scenario` names the
     levels (or '' for a plain training) that want scenarios and have no scenario file.
-    `yoodli` says the optional Yoodli stage is wanted, which makes the brief's export an upload.
+    `yoodli` says the optional Yoodli stage is wanted, which makes the brief's copy an upload:
+    its export, or its Google Doc when no export is kept.
     `exports` and `docs` hold only the Word copies and Google Docs this training keeps.
     """
     blocking = [f"{item['name']} is {item['status']}" for item in artifacts
@@ -680,6 +681,12 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
     for name, state in (docs or {}).items():
         if state == 'outdated':
             blocking.append(f'The Google Doc of {name} is behind its file')
-        elif state == 'missing' and name in approved:
+        elif state != 'missing' or name not in approved:
+            continue
+        elif name.partition('@')[0] == 'brief' and upload_needed and name not in exports:
+            # No Word copy is kept, so the Doc is what the user gives Yoodli.
+            blocking.append(f'{name} is not in a Google Doc, and the Yoodli scenario names it '
+                            'as the file to upload')
+        else:
             limitations.append(f'{name} is not in a Google Doc')
     return {'ready': not blocking, 'blocking': blocking, 'limitations': limitations}

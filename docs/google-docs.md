@@ -20,6 +20,7 @@ If you say at the start that you want Google Docs, or later say "Keep the guide 
 - The training is not reported as ready while a Doc is behind its file.
 - A guide or brief that has no Doc yet is listed as a limitation, not a blocker.
 - `README.md` in your folder lists the links.
+- If you also asked for Yoodli scenarios, the brief's Doc is the file you give Yoodli: download it from Google as a PDF. No Word copy is made.
 
 Word copies are a separate choice and are off unless you ask for them. You can have either, both or neither, and change your mind at any time: "Stop keeping Google Docs", or "Make Word copies too".
 
