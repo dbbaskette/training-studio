@@ -21,9 +21,10 @@ skills/training-studio/
     gdocs.py                the Google Docs round-trip: sync rules, comment anchors, transports
     cmd_hub.py              the hub commands
     hub.py                  the team hub: publish, find, get, share, sync
-    cmd_desk.py             the desk command
-    desk.py                 the training desk: a local server and its read-only API
-    desk/                   the desk's page: index.html, app.js and style.css
+    cmd_desk.py             the desk command, which prints the link only to a terminal
+    desk.py                 the page's local server: what it reads and the decisions it records
+    computer.py             the check of this computer that the status screen asks for
+    desk/                   the page: index.html, app.js, markdown.js and style.css
     validate_package.py     package and disclosure checks
 bootstrap/training-studio/  the small entry an installed copy uses
 guidance/manifest.json      which script version the guidance needs
@@ -39,6 +40,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 The suite needs only Python 3.11 or newer. It uses no network, no harness skill and no outside account.
+
+Tests that open a local port are skipped where that is not allowed. Tests that run the page's own scripts, through `tests/page_harness.js`, need Node and are skipped without it; nothing else does.
 
 ```bash
 python3 skills/training-studio/scripts/validate_package.py
@@ -58,8 +61,10 @@ The validator confirms the package is whole: required files exist, links resolve
 | `tests/test_installer.py` | The installer, against a temporary home directory |
 | `tests/test_sync.py` | Guidance sync, against a local git repository |
 | `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
-| `tests/test_desk.py` | The training desk: its API, everything it refuses, and the command, against a server on a port the system chooses |
+| `tests/test_desk.py` | The page: what it reads and records, everything it refuses, the command, the check of this computer with its commands stubbed, and the page's scripts and colours |
 | `tests/test_hub.py` | The team hub, against bare git repositories in temporary directories |
+
+The page's scripts are tested in a document that has no HTML parser, so a script that wrote markup would fail. That checks what the scripts build, name and send. It does not replace looking at the page in a browser.
 
 Tests named `test_row_NN` implement a row of the state-transition matrix in section A7 of the plan. A change to status, approval, inputs or readiness adds or updates a row and its test.
 

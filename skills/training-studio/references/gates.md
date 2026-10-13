@@ -14,12 +14,13 @@ Every stage ends at a gate. Nothing downstream starts until the user approves.
    - anything stale, and what changed upstream,
    - open gaps and limitations.
 5. Offer the choices: approve, revise (they say what), rebuild, or skip the stage.
-6. `training.py checkpoint --question "<the question you asked>" --next "Waiting for approval of <artifact>"`, so a resumed session knows it is at this gate and asks again.
-7. When the user decides, append the decision and the date to that review.
+6. `training.py checkpoint --gate <artifact> --question "<the question you asked>" --next "Waiting for approval of <artifact>"`, so a resumed session asks again.
 
 ## Decide
 
-- **Approve.** Only on a clear yes from the user, in chat, about this artifact. Run `training.py approve <artifact>`, then `training.py checkpoint --no-question --stage <next stage> --next "<next step>"`.
+If `status` shows `approval: page`, the user decides on the page, not here: follow the desk reference.
+
+- **Approve.** Only on a clear yes from the user, in chat, about this artifact. Run `training.py approve <artifact>`, then `training.py checkpoint --stage <next stage> --next "<next step>"`.
 - **Revise.** Make the change, save it with `training.py save <artifact> --from <file>`, check, and present again.
 - **Stale.** Say so at the gate. The user either has it rebuilt or accepts it as it is: `training.py approve <artifact> --accept-stale "<their reason>"`. The reason is recorded. Accepting one artifact approves nothing below it.
 - **Skip.** `training.py skip <stage> --reason "<their reason>"`.

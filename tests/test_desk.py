@@ -1,9 +1,15 @@
-"""The training desk: what its read-only API returns, what it refuses, and the command."""
+"""The page: what it reads, what it changes, everything it refuses, and the command.
+
+Classes built on DeskCase talk to a real server on a local port and are skipped where a port
+cannot be opened. Classes built on PageCase ask the same questions without a socket, so the
+rules for decisions are tested everywhere.
+"""
 import contextlib
 import io
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -11,30 +17,38 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from email.message import Message
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlencode, urlsplit
 
 import helpers
 import test_cli
+import cmd_desk
+import computer
 import desk
 import training
 import validate_package
 import workspace
 
 PAGE = helpers.SCRIPTS / 'desk'
-PAGE_FILES = ('index.html', 'app.js', 'style.css')
+PAGE_FILES = ('index.html', 'app.js', 'markdown.js', 'style.css')
+HARNESS = Path(__file__).resolve().parent / 'page_harness.js'
+NODE = shutil.which('node')
 SECURITY_HEADERS = {'Content-Security-Policy': "default-src 'self'",
                     'X-Content-Type-Options': 'nosniff',
+                    'X-Frame-Options': 'DENY',
+                    'Referrer-Policy': 'no-referrer',
                     'Cache-Control': 'no-store'}
+FORBIDDEN_WORDS = re.compile(r'\b(artifacts?|stale|lineage)\b', re.IGNORECASE)
 # Straight to the socket: a proxy named in the environment must not sit in between.
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 MARKUP = '<script>alert(1)</script>\n<img src=x onerror=alert(2)>\n'
 
 
-def ask(url: str, headers: dict | None = None, method: str = 'GET'):
+def ask(url: str, headers: dict | None = None, method: str = 'GET', body: bytes | None = None):
     """One request. Returns the status, the headers and the body, refused or not."""
-    request = urllib.request.Request(url, headers=headers or {}, method=method)
+    request = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
     try:
         with DIRECT.open(request, timeout=10) as response:
             return response.status, response.headers, response.read()
@@ -43,21 +57,21 @@ def ask(url: str, headers: dict | None = None, method: str = 'GET'):
             return refused.code, refused.headers, refused.read()
 
 
-class DeskCase(test_cli.Flow):
-    """A registry of its own, and a desk serving on a port the system chose."""
+def never(*args, **kwargs):
+    raise AssertionError('A test must never look at the real computer.')
+
+
+class Registry(test_cli.Flow):
+    """A registry of its own, and a readiness check that can never reach the real computer."""
 
     def setUp(self):
         super().setUp()
         data = self.root.parent / 'data'
-        patcher = mock.patch.dict(os.environ, {'TRAINING_STUDIO_DATA': str(data)})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        try:
-            self.desk = desk.Desk()
-        except PermissionError as refused:
-            self.skipTest(f'This environment does not allow listening on a local port: {refused}')
-        self.addCleanup(self.desk.stop)
-        self.desk.start()
+        for patcher in (mock.patch.dict(os.environ, {'TRAINING_STUDIO_DATA': str(data)}),
+                        mock.patch.object(computer, 'run', never),
+                        mock.patch.object(computer, 'reach', never)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def another(self, name: str, *init_args) -> Path:
         """A second training in its own folder, registered like the first."""
@@ -69,14 +83,57 @@ class DeskCase(test_cli.Flow):
         self.assertEqual(code, 0)
         return root
 
-    def fetch(self, target: str, token=True, host: str | None = None, method: str = 'GET'):
-        """Ask the desk. `token` is True for the right one, False for none, or one to send."""
-        headers = {}
+    def on_disk(self) -> dict:
+        base = self.root.parent
+        return {path.relative_to(base).as_posix(): path.read_bytes()
+                for path in sorted(base.rglob('*')) if path.is_file()}
+
+    def at_the_blueprint_gate(self, approval: str = 'page') -> None:
+        """Research approved, a blueprint built and waiting at its gate."""
+        self.research()
+        self.write('blueprint.md', test_cli.example('blueprint.md'))
+        self.cli('save', 'blueprint', '--built')
+        self.cli('checkpoint', '--approval', approval, '--gate', 'blueprint', '--stage',
+                 'blueprint', '--question', 'Approve the blueprint?',
+                 '--next', 'Waiting for approval of blueprint')
+
+    def sha(self, relative: str) -> str:
+        return workspace.sha256_file(self.root / relative)
+
+
+class DeskCase(Registry):
+    """A page serving on a port the system chose."""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            self.desk = desk.Desk()
+        except PermissionError as refused:
+            self.skipTest(f'This environment does not allow listening on a local port: {refused}')
+        self.addCleanup(self.desk.stop)
+        self.desk.start()
+
+    def fetch(self, target: str, token=True, host: str | None = None, method: str = 'GET',
+              body: bytes | None = None, headers: dict | None = None):
+        """Ask the page. `token` is True for the right one, False for none, or one to send."""
+        headers = dict(headers or {})
         if token:
             headers[desk.TOKEN_HEADER] = self.desk.token if token is True else token
         if host:
             headers['Host'] = host
-        return ask(f'http://127.0.0.1:{self.desk.port}{target}', headers, method)
+        return ask(f'http://127.0.0.1:{self.desk.port}{target}', headers, method, body)
+
+    def send(self, endpoint: str, sent, expect: int = 200, **headers) -> dict:
+        """POST JSON as the page does: with the key, its own origin and a JSON body."""
+        wanted = {'Origin': f'http://127.0.0.1:{self.desk.port}',
+                  'Content-Type': 'application/json', **headers}
+        wanted = {name: value for name, value in wanted.items() if value is not None}
+        body = sent if isinstance(sent, bytes) else json.dumps(sent).encode()
+        status, replied, data = self.fetch(f'/api/{endpoint}', method='POST', body=body,
+                                           headers=wanted)
+        self.assertEqual(status, expect, data)
+        self.assertEqual(replied.get_content_type(), 'application/json')
+        return json.loads(data)
 
     def api(self, endpoint: str, expect: int = 200, **params) -> dict:
         target = f'/api/{endpoint}' + (f'?{urlencode(params)}' if params else '')
@@ -96,15 +153,11 @@ class DeskCase(test_cli.Flow):
             record['trainings'][str(root)]['seen_at'] = stamp
         registry.write_text(json.dumps(record), encoding='utf-8')
 
-    def on_disk(self) -> dict:
-        base = self.root.parent
-        return {path.relative_to(base).as_posix(): path.read_bytes()
-                for path in sorted(base.rglob('*')) if path.is_file()}
 
 
 class ListTests(DeskCase):
     def test_no_trainings_is_an_empty_list(self):
-        self.assertEqual(self.api('trainings'), {'trainings': []})
+        self.assertEqual(self.api('trainings'), {'trainings': [], 'needs': 0})
 
     def test_each_training_has_its_title_levels_stage_counts_and_readiness(self):
         self.research()
@@ -411,7 +464,7 @@ class RefusalTests(DeskCase):
             with self.subTest(target):
                 self.assert_refused(self.fetch(target), 400)
 
-    def test_only_get_is_answered(self):
+    def test_what_is_read_answers_get_only(self):
         before = self.on_disk()
         for method in ('POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'TRACE', 'BREW'):
             for target in ('/', *self.targets):
@@ -472,10 +525,11 @@ class RefusalTests(DeskCase):
 
 
 class PageTests(DeskCase):
-    def test_the_page_and_its_two_files_are_served_without_a_token(self):
+    def test_the_page_and_its_files_are_served_without_a_token(self):
         for target, name, kind in (('/', 'index.html', 'text/html'),
                                    ('/index.html', 'index.html', 'text/html'),
                                    ('/app.js', 'app.js', 'text/javascript'),
+                                   ('/markdown.js', 'markdown.js', 'text/javascript'),
                                    ('/style.css', 'style.css', 'text/css')):
             with self.subTest(target):
                 status, headers, body = self.fetch(target, token=False)
@@ -515,67 +569,1674 @@ class PageTests(DeskCase):
             self.fetch('/')
 
 
+class PageCase(Registry):
+    """The page's answers with no socket, so these run where a port cannot be opened."""
+
+    PORT = 8765
+
+    def setUp(self):
+        super().setUp()
+        self.page = desk.Page(self.PORT)
+        self.origin = f'http://127.0.0.1:{self.PORT}'
+
+    def headers(self, token=True, host=None, origin=None, kind=None) -> Message:
+        made = Message()
+        made['Host'] = host or f'127.0.0.1:{self.PORT}'
+        if token:
+            made[desk.TOKEN_HEADER] = self.page.token if token is True else token
+        for name, values in (('Origin', origin), ('Content-Type', kind)):
+            for value in [values] if isinstance(values, str) else values or []:
+                made[name] = value
+        return made
+
+    def answer(self, method: str, target: str, body: bytes | None = None, **options):
+        """One request, answered as the server would: the status, the JSON, and `Allow`."""
+        try:
+            status, _, data = self.page.answer(target, self.headers(**options), method, body)
+        except desk.Refusal as refusal:
+            return int(refusal.status), {'error': str(refusal)}, refusal.allow
+        except workspace.WorkspaceError as refusal:
+            return 409, {'error': str(refusal)}, None
+        self.assertNotIn(b'<', data)
+        return int(status), json.loads(data) if data else None, None
+
+    def get(self, endpoint: str, expect: int = 200, **params) -> dict:
+        target = f'/api/{endpoint}' + (f'?{urlencode(params)}' if params else '')
+        status, reply, _ = self.answer('GET', target)
+        self.assertEqual(status, expect, reply)
+        return reply
+
+    def post(self, endpoint: str, sent, expect: int = 200, **options) -> dict:
+        """POST as the page does, unless `options` say otherwise."""
+        options.setdefault('origin', self.origin)
+        options.setdefault('kind', 'application/json')
+        body = sent if isinstance(sent, (bytes, type(None))) else json.dumps(sent).encode()
+        status, reply, _ = self.answer('POST', f'/api/{endpoint}', body, **options)
+        self.assertEqual(status, expect, reply)
+        return reply
+
+    def decide(self, decision: str, artifact: str = 'blueprint', expect: int = 200,
+               **more) -> dict:
+        return self.post('decide', {'path': str(self.root), 'artifact': artifact,
+                                    'decision': decision, **more}, expect)
+
+    def gate(self, artifact: str = 'blueprint', root: Path | None = None) -> dict:
+        return self.get('gate', path=str(root or self.root), artifact=artifact)
+
+    def listed(self) -> dict:
+        return {item['path']: item for item in self.get('trainings')['trainings']}
+
+
+class WriteRuleTests(PageCase):
+    """What a change must carry before the page will make it (specification, section 4)."""
+
+    def setUp(self):
+        super().setUp()
+        self.at_the_blueprint_gate()
+        self.approve = {'path': str(self.root), 'artifact': 'blueprint', 'decision': 'approve',
+                        'seen': self.sha('blueprint.md')}
+        self.before = self.on_disk()
+
+    def refused(self, expect: int, sent=None, **options) -> dict:
+        reply = self.post('decide', self.approve if sent is None else sent, expect, **options)
+        self.assertEqual(self.on_disk(), self.before)
+        return reply
+
+    def test_the_page_itself_is_answered(self):
+        outcome = self.post('decide', self.approve)
+        self.assertEqual(outcome['decided']['by'], 'page')
+        self.assertEqual(self.cli('status')['artifacts']['blueprint'], 'approved')
+
+    def test_the_page_is_answered_at_localhost_too(self):
+        host = f'localhost:{self.PORT}'
+        self.post('decide', self.approve, host=host, origin=f'http://{host}')
+        self.assertEqual(self.cli('status')['artifacts']['blueprint'], 'approved')
+
+    def test_a_change_needs_the_key(self):
+        for token in (False, 'wrong', self.page.token[:-1], self.page.token + 'x'):
+            with self.subTest(token):
+                self.assertIn('needs the key', self.refused(403, token=token)['error'])
+
+    def test_a_change_needs_the_pages_own_origin(self):
+        other_port = f'http://127.0.0.1:{self.PORT + 1}'
+        for origin in (None, 'null', 'http://example.com', other_port,
+                       f'https://127.0.0.1:{self.PORT}', f'http://localhost:{self.PORT}',
+                       f'{self.origin}.example.com', f'{self.origin}/', 'http://127.0.0.1',
+                       [self.origin, 'http://example.com'], [self.origin, self.origin]):
+            with self.subTest(origin):
+                refusal = self.refused(403, origin=origin)
+                self.assertEqual(refusal, {'error': 'A change is accepted only from the '
+                                                    'page itself.'})
+
+    def test_a_change_is_refused_at_any_other_address(self):
+        for host in ('example.com', f'example.com:{self.PORT}', '127.0.0.1',
+                     f'127.0.0.1.example.com:{self.PORT}', f'[::1]:{self.PORT}'):
+            with self.subTest(host):
+                refusal = self.refused(403, host=host, origin=f'http://{host}')
+                self.assertIn('only at its own local address', refusal['error'])
+
+    def test_a_change_is_json_in_the_body(self):
+        for kind in (None, 'text/plain', 'application/x-www-form-urlencoded',
+                     'multipart/form-data'):
+            with self.subTest(kind):
+                self.assertEqual(self.refused(415, kind=kind),
+                                 {'error': 'Send the change as JSON.'})
+        for body in (b'', b'{not json', b'[]', b'"approve"', b'null', b'\xff\xfe',
+                     urlencode(self.approve).encode()):
+            with self.subTest(body):
+                self.assertIn('one JSON object', self.refused(400, body)['error'])
+
+    def test_every_field_is_text(self):
+        for field, value in (('path', None), ('path', 7), ('path', ''), ('artifact', None),
+                             ('artifact', ['blueprint']), ('decision', True),
+                             ('decision', ''), ('note', 3), ('note', {'a': 1}),
+                             ('seen', 12), ('note', 'x' * (desk.NOTE_LIMIT + 1))):
+            with self.subTest(field=field, value=str(value)[:20]):
+                sent = {**self.approve, field: value}
+                if value is None:
+                    del sent[field]
+                self.assertEqual(self.refused(400, sent), {'error': f'Give {field} as text.'})
+
+    def test_a_body_that_is_too_long_or_has_no_length_is_never_read(self):
+        refusal = self.post('decide', None, 413)
+        self.assertIn('64,000 bytes', refusal['error'])
+        self.assertEqual(self.on_disk(), self.before)
+
+    def test_what_changes_is_never_named_in_the_address(self):
+        query = urlencode(self.approve)
+        status, reply, _ = self.answer('POST', f'/api/decide?{query}', b'{}',
+                                       origin=self.origin, kind='application/json')
+        self.assertEqual((status, reply), (400, {'error': 'Send what is to change in the '
+                                                          'body.'}))
+        self.assertEqual(self.on_disk(), self.before)
+
+    def test_a_change_is_never_made_with_get_and_a_read_never_with_post(self):
+        query = urlencode(self.approve)
+        for target in ('/api/decide', f'/api/decide?{query}', '/api/approval'):
+            with self.subTest(target):
+                status, _, allow = self.answer('GET', target)
+                self.assertEqual((status, allow), (405, 'POST'))
+        for target in ('/', '/app.js', '/api/trainings', '/api/gate', '/api/file',
+                       '/api/training', '/api/nothing', '/api/decide/'):
+            with self.subTest(target):
+                status, _, allow = self.answer('POST', target, json.dumps(self.approve).encode(),
+                                               origin=self.origin, kind='application/json')
+                self.assertEqual((status, allow), (405, 'GET'))
+        self.assertEqual(self.on_disk(), self.before)
+
+    def test_only_a_registered_training_is_changed(self):
+        elsewhere = self.root.parent / 'unregistered'
+        elsewhere.mkdir()
+        workspace.init(elsewhere, 'Unregistered')
+        self.before = self.on_disk()
+        for path in (str(elsewhere), str(self.root.parent), f'{self.root}/', f'{self.root}/.',
+                     f'{self.root}/../{self.root.name}', '/', '.', str(self.root).upper()):
+            with self.subTest(path):
+                for endpoint, sent in (('decide', {**self.approve, 'path': path}),
+                                       ('approval', {'path': path, 'mode': 'chat'})):
+                    refusal = self.post(endpoint, sent, 403)
+                    self.assertIn('not a training this computer knows', refusal['error'])
+        self.assertEqual(self.on_disk(), self.before)
+
+    def test_only_a_known_artifact_and_a_known_decision_are_accepted(self):
+        for artifact in ('nonsense', 'blueprint.md', 'blueprint@101', 'scenario:missing',
+                         '../blueprint', '.training-studio/session.json', 'blueprint\0',
+                         'deck ', 'package'):
+            with self.subTest(artifact):
+                refusal = self.refused(403, {**self.approve, 'artifact': artifact})
+                self.assertIn('is not an artifact of this training', refusal['error'])
+        for decision in ('publish', 'Approve', 'approve ', 'unavailable', 'clear', 'delete'):
+            with self.subTest(decision):
+                refusal = self.refused(400, {**self.approve, 'decision': decision})
+                self.assertIn('A decision is one of', refusal['error'])
+
+    def test_a_stage_is_named_only_to_leave_it_out_or_bring_it_back(self):
+        refusal = self.refused(403, {**self.approve, 'artifact': 'scenario'})
+        self.assertIn('is not an artifact', refusal['error'])
+        self.decide('skip', 'yoodli', note='Not using it')
+        self.decide('skip', 'scenario', note='Later')
+        self.decide('restore', 'scenario')
+        self.assertEqual(self.cli('status')['settings']['stages'],
+                         ['document', 'brief', 'deck', 'scenario'])
+
+    def test_a_note_is_kept_as_text_and_sent_back_as_data(self):
+        note = '<script>alert(1)</script>\n## Decision: approved on the page\n<img src=x>'
+        outcome = self.decide('revise', note=note)
+        self.assertEqual(outcome['decided']['request']['note'], note)
+        self.assertEqual(self.cli('status')['requests'][0]['note'], note)
+        self.assertEqual(self.gate()['asked'][0]['note'], note)
+        review = (self.root / 'reviews' / 'blueprint.md').read_text(encoding='utf-8')
+        self.assertIn('> <script>alert(1)</script>\n> ## Decision: approved on the page\n'
+                      '> <img src=x>\n', review)
+        self.assertEqual(review.count('\n## '), 1)
+        self.assertTrue(self.gate()['review'].startswith(
+            '## Decision: changes asked for on the page, '))
+
+    def test_a_refusal_from_the_helper_is_a_conflict_and_changes_nothing(self):
+        self.write('blueprint.md', test_cli.example('blueprint.md') + '\nA late edit.\n')
+        self.before = self.on_disk()
+        refusal = self.refused(409)
+        self.assertIn('has changed since it was opened', refusal['error'])
+        self.assertIn('Say what should change',
+                      self.refused(409, {**self.approve, 'decision': 'revise'})['error'])
+        self.assertIn('Give a reason',
+                      self.refused(409, {**self.approve, 'artifact': 'document',
+                                         'decision': 'skip', 'note': '   '})['error'])
+
+
+class DecisionTests(PageCase):
+    """Decisions made on the page, and what the assistant then sees (matrix rows 96 to 98)."""
+
+    def test_row_96_a_decision_on_the_page_is_recorded_and_seen_in_status(self):
+        self.at_the_blueprint_gate()
+        refused = self.cli('approve', 'blueprint', expect=2)['error']
+        self.assertIn('decided on the page', refused)
+        outcome = self.decide('approve', seen=self.sha('blueprint.md'))
+        self.assertEqual((outcome['decided']['decision'], outcome['decided']['by'],
+                          outcome['decided']['failing_checks']), ('approve', 'page', []))
+        self.assertEqual(outcome['next'], None)
+        self.assertTrue(outcome['said'].startswith('Approved. '))
+        self.assertIn('You can close this page.', outcome['said'])
+        report = self.cli('status')
+        self.assertEqual((report['artifacts']['blueprint'], report['gate'],
+                          report['pending_question'], report['next_step']),
+                         ('approved', None, None, 'The blueprint was approved on the page.'))
+        record = json.loads((self.root / '.training-studio' / 'session.json').read_text())
+        self.assertEqual(record['artifacts']['blueprint']['approved']['by'], 'page')
+        self.assertEqual((record['events'][-1]['event'], record['events'][-1]['by']),
+                         ('approve', 'page'))
+        review = (self.root / 'reviews' / 'blueprint.md').read_text(encoding='utf-8')
+        self.assertIn('## Decision: approved on the page, ', review)
+
+    def test_an_approval_names_the_version_that_was_read(self):
+        self.at_the_blueprint_gate()
+        self.assertIn('which version was read', self.decide('approve', expect=400)['error'])
+        self.assertIn('which version was read',
+                      self.decide('approve', expect=400, seen='')['error'])
+        read = self.gate()['sha256']
+        self.write('blueprint.md', test_cli.example('blueprint.md') + '\nRewritten.\n')
+        self.assertIn('has changed since it was opened',
+                      self.decide('approve', expect=409, seen=read)['error'])
+        self.assertEqual(self.cli('status')['artifacts']['blueprint'], 'draft')
+        self.decide('approve', seen=self.gate()['sha256'])
+        self.assertEqual(self.cli('status')['artifacts']['blueprint'], 'approved')
+
+    def test_row_97_the_page_decides_only_once_approval_has_moved_to_it(self):
+        self.at_the_blueprint_gate(approval='chat')
+        before = self.on_disk()
+        for decision, more in (('approve', {'seen': self.sha('blueprint.md')}),
+                               ('revise', {'note': 'Shorter'}), ('rebuild', {}),
+                               ('skip', {'note': 'No', 'artifact': 'document'})):
+            with self.subTest(decision):
+                refusal = self.decide(decision, expect=409, **more)
+                self.assertIn('made in the conversation', refusal['error'])
+        self.assertEqual(self.on_disk(), before)
+        self.assertEqual(self.gate()['approval'], 'chat')
+        self.assertEqual(self.post('approval', {'path': str(self.root), 'mode': 'page'}),
+                         {'approval': 'page'})
+        self.assertEqual(self.gate()['approval'], 'page')
+        self.decide('approve', seen=self.sha('blueprint.md'))
+        self.assertEqual(self.cli('status')['artifacts']['blueprint'], 'approved')
+
+    def test_only_the_page_moves_approval_back_to_the_conversation(self):
+        self.at_the_blueprint_gate()
+        self.assertIn('only the page can move it back',
+                      self.cli('checkpoint', '--approval', 'chat', expect=2)['error'])
+        self.assertEqual(self.post('approval', {'path': str(self.root), 'mode': 'chat'}),
+                         {'approval': 'chat'})
+        self.assertEqual(self.cli('status')['approval'], 'chat')
+        self.cli('approve', 'blueprint')
+        for mode in ('email', '', 'Page'):
+            self.post('approval', {'path': str(self.root), 'mode': mode}, 400)
+        self.post('approval', {'path': str(self.root)}, 400)
+
+    def test_a_request_opens_on_the_page_and_closes_when_the_work_is_done(self):
+        self.at_the_blueprint_gate()
+        outcome = self.decide('revise', note='Add a second example')
+        self.assertTrue(outcome['said'].startswith('Your changes are noted.'))
+        shown = self.listed()[str(self.root)]
+        self.assertEqual((shown['state'], shown['requests'], shown['waiting']),
+                         ('in-progress', 1, None))
+        self.assertEqual(shown['sentence'], 'You asked for changes to the blueprint. Your '
+                         'assistant does that when you go back to the conversation.')
+        gate = self.gate()
+        self.assertEqual([(item['kind'], item['note']) for item in gate['asked']],
+                         [('revise', 'Add a second example')])
+        self.assertEqual((gate['waiting'], gate['question']), (False, None))
+        detail = self.get('training', path=str(self.root))
+        self.assertIn('You asked for changes to the blueprint, and that is still to do',
+                      detail['view']['blocking'])
+        self.assertTrue(detail['view']['files'][3]['asked'])
+        revised = self.root.parent / 'revised.md'
+        revised.write_text(test_cli.example('blueprint.md') + '\nA second example.\n')
+        self.cli('save', 'blueprint', '--from', str(revised))
+        self.assertEqual(self.gate()['asked'], [])
+        self.assertEqual(self.cli('status')['requests'], [])
+        self.decide('rebuild')
+        self.assertEqual(self.listed()[str(self.root)]['sentence'],
+                         'You asked for a rebuild of the blueprint. Your assistant does '
+                         'that when you go back to the conversation.')
+        self.decide('approve', seen=self.sha('blueprint.md'))
+        self.assertEqual(self.cli('status')['requests'], [])
+
+    def test_a_stage_is_left_out_and_brought_back_on_the_page(self):
+        self.at_the_blueprint_gate()
+        self.assertIn('Turn Yoodli off', self.decide('skip', 'brief', expect=409,
+                                                     note='Deck only')['error'])
+        outcome = self.decide('skip', 'deck', note='Not needed')
+        self.assertEqual(outcome['decided']['stage'], 'deck')
+        gate = self.gate('deck')
+        self.assertEqual((gate['status'], gate['words'], gate['decisions']),
+                         ('skipped', 'left out', ['restore']))
+        detail = self.get('training', path=str(self.root))
+        self.assertEqual(detail['view']['left_out'],
+                         [{'stage': 'deck', 'name': 'The deck stage', 'optional': False}])
+        self.assertIn('The deck stage was left out', detail['view']['limitations'])
+        self.assertIn('decided on the page',
+                      self.cli('skip', 'deck', '--clear', expect=2)['error'])
+        self.decide('restore', 'deck')
+        self.assertEqual(self.gate('deck')['status'], 'not-started')
+        self.assertEqual(self.get('training', path=str(self.root))['view']['left_out'], [])
+
+    def test_the_reply_names_the_next_thing_that_needs_the_user(self):
+        self.at_the_blueprint_gate()
+        other = self.another('second')
+        (other / 'intake.md').write_text('# Intake\n', encoding='utf-8')
+        workspace.checkpoint(other, question='Which audience?', gate='intake')
+        outcome = self.decide('approve', seen=self.sha('blueprint.md'))
+        self.assertEqual(outcome['next'], {
+            'path': str(other), 'title': 'Second', 'artifact': 'intake',
+            'sentence': 'The intake summary is waiting for your review.'})
+
+
+class GateTests(PageCase):
+    """What a gate shows: the document, what changed, what was checked, what is worth a look."""
+
+    def test_row_98_without_a_recorded_gate_the_first_unapproved_file_is_at_the_gate(self):
+        self.research()
+        self.content()
+        self.assertEqual(self.listed()[str(self.root)]['waiting'], None)
+        self.write('blueprint.md', test_cli.example('blueprint.md') + '\nA late edit.\n')
+        self.write('product-brief.md', test_cli.example('product-brief.md') + '\nAn edit.\n')
+        state = self.cli('status')['artifacts']
+        self.assertEqual((state['blueprint'], state['document'], state['brief']),
+                         ('draft', 'stale', 'stale'))
+        self.assertEqual(self.listed()[str(self.root)]['state'], 'in-progress')
+        self.cli('checkpoint', '--question', 'Approve the brief?')
+        shown = self.listed()[str(self.root)]
+        self.assertEqual(shown['waiting'], {'artifact': 'blueprint', 'label': 'the blueprint',
+                                            'question': 'Approve the brief?',
+                                            'recorded': False})
+        self.assertEqual((shown['state'], shown['sentence']),
+                         ('needs-you', 'The blueprint is waiting for your review.'))
+        self.assertTrue(self.gate('blueprint')['waiting'])
+        self.cli('checkpoint', '--gate', 'brief')
+        shown = self.listed()[str(self.root)]
+        self.assertEqual((shown['waiting']['artifact'], shown['waiting']['recorded']),
+                         ('brief', True))
+        self.assertEqual(shown['sentence'],
+                         'The brief is out of date and waiting for your decision.')
+        self.assertEqual(self.get('trainings')['needs'], 1)
+        self.assertEqual((self.gate('brief')['waiting'], self.gate('blueprint')['waiting']),
+                         (True, False))
+
+    def test_a_question_with_nothing_to_review_still_needs_the_user(self):
+        self.cli('init', '--title', 'Rolling restarts')
+        self.cli('checkpoint', '--question', 'Who is this for?')
+        shown = self.listed()[str(self.root)]
+        self.assertEqual(shown['waiting'], {'artifact': None, 'label': None,
+                                            'question': 'Who is this for?', 'recorded': False})
+        self.assertEqual(shown['sentence'], 'A question is waiting for you: Who is this for?')
+        self.assertEqual(desk.next_up()['artifact'], None)
+
+    def test_a_gate_shows_the_document_what_was_checked_and_the_latest_review(self):
+        self.at_the_blueprint_gate()
+        self.write('reviews/blueprint.md', '# Reviews of blueprint\n\n## Review 1\n\nFirst.\n\n'
+                   '## Review 2\n\nThe sizing is my judgment.\n')
+        gate = self.gate()
+        self.assertEqual((gate['title'], gate['label'], gate['artifact'], gate['stage_name']),
+                         ('Rolling restarts', 'The blueprint', 'blueprint', 'Blueprint'))
+        self.assertEqual((gate['status'], gate['words'], gate['waiting'], gate['question']),
+                         ('draft', 'not approved yet', True, 'Approve the blueprint?'))
+        self.assertEqual(gate['document'], {
+            'kind': 'markdown', 'file': 'blueprint.md', 'truncated': False,
+            'size': len(test_cli.example('blueprint.md').encode()),
+            'text': test_cli.example('blueprint.md')})
+        self.assertEqual(gate['sha256'], self.sha('blueprint.md'))
+        self.assertEqual(gate['checked'], {'passed': 4, 'problems': []})
+        self.assertEqual(gate['review'], '## Review 2\n\nThe sizing is my judgment.')
+        self.assertEqual((gate['decisions'], gate['first'], gate['out_of_date']),
+                         (['approve', 'revise', 'rebuild'], [], []))
+        self.assertEqual(gate['changes'], {'available': False})
+        self.assertEqual([stage['state'] for stage in gate['stages']],
+                         ['done', 'done', 'done', 'review'] + ['not-started'] * 6)
+
+    def test_a_failed_check_is_named_with_its_reasons(self):
+        self.research()
+        self.write('blueprint.md',
+                   test_cli.example('blueprint.md').replace('[R:health-checks]', '[R:made-up]'))
+        self.cli('save', 'blueprint', '--built')
+        checked = self.gate()['checked']
+        self.assertEqual(checked['passed'], 3)
+        self.assertEqual([(item['check'], item['words']) for item in checked['problems']],
+                         [('blueprint.citations', 'failed')])
+        self.assertTrue(checked['problems'][0]['problems'])
+        self.assertEqual(self.gate('research')['checked'], {'passed': 0, 'problems': []})
+
+    def test_checks_are_counted_for_the_level_they_belong_to(self):
+        self.research('--levels', '101,301')
+        self.content('101')
+        self.assertEqual(self.gate('blueprint@101')['checked']['passed'], 4)
+        self.assertEqual(self.gate('document@101')['checked']['passed'], 1)
+        self.assertEqual(self.gate('blueprint@301')['checked'], {'passed': 0, 'problems': []})
+        self.assertEqual(self.gate('blueprint@301')['document'],
+                         {'kind': 'missing', 'file': '301/blueprint.md'})
+        self.assertEqual(self.gate('blueprint@301')['label'], 'The level 301 blueprint')
+
+    def test_the_research_plan_is_shown_as_its_questions(self):
+        self.research()
+        shown = self.gate('research-plan')['document']
+        self.assertEqual((shown['kind'], shown['topic'], shown['scope']),
+                         ('questions', 'Rolling restarts', 'public-web'))
+        self.assertEqual(shown['questions'][0], {
+            'id': 'availability', 'question': 'When does a rolling restart keep capacity?'})
+        self.assertEqual(len(shown['questions']), 8)
+        self.assertNotIn('text', shown)
+        self.write('.training-studio/research-plan.json', '{not json')
+        self.assertEqual(self.gate('research-plan')['document']['kind'], 'markdown')
+
+    def test_a_deck_is_shown_as_its_name_and_size_and_a_link_as_its_text(self):
+        self.research()
+        self.complete()
+        self.assertEqual(self.gate('deck')['document'],
+                         {'kind': 'file', 'file': 'deck.pptx', 'size': len(helpers.DECK)})
+        self.cli('checkpoint', '--deck-target', 'google')
+        link = '# Deck\n\n[Rolling restarts](https://example.com/slides/1)\n'
+        self.write('deck-link.md', link)
+        self.assertEqual(self.gate('deck')['document'],
+                         {'kind': 'link', 'file': 'deck-link.md', 'size': len(link),
+                          'text': link, 'truncated': False})
+
+    def test_what_changed_is_a_comparison_with_the_version_last_approved(self):
+        self.research()
+        self.content()
+        self.assertEqual(self.gate('document')['changes']['same'], True)
+        self.assertEqual(self.gate('document')['changes']['rows'], [])
+        revised = self.root.parent / 'revised.md'
+        revised.write_text(test_cli.example('document.md').replace('**Time:** 25 minutes.',
+                                                                    '**Time:** 30 minutes.')
+                           + '\nA closing line.\n')
+        self.cli('save', 'document', '--from', str(revised))
+        changed = self.gate('document')['changes']
+        self.assertEqual((changed['available'], changed['same'], changed['comparable'],
+                          changed['truncated']), (True, False, True, False))
+        self.assertTrue(changed['approved_at'])
+        rows = [(row['kind'], row['text']) for row in changed['rows']]
+        self.assertIn(('removed', '**Time:** 25 minutes.'), rows)
+        self.assertIn(('added', '**Time:** 30 minutes.'), rows)
+        self.assertIn(('added', 'A closing line.'), rows)
+        self.assertEqual(rows[0], ('gap', ''))
+        self.assertNotIn(('same', '# Rolling restarts'), rows)
+        self.assertEqual(sum(kind == 'removed' for kind, _ in rows), 1)
+        with mock.patch.object(desk, 'CHANGE_LIMIT', 3):
+            cut = self.gate('document')['changes']
+        self.assertEqual((len(cut['rows']), cut['truncated']), (3, True))
+
+    def test_a_research_plan_is_compared_question_by_question(self):
+        self.research()
+        plan = json.loads(json.dumps(helpers.PLAN))
+        plan['items'][0]['question'] = 'When is capacity kept?'
+        self.write('.training-studio/research-plan.json', json.dumps(plan))
+        rows = [(row['kind'], row['text']) for row in self.gate('research-plan')['changes']['rows']]
+        self.assertIn(('removed', 'availability: When does a rolling restart keep capacity?'),
+                      rows)
+        self.assertIn(('added', 'availability: When is capacity kept?'), rows)
+
+    def test_what_is_not_text_is_said_to_have_changed_and_is_not_compared(self):
+        self.research()
+        self.complete()
+        self.write('deck.pptx', helpers.DECK + 'a different deck')
+        changed = self.gate('deck')['changes']
+        self.assertEqual((changed['same'], changed['comparable'], changed['rows']),
+                         (False, False, []))
+
+    def test_an_out_of_date_file_says_why_and_offers_to_accept_it(self):
+        self.research()
+        self.content()
+        self.write('blueprint.md', test_cli.example('blueprint.md') + '\nA late edit.\n')
+        gate = self.gate('document')
+        self.assertEqual((gate['status'], gate['words']), ('stale', 'out of date'))
+        self.assertEqual(gate['out_of_date'], ['The blueprint has changed since this was made.'])
+        self.assertEqual(gate['first'], [{'artifact': 'blueprint', 'label': 'the blueprint'}])
+        self.assertEqual(gate['decisions'], ['revise', 'rebuild', 'skip'])
+        self.cli('approve', 'blueprint')
+        gate = self.gate('document')
+        self.assertEqual((gate['first'], gate['decisions']),
+                         ([], ['revise', 'rebuild', 'accept', 'skip']))
+        self.cli('checkpoint', '--approval', 'page')
+        self.decide('accept', 'document', note='Wording only', seen=gate['sha256'])
+        gate = self.gate('document')
+        self.assertEqual((gate['status'], gate['approved']['by'], gate['out_of_date']),
+                         ('approved', 'page', []))
+
+    def test_a_changed_setting_is_named_as_the_reason(self):
+        self.research()
+        self.content()
+        self.deck()
+        self.cli('checkpoint', '--brand', 'Another')
+        gate = self.gate('deck')
+        self.assertEqual((gate['status'], gate['out_of_date']),
+                         ('stale', ['The brand setting has changed since this was made.']))
+
+    def test_what_a_gate_offers_follows_where_the_file_stands(self):
+        self.research()
+        self.content()
+        self.assertEqual(self.gate('document')['decisions'], ['revise', 'rebuild', 'skip'])
+        self.assertEqual(self.gate('document')['approved']['by'], 'chat')
+        self.assertEqual(self.gate('brief')['decisions'], ['revise', 'rebuild'])
+        self.assertEqual(self.gate('blueprint')['decisions'], ['revise', 'rebuild'])
+        self.assertEqual(self.gate('deck')['decisions'], ['skip'])
+        self.cli('skip', 'deck', '--unavailable', '--reason', 'No slide skill here')
+        gate = self.gate('deck')
+        self.assertEqual((gate['words'], gate['unavailable'], gate['decisions']),
+                         ('could not be made', 'No slide skill here', ['restore']))
+
+    def test_a_gate_is_of_a_registered_training_and_a_known_artifact(self):
+        self.at_the_blueprint_gate()
+        self.assertIn('not a training this computer knows',
+                      self.get('gate', 403, path=str(self.root.parent),
+                               artifact='blueprint')['error'])
+        self.assertIn('is not an artifact',
+                      self.get('gate', 403, path=str(self.root), artifact='../blueprint')['error'])
+        self.get('gate', 400, path=str(self.root))
+        status, reply, _ = self.answer('GET', '/api/gate?' + urlencode(
+            {'path': str(self.root), 'artifact': 'blueprint'}), token=False)
+        self.assertEqual(status, 403)
+
+    def test_reading_a_gate_changes_nothing(self):
+        self.at_the_blueprint_gate()
+        before = self.on_disk()
+        self.gate()
+        self.gate('deck')
+        self.get('training', path=str(self.root))
+        self.get('trainings')
+        self.get('computer')
+        self.assertEqual(self.on_disk(), before)
+
+
+class PlainWordsTests(PageCase):
+    """Where a training is, in the page's own words."""
+
+    def shown(self) -> dict:
+        return self.listed()[str(self.root)]
+
+    def test_a_training_is_in_progress_then_waiting_then_finished(self):
+        self.cli('init', '--title', 'Rolling restarts')
+        first = self.shown()
+        self.assertEqual((first['state'], first['sentence'], first['stage_name'],
+                          first['approval']), ('in-progress', 'Complete intake', 'Start', 'chat'))
+        self.assertEqual([(stage['name'], stage['state']) for stage in first['stages']],
+                         [('Start', 'current'), ('Questions', 'not-started'),
+                          ('Research', 'not-started'), ('Blueprint', 'not-started'),
+                          ('Guide', 'not-started'), ('Brief', 'not-started'),
+                          ('Deck', 'not-started'), ('Practice', 'not-started'),
+                          ('Wrap-up', 'not-started')])
+        self.cli('checkpoint', '--next', '')
+        self.assertEqual(self.shown()['sentence'], 'At the Start stage.')
+
+    def test_the_row_of_stages_says_done_left_out_and_could_not_be_made(self):
+        self.research(yoodli=False, copies=())
+        self.cli('skip', 'brief', '--reason', 'Later')
+        self.cli('skip', 'deck', '--unavailable', '--reason', 'No slide skill here')
+        for name, file in (('blueprint', 'blueprint.md'), ('document', 'document.md')):
+            self.make(name, file, test_cli.example(file))
+        self.scenario(yoodli=False)
+        self.cli('checkpoint', '--stage', 'package')
+        shown = self.shown()
+        self.assertEqual([(stage['name'], stage['words']) for stage in shown['stages']],
+                         [('Start', 'done'), ('Questions', 'done'), ('Research', 'done'),
+                          ('Blueprint', 'done'), ('Guide', 'done'), ('Brief', 'left out'),
+                          ('Deck', 'could not be made'), ('Practice', 'done'),
+                          ('Wrap-up', 'done')])
+        self.assertEqual((shown['state'], shown['sentence']),
+                         ('finished', 'Finished, with 2 things left out or limited.'))
+
+    def test_a_finished_training_with_nothing_left_out_says_so(self):
+        self.research(yoodli=False, copies=())
+        for name, file in (('blueprint', 'blueprint.md'), ('document', 'document.md'),
+                           ('brief', 'product-brief.md')):
+            self.make(name, file, test_cli.example(file))
+        self.deck()
+        self.scenario(yoodli=False)
+        self.assertEqual(self.shown()['sentence'], 'Finished. Everything is approved.')
+        self.assertEqual(self.get('trainings')['needs'], 0)
+
+    def test_yoodli_is_in_the_row_only_when_it_is_wanted(self):
+        self.cli('init', '--title', 'Rolling restarts', '--yoodli')
+        self.assertIn('Yoodli', [stage['name'] for stage in self.shown()['stages']])
+        detail = self.get('training', path=str(self.root))
+        self.assertEqual(detail['view']['left_out'], [])
+        self.cli('skip', 'yoodli', '--reason', 'Not using it')
+        self.assertNotIn('Yoodli', [stage['name'] for stage in self.shown()['stages']])
+        self.assertEqual(self.get('training', path=str(self.root))['view']['left_out'],
+                         [{'stage': 'yoodli', 'name': 'The Yoodli stage', 'optional': True}])
+
+    def test_the_helpers_reasons_are_put_in_plain_words(self):
+        for said, plain in (
+                ('document is draft', 'The learner guide is not approved yet'),
+                ('yoodli:main@301 is stale', 'The level 301 Yoodli scenario is out of date'),
+                ('scenario:exec-cost is not-started',
+                 'The practice scenario "exec-cost" is not started'),
+                ('deck was skipped', 'The deck stage was left out'),
+                ('deck unavailable: No slide skill', 'The deck stage could not be made: '
+                                                     'No slide skill'),
+                ('A question is waiting on the user: Ready?',
+                 'A question is waiting for you: Ready?'),
+                ('The user asked for a rebuild to deck@101, and that is still to do',
+                 'You asked for a rebuild to the level 101 slide deck, and that is still to do'),
+                ('brief was accepted as it was after its inputs changed: Fine',
+                 'The brief was accepted as it was, after what it was built from changed: '
+                 'Fine'),
+                ('brief has no export, and the Yoodli scenario names it as the file to upload',
+                 'The brief has no Word copy, and the Yoodli scenario names it as the file to '
+                 'upload'),
+                ('The export of document is out of date',
+                 'The Word copy of the learner guide is out of date'),
+                ('Yoodli handoff incomplete: no export of brief',
+                 'The Yoodli handoff is incomplete: the brief has no Word copy'),
+                ('The Google Doc of document is behind its file',
+                 'The Google Doc of the learner guide is behind its file'),
+                ('document is not in a Google Doc', 'The learner guide is not in a Google Doc'),
+                ('blueprint.citations failed', 'A check failed: blueprint.citations'),
+                ('blueprint.citations@301 could not run: The research is not approved.',
+                 'A check could not run (blueprint.citations@301): The research is not '
+                 'approved.'),
+                ('No scenario file found for level 301.',
+                 'No scenario file found for level 301.')):
+            with self.subTest(said):
+                self.assertEqual(desk.plainly(said), plain)
+
+    def test_nothing_the_page_composes_says_artifact_stale_or_lineage(self):
+        self.research('--levels', '101,301')
+        self.complete('101')
+        self.write('101/blueprint.md', test_cli.levelled(test_cli.example('blueprint.md'), '101')
+                   + '\nA late edit.\n')
+        self.cli('skip', 'yoodli', '--reason', 'Not now')
+        self.cli('skip', 'deck', '--reason', 'Not now')
+        self.cli('checkpoint', '--approval', 'page', '--gate', 'document@101',
+                 '--question', 'Rebuild the guide?')
+        self.decide('rebuild', 'brief@101')
+        composed = []
+        for item in self.get('trainings')['trainings']:
+            composed += [item['sentence'], *(stage['words'] for stage in item['stages'])]
+        detail = self.get('training', path=str(self.root))
+        composed += [detail['sentence'], *detail['view']['blocking'],
+                     *detail['view']['limitations'],
+                     *(stage['name'] for stage in detail['view']['left_out'])]
+        for file in detail['view']['files']:
+            composed += [file['label'], file['words']]
+            gate = self.gate(file['artifact'])
+            composed += [gate['label'], gate['words'], *gate['out_of_date'],
+                         *(first['label'] for first in gate['first'])]
+        composed += list(desk.SAID.values()) + [desk.BACK_TO_CHAT]
+        self.assertGreater(len(composed), 60)
+        for text in composed:
+            self.assertNotRegex(text, FORBIDDEN_WORDS)
+        self.assertIn('The level 101 learner guide is out of date', detail['view']['blocking'])
+
+
+class ComputerTests(PageCase):
+    """The look at this computer. Every command and connection here is a stand-in."""
+
+    FOUND = {'claude': '2.1.0 (Claude Code)', 'codex': 'codex-cli 0.48.0',
+             'codex-sign-in': 'Logged in using ChatGPT', 'node': 'v22.3.0',
+             'gcloud': 'Google Cloud SDK 501.0.0\nbq 2.1.9', 'pandoc': 'pandoc 3.5'}
+
+    def looked(self, found: dict | None = None, unreachable: dict | None = None,
+               skills=('harness-research', 'harness-slides'), google: bool = False) -> dict:
+        """Look at a computer that has `found`, cannot reach `unreachable`, and keeps `skills`."""
+        found = self.FOUND if found is None else found
+        self.ran, self.reached = [], []
+        names = {command: key for key, command in computer.COMMANDS.items()}
+
+        def run(command):
+            self.ran.append(command)
+            said = found.get(names[command])
+            if said is None:
+                return {'found': False, 'ok': False, 'output': ''}
+            return {'found': True, 'ok': not said.startswith('!'), 'output': said.lstrip('!')}
+
+        def reach(host):
+            self.reached.append(host)
+            return (unreachable or {}).get(host)
+
+        home = self.root.parent / 'home'
+        for skill in skills:
+            (home / '.claude' / 'skills' / skill).mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(computer, 'run', run), mock.patch.object(computer, 'reach', reach):
+            return computer.check(home, google)
+
+    def by_id(self, result: dict) -> dict:
+        return {item['id']: item for item in result['items']}
+
+    def test_a_computer_with_everything_is_ready(self):
+        result = self.looked()
+        self.assertEqual((result['ready'], result['wrong'], result['assistants']),
+                         (True, [], ['Claude Code', 'Codex']))
+        self.assertRegex(result['checked_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        items = self.by_id(result)
+        self.assertEqual(list(items), ['claude', 'codex', 'node', 'harness-research',
+                                       'harness-slides', 'gcloud', 'pandoc'])
+        self.assertEqual({item['state'] for item in items.values()}, {'ok'})
+        self.assertEqual(items['claude']['facts'], [
+            computer.fact('Installed', 'ok', '2.1.0'),
+            computer.fact('Signed in', 'unknown', 'cannot be asked without starting it; it '
+                          'says so itself when used'),
+            computer.fact('Reachable from this network', 'ok', 'api.anthropic.com')])
+        self.assertEqual(items['codex']['facts'][1], computer.fact('Signed in', 'ok'))
+        self.assertEqual(items['harness-slides']['facts'],
+                         [computer.fact('Installed', 'ok', 'for Claude Code')])
+        self.assertTrue(items['pandoc']['optional'] and items['gcloud']['optional'])
+
+    def test_it_runs_only_the_listed_commands_and_never_an_agent(self):
+        self.looked()
+        self.assertEqual(sorted(self.ran), sorted([
+            ('claude', '--version'), ('codex', '--version'), ('codex', 'login', 'status'),
+            ('node', '--version'), ('gcloud', '--version'), ('pandoc', '--version')]))
+        self.assertEqual(sorted(self.reached),
+                         ['api.anthropic.com', 'api.openai.com', 'chatgpt.com'])
+        for command in computer.COMMANDS.values():
+            self.assertFalse({'-p', 'exec', 'run', 'chat', '--print'} & set(command), command)
+
+    def test_the_real_runner_refuses_any_other_command(self):
+        for command in (('claude', '-p', 'hello'), ('codex', 'exec', 'hello'), ('claude',),
+                        ('claude', '--version', '-p'), ('sh', '-c', 'true')):
+            with self.subTest(command):
+                with mock.patch.object(computer.subprocess, 'run', never):
+                    with self.assertRaisesRegex(ValueError, 'not a command the readiness'):
+                        REAL_RUN(command)
+
+    def test_the_real_runner_reports_a_command_that_is_missing_or_fails(self):
+        class Done:
+            returncode, stdout, stderr = 1, '', 'Not logged in\n'
+
+        with mock.patch.object(computer.subprocess, 'run', side_effect=FileNotFoundError):
+            self.assertEqual(REAL_RUN(('pandoc', '--version')),
+                             {'found': False, 'ok': False, 'output': ''})
+        with mock.patch.object(computer.subprocess, 'run', return_value=Done) as ran:
+            self.assertEqual(REAL_RUN(('codex', 'login', 'status')),
+                             {'found': True, 'ok': False, 'output': 'Not logged in'})
+        self.assertEqual(ran.call_args.args[0], ['codex', 'login', 'status'])
+        self.assertEqual(ran.call_args.kwargs['timeout'], computer.TIMEOUT)
+
+    def test_no_assistant_means_not_ready_and_says_how_to_put_it_right(self):
+        result = self.looked({key: value for key, value in self.FOUND.items()
+                              if key not in ('claude', 'codex', 'codex-sign-in')})
+        self.assertEqual((result['ready'], result['wrong'], result['assistants']),
+                         (False, ['an assistant'], []))
+        items = self.by_id(result)
+        self.assertEqual((items['claude']['state'], items['codex']['state']),
+                         ('missing', 'missing'))
+        self.assertIn('Install Claude Code', items['claude']['fix'])
+        self.assertIn('codex login', items['codex']['fix'])
+        self.assertEqual(len(items['codex']['facts']), 1)
+
+    def test_one_usable_assistant_is_enough(self):
+        result = self.looked(unreachable={'chatgpt.com': 'it did not answer in time'})
+        self.assertEqual((result['ready'], result['assistants']), (True, ['Claude Code']))
+        codex = self.by_id(result)['codex']
+        self.assertEqual(codex['state'], 'problem')
+        self.assertEqual(codex['facts'][2], computer.fact(
+            'Reachable from this network', 'problem', 'chatgpt.com: it did not answer in time'))
+        self.assertIn('Try another network', codex['fix'])
+
+    def test_an_assistant_that_is_signed_out_is_not_usable(self):
+        result = self.looked({**self.FOUND, 'codex-sign-in': '!Not logged in'},
+                             unreachable={'api.anthropic.com': 'the connection failed (OSError)'})
+        self.assertEqual((result['ready'], result['wrong']), (False, ['an assistant']))
+        codex = self.by_id(result)['codex']
+        self.assertEqual(codex['facts'][1], computer.fact('Signed in', 'problem',
+                                                          'not signed in'))
+        self.assertIn('To sign in, run `codex login`', codex['fix'])
+
+    def test_nothing_a_sign_in_prints_is_repeated(self):
+        said = 'Logged in using an API key - sk-secret-0123456789'
+        result = self.looked({**self.FOUND, 'codex-sign-in': said},
+                             unreachable={'chatgpt.com': 'it did not answer in time'})
+        self.assertNotIn('sk-secret', json.dumps(result))
+        codex = self.by_id(result)['codex']
+        self.assertEqual((codex['state'], codex['facts'][2]['detail']),
+                         ('ok', 'api.openai.com'))
+
+    def test_what_else_is_missing_is_named_with_its_remedy(self):
+        result = self.looked({'claude': '2.1.0', 'node': 'v18.20.0'}, skills=('harness-research',))
+        self.assertEqual((result['ready'], result['wrong']),
+                         (False, ['Node', 'harness-slides']))
+        items = self.by_id(result)
+        self.assertEqual((items['node']['state'], items['node']['fix']),
+                         ('problem', 'Install Node 20 or newer. The research and slide skills '
+                                     'run on it.'))
+        self.assertEqual(items['harness-slides']['state'], 'missing')
+        self.assertIn('everything is built except the slide deck', items['harness-slides']['fix'])
+        self.assertEqual((items['gcloud']['state'], items['gcloud']['optional']),
+                         ('missing', True))
+        self.assertEqual((items['pandoc']['state'], items['pandoc']['optional']),
+                         ('missing', True))
+        for item in result['items']:
+            self.assertEqual(bool(item['fix']), item['state'] != 'ok', item['id'])
+
+    def test_google_is_needed_only_by_a_training_that_keeps_something_there(self):
+        missing = {key: value for key, value in self.FOUND.items() if key != 'gcloud'}
+        self.assertTrue(self.looked(missing)['ready'])
+        result = self.looked(missing, google=True)
+        self.assertEqual((result['ready'], result['wrong']), (False, ['Google Cloud CLI']))
+        self.assertFalse(desk.uses_google())
+        self.cli('init', '--title', 'Rolling restarts', '--copies', 'google')
+        self.assertTrue(desk.uses_google())
+
+    def test_the_page_looks_only_when_asked_and_keeps_the_answer_briefly(self):
+        looks = []
+
+        def check(google=False):
+            looks.append(google)
+            return {'ready': True, 'looked': len(looks)}
+
+        self.assertEqual(self.get('computer'), {'computer': None})
+        with mock.patch.object(computer, 'check', check):
+            self.get('trainings')
+            self.assertEqual(looks, [])
+            self.assertEqual(self.post('computer', {})['computer']['looked'], 1)
+            self.assertEqual(self.post('computer', {})['computer']['looked'], 1)
+            self.assertEqual(self.get('computer')['computer']['looked'], 1)
+            with mock.patch.object(desk, 'COMPUTER_CACHE', 0):
+                self.assertEqual(self.post('computer', {})['computer']['looked'], 2)
+        self.assertEqual(looks, [False, False])
+
+    def test_a_look_is_asked_for_as_any_other_change_is(self):
+        with mock.patch.object(computer, 'check', never):
+            self.post('computer', {}, 403, token=False)
+            self.post('computer', {}, 403, origin='http://example.com')
+            self.post('computer', {}, 415, kind='text/plain')
+            self.assertEqual(self.answer('GET', '/api/computer', token=False)[0], 403)
+
+
+REAL_RUN = computer.run
+
+
 class PageFileTests(unittest.TestCase):
     """What can be said about the page without a browser."""
+
+    SVG = 'http://www.w3.org/2000/svg'
 
     def read(self, name: str) -> str:
         return (PAGE / name).read_text(encoding='utf-8')
 
     def test_the_page_loads_nothing_from_anywhere_else(self):
+        script = self.read('app.js')
+        # The name of the SVG language is how an icon is drawn in script. It is never fetched.
+        self.assertEqual(script.count(self.SVG), 1)
         for name in PAGE_FILES:
             with self.subTest(name):
-                self.assertNotRegex(self.read(name), r'(?i)\b(?:https?|wss?|ftp|data|blob):')
+                self.assertNotRegex(self.read(name).replace(f"'{self.SVG}'", "''"),
+                                    r'(?i)\b(?:https?|wss?|ftp|data|blob):')
         page = self.read('index.html')
         self.assertEqual(sorted(re.findall(r'(?:src|href)="([^"]*)"', page)),
-                         ['#main', 'app.js', 'style.css'])
+                         ['#main', 'app.js', 'markdown.js', 'style.css'])
         styles = self.read('style.css')
         self.assertNotIn('url(', styles)
         self.assertNotIn('@import', styles)
         self.assertNotIn('@font-face', styles)
-        script = self.read('app.js')
         self.assertEqual(set(re.findall(r"fetch\(\s*([^,)]+)", script)), {"'/api/' + endpoint"})
-        for elsewhere in ('XMLHttpRequest', 'WebSocket', 'EventSource', 'sendBeacon', 'import('):
-            self.assertNotIn(elsewhere, script)
+        self.assertNotIn('fetch(', self.read('markdown.js'))
+        for elsewhere in ('XMLHttpRequest', 'WebSocket', 'EventSource', 'sendBeacon', 'import(',
+                          'localStorage', 'sessionStorage', 'document.cookie'):
+            for name in ('app.js', 'markdown.js'):
+                self.assertNotIn(elsewhere, self.read(name))
 
     def test_the_page_has_nothing_its_own_policy_would_block(self):
         page = self.read('index.html')
         self.assertNotRegex(page, r'<style\b')
         self.assertNotRegex(page, r'\sstyle\s*=')
         self.assertNotRegex(page, r'\son[a-z]+\s*=')
-        self.assertEqual(re.findall(r'<script\b[^>]*>(.*?)</script>', page, re.DOTALL), [''])
+        self.assertNotRegex(page, r'<svg\b')
+        self.assertEqual(re.findall(r'<script\b[^>]*>(.*?)</script>', page, re.DOTALL),
+                         ['', ''])
 
-    def test_the_script_never_treats_a_value_as_markup(self):
+    def test_the_scripts_never_treat_a_value_as_markup(self):
+        for name in ('app.js', 'markdown.js'):
+            script = self.read(name)
+            for risky in ('innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write',
+                          'createContextualFragment', 'DOMParser', 'srcdoc', 'eval(',
+                          'Function(', "setAttribute('style'", "setAttribute('href'",
+                          "setAttribute('src'", 'cssText'):
+                with self.subTest(name=name, risky=risky):
+                    self.assertNotIn(risky, script)
+            self.assertIn('textContent', script)
+        # A link in a document is followed only to a web address, and never hands the page over.
+        renderer = self.read('markdown.js')
+        self.assertIn("node.rel = 'noopener noreferrer'", renderer)
+        self.assertIn('SAFE_LINK.test(target)', renderer)
+
+    def test_the_shell_names_its_controls_and_its_regions(self):
+        page = self.read('index.html')
+        self.assertIn('<html lang="en">', page)
+        self.assertIn('width=device-width', page)
+        for label in ('Home', 'Trainings', 'Status', 'Settings'):
+            self.assertRegex(page, rf'<button type="button" id="go-\w+" class="nav-item"[^>]*>'
+                                   rf'<span class="nav-label">{label}</span>')
+        self.assertIn('<nav id="sidebar" class="sidebar glass" aria-label="Screens">', page)
+        self.assertIn('id="notice" class="notice" role="alert"', page)
+        self.assertIn('id="toasts" class="toasts" role="status" aria-live="polite"', page)
+        self.assertIn('id="sheet" class="sheet glass" role="dialog" '
+                      'aria-labelledby="sheet-title"', page)
+        self.assertEqual(len(re.findall(r'<h1\b', page)), 1)
+        self.assertNotRegex(page, r'tabindex="[1-9]')
+        self.assertNotRegex(self.read('app.js'), r'tabIndex = [1-9]')
+
+    def test_every_state_has_a_shape_of_its_own(self):
+        script, styles = self.read('app.js'), self.read('style.css')
+        drawn = dict(re.findall(r"(\w+): '(\w+)'", re.search(
+            r'const BEAD_ICONS = \{(.*?)\};', script, re.DOTALL)[1]))
+        self.assertEqual(drawn, {'done': 'check', 'review': 'eye', 'late': 'warn',
+                                 'out': 'minus', 'off': 'slash'})
+        self.assertEqual(len(set(drawn.values())), len(drawn))
+        for icon in drawn.values():
+            self.assertRegex(script, rf'\n  {icon}: \[')
+        # In progress is a bead half full; not started is an empty one.
+        self.assertIn('.bead[data-state="current"]::before', styles)
+        self.assertNotIn('.bead[data-state="none"]', styles)
+
+    def tokens(self) -> tuple[dict, dict]:
+        """The colour tokens of the light and the dark appearance."""
+        styles = self.read('style.css')
+
+        def block(text: str, start: str) -> str:
+            at = text.index('{', text.index(start))
+            depth, end = 1, at + 1
+            while depth:
+                depth += {'{': 1, '}': -1}.get(text[end], 0)
+                end += 1
+            return text[at + 1:end - 1]
+
+        def colours(body: str) -> dict:
+            found = {}
+            for name, value in re.findall(r'--([\w-]+):\s*([^;]+);', body):
+                solid = re.fullmatch(r'#([0-9a-f]{6})', value.strip())
+                mixed = re.fullmatch(r'rgb\((\d+) (\d+) (\d+)(?: / ([\d.]+))?\)', value.strip())
+                if solid:
+                    found[name] = (*(int(solid[1][at:at + 2], 16) for at in (0, 2, 4)), 1.0)
+                elif mixed:
+                    found[name] = (int(mixed[1]), int(mixed[2]), int(mixed[3]),
+                                   float(mixed[4] or 1))
+            return found
+
+        light = colours(block(styles, ':root'))
+        dark = colours(block(block(styles, '@media (prefers-color-scheme: dark)'), ':root'))
+        self.assertEqual(set(light), set(dark), 'each appearance defines every colour')
+        return light, dark
+
+    @staticmethod
+    def over(top: tuple, under: tuple) -> tuple:
+        return (*(top[at] * top[3] + under[at] * (1 - top[3]) for at in range(3)), 1.0)
+
+    @staticmethod
+    def contrast(first: tuple, second: tuple) -> float:
+        def luminance(colour: tuple) -> float:
+            parts = [value / 255 for value in colour[:3]]
+            parts = [part / 12.92 if part <= 0.03928 else ((part + 0.055) / 1.055) ** 2.4
+                     for part in parts]
+            return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]
+
+        lighter, darker = sorted((luminance(first), luminance(second)), reverse=True)
+        return (lighter + 0.05) / (darker + 0.05)
+
+    def test_text_stays_readable_on_glass_whatever_is_behind_it(self):
+        for name, colour in zip(('light', 'dark'), self.tokens()):
+            behind = [colour['ground'], colour['paper'],
+                      *(self.over(colour[f'wash-{at}'], colour['ground']) for at in range(1, 6))]
+            surfaces = {'paper': [colour['paper']], 'solid': [colour['solid']]}
+            for glass in ('glass', 'card', 'sheet-fill'):
+                surfaces[glass] = [self.over(colour[glass], under) for under in behind]
+            for text in ('ink', 'quiet', 'link', 'yours', 'late', 'done'):
+                for surface, shades in surfaces.items():
+                    with self.subTest(appearance=name, text=text, on=surface):
+                        worst = min(self.contrast(colour[text], shade) for shade in shades)
+                        self.assertGreaterEqual(worst, 4.5)
+            every = [shade for shades in surfaces.values() for shade in shades]
+            pairs = {
+                'a filled button': (colour['on-accent'], [colour['accent']], 4.5),
+                'what is yours, on its wash': (colour['yours'], [colour['yours-wash']], 4.5),
+                'what is late, on its wash': (colour['late'], [colour['late-wash']], 4.5),
+                'quiet words on a wash': (colour['quiet'], [colour['yours-wash'],
+                                                            colour['late-wash']], 4.5),
+                'a chosen item': (colour['ink'], [self.over(colour['thumb'], shade)
+                                                  for shade in every], 4.5),
+                'a quiet option in its well': (colour['quiet'], [
+                    self.over(colour['well'], shade) for shade in every], 4.5),
+                'the focus ring': (colour['focus'], every, 3),
+                'the tick on a done bead': ((255, 255, 255, 1.0), [colour['done-fill']], 3),
+                'the mark on a late bead': (colour['paper'], [colour['late']], 3),
+                'the badge': ((0x2b, 0x18, 0, 1.0), [colour['yours-fill']], 4.5),
+            }
+            for what, (text, shades, least) in pairs.items():
+                with self.subTest(appearance=name, what=what):
+                    self.assertGreaterEqual(min(self.contrast(text, shade) for shade in shades),
+                                            least)
+
+    def test_the_two_appearances_are_not_one_inverted(self):
+        light, dark = self.tokens()
+        self.assertGreater(self.contrast(light['ground'], (0, 0, 0, 1)), 15)
+        self.assertGreater(self.contrast(dark['ground'], (255, 255, 255, 1)), 15)
+        for name in ('wash-1', 'wash-2', 'wash-3', 'accent', 'glass', 'card', 'paper'):
+            inverted = (*(255 - value for value in light[name][:3]), light[name][3])
+            self.assertNotEqual(dark[name], inverted, name)
+
+    def test_only_a_few_layers_blur_what_is_behind_them(self):
+        styles, page, script = self.read('style.css'), self.read('index.html'), self.read('app.js')
+        rules = re.sub(r'/\*.*?\*/', '', styles, flags=re.DOTALL)
+        blurred = re.findall(r'([^{}]+)\{[^{}]*[^-]backdrop-filter: blur', rules)
+        self.assertEqual([selector.strip() for selector in blurred], ['.glass'])
+        self.assertEqual(len(re.findall(r'class="[^"]*\bglass\b', page)), 3)
+        self.assertEqual(re.findall(r"'([\w -]*\bglass\b[\w -]*)'", script), ['toast glass'])
+
+    def test_the_glass_has_every_fallback(self):
+        styles = self.read('style.css')
+        without = styles[styles.index('@supports not ((backdrop-filter: blur(1px))'):]
+        self.assertIn('--glass: var(--solid);', without)
+        calmer = styles[styles.index('@media (prefers-reduced-transparency: reduce), '
+                                     '(prefers-contrast: more)'):]
+        for swapped in ('--glass: var(--solid);', '--card: var(--solid);',
+                        '--sheet-fill: var(--solid);', '--glass-line: var(--quiet);',
+                        'backdrop-filter: none;', '.backdrop {\n    display: none;'):
+            self.assertIn(swapped, calmer)
+        still = styles[styles.index('@media (prefers-reduced-motion: reduce)'):]
+        self.assertIn('animation: none !important;', still)
+        self.assertIn('transition: none !important;', still)
+        self.assertIn('::view-transition-group(*)', still)
         script = self.read('app.js')
-        for risky in ('innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write',
-                      'createContextualFragment', 'DOMParser', 'srcdoc', 'eval(',
-                      'Function(', "setAttribute('style'", "setAttribute('href'",
-                      "setAttribute('src'"):
-            with self.subTest(risky):
-                self.assertNotIn(risky, script)
-        self.assertIn('textContent', script)
+        self.assertIn('if (document.startViewTransition && !calm())', script)
+        self.assertRegex(script, r'function followPointer\(\) \{\n  if \(calm\(\)\) return;')
+        self.assertIn("(prefers-reduced-motion: reduce)", script)
 
-    def test_the_page_names_every_status_and_draws_each_a_shape(self):
-        page, styles = self.read('index.html'), self.read('style.css')
-        for status in desk.STATUSES:
-            with self.subTest(status):
-                self.assertIn(f'data-status="{status}"', page)
-                self.assertIn(f'[data-status="{status}"]', styles)
-                self.assertRegex(page, rf'>\s*{status}\b')
+    def test_the_system_colour_and_the_system_type_are_used(self):
+        styles = self.read('style.css')
+        self.assertIn('@supports (color: AccentColor)', styles)
+        self.assertIn('--accent: AccentColor;', styles)
+        self.assertIn('--plain: -apple-system, BlinkMacSystemFont, "SF Pro Text", '
+                      '"Helvetica Neue", sans-serif;', styles)
+        self.assertIn('--typed: ui-monospace, "SF Mono", monospace;', styles)
 
-    def test_both_colour_schemes_and_a_narrow_layout_are_styled(self):
+    def test_focus_is_always_shown_where_the_keyboard_put_it(self):
+        styles = self.read('style.css')
+        self.assertRegex(styles, r':focus-visible \{\n  outline: 3px solid var\(--focus\);')
+        rules = re.sub(r'/\*.*?\*/', '', styles, flags=re.DOTALL)
+        hidden = re.findall(r'([^{}]+)\{[^{}]*outline: none', rules)
+        # Only what the page itself moves focus to, never a control, goes without a ring.
+        self.assertEqual(sorted(selector.strip() for selector in hidden),
+                         ['.page:focus', '.sheet:focus', '.title:focus'])
+
+    def test_both_appearances_and_a_narrow_layout_are_styled(self):
         styles = self.read('style.css')
         self.assertIn('prefers-color-scheme: dark', styles)
-        self.assertRegex(styles, r'@media[^{]*\b(?:min|max)-width')
-        self.assertIn('width=device-width', self.read('index.html'))
+        self.assertRegex(styles, r'@media \(max-width: 52rem\)')
+        self.assertRegex(styles, r'@media \(min-width: 70rem\)')
+
+
+def tags(tree, found=None) -> list[str]:
+    """Every element in a rendered tree, in order."""
+    found = [] if found is None else found
+    if isinstance(tree, dict):
+        found.append(tree['tag'])
+        for child in tree.get('children', []):
+            tags(child, found)
+    return found
+
+
+def text_of(tree) -> str:
+    if isinstance(tree, str):
+        return tree
+    return ''.join(text_of(child) for child in tree.get('children', []))
+
+
+def first(tree, tag: str):
+    if isinstance(tree, dict):
+        if tree['tag'] == tag:
+            return tree
+        for child in tree.get('children', []):
+            found = first(child, tag)
+            if found:
+                return found
+    return None
+
+
+@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
+class MarkdownTests(unittest.TestCase):
+    """markdown.js, run for real against a document that has no HTML parser."""
+
+    def render(self, text: str) -> dict:
+        done = subprocess.run([NODE, str(HARNESS), 'markdown'], input=text, text=True,
+                              capture_output=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_training_document_is_drawn_as_a_document(self):
+        tree = self.render(test_cli.example('document.md'))
+        drawn = tags(tree)
+        self.assertEqual(drawn[:2], ['div', 'h2'])
+        for expected in ('h3', 'h4', 'p', 'ul', 'li', 'strong', 'blockquote', 'ol', 'code', 'br'):
+            self.assertIn(expected, drawn)
+        self.assertEqual(text_of(first(tree, 'h2')), 'Rolling restarts')
+        self.assertNotIn('covers:', text_of(tree))
+        self.assertNotIn('<!--', text_of(tree))
+        self.assertIn('Capacity holds only when more than one instance is running',
+                      text_of(tree))
+
+    def test_every_example_and_format_draws_without_markup_or_comments(self):
+        allowed = {'div', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'li', 'strong', 'em',
+                   'code', 'pre', 'blockquote', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                   'a', 'br', 'hr'}
+        for path in sorted(helpers.EXAMPLES.glob('*.md')):
+            with self.subTest(path.name):
+                tree = self.render(path.read_text(encoding='utf-8'))
+                self.assertLessEqual(set(tags(tree)), allowed)
+                self.assertNotRegex(text_of(tree), r'<!--|-->')
+
+    def test_markup_in_a_document_is_shown_as_the_text_it_is(self):
+        tree = self.render(MARKUP + '\n<b onclick="x()">bold</b> and <iframe src="//example.com">'
+                           '\n\n[a link](javascript:alert(3)) [another](data:text/html,x) '
+                           '[relative](/api/trainings) <javascript:alert(4)>\n')
+        self.assertLessEqual(set(tags(tree)), {'div', 'p', 'br'})
+        shown = text_of(tree)
+        for kept in ('<script>alert(1)</script>', '<img src=x onerror=alert(2)>',
+                     '<b onclick="x()">bold</b>', '<iframe src="//example.com">',
+                     '[a link](javascript:alert(3))', '[another](data:text/html,x)',
+                     '[relative](/api/trainings)', '<javascript:alert(4)>'):
+            self.assertIn(kept, shown)
+
+    def test_a_link_goes_only_to_a_web_address_and_never_hands_the_page_over(self):
+        tree = self.render('See [the docs](https://example.com/docs "Title"), '
+                           '<http://example.com/plain> and [**bold** text](https://example.com).')
+        links = [child for child in first(tree, 'p')['children'] if isinstance(child, dict)]
+        self.assertEqual([(link['href'], link['rel'], link['target']) for link in links],
+                         [('https://example.com/docs', 'noopener noreferrer', '_blank'),
+                          ('http://example.com/plain', 'noopener noreferrer', '_blank'),
+                          ('https://example.com', 'noopener noreferrer', '_blank')])
+        self.assertEqual([text_of(link) for link in links],
+                         ['the docs', 'http://example.com/plain', 'bold text'])
+        self.assertEqual(tags(links[2]), ['a', 'strong'])
+
+    def test_comments_are_left_out_wherever_they_fall(self):
+        tree = self.render('Before <!-- covers: O1 --> after.\n\n<!-- a\ncomment over\nlines -->\n'
+                           '\nKept.\n\n```\n<!-- shown in code -->\n```\n\n<!-- unfinished\n')
+        self.assertEqual([text_of(child) for child in tree['children']],
+                         ['Before  after.', 'Kept.', '<!-- shown in code -->'])
+
+    def test_lists_tables_code_and_quotes(self):
+        tree = self.render(
+            '1. First\n2. Second\n   - nested `code`\n   - more\n3. Third\n\n'
+            '5) starts at five\n\n'
+            '| Instances | Serving |\n| --- | :-: |\n| 1 | none |\n| 3 | **two** |\n\n'
+            '> A quote\n> over two lines.\n>\n> - with a list\n\n'
+            '```text\ncf restart app\n  indented *not emphasis*\n```\n\n---\n\nAfter.\n')
+        kinds = [child['tag'] for child in tree['children']]
+        self.assertEqual(kinds, ['ol', 'ol', 'div', 'blockquote', 'pre', 'hr', 'p'])
+        numbered = tree['children'][0]
+        self.assertEqual([text_of(item) for item in numbered['children']],
+                         ['First', 'Secondnested codemore', 'Third'])
+        self.assertEqual(tags(numbered['children'][1]), ['li', 'ul', 'li', 'code', 'li'])
+        self.assertEqual(tree['children'][1]['start'], 5)
+        table = tree['children'][2]
+        self.assertEqual(table['class'], 'md-table')
+        self.assertEqual(tags(table), ['div', 'table', 'thead', 'tr', 'th', 'th', 'tbody',
+                                       'tr', 'td', 'td', 'tr', 'td', 'td', 'strong'])
+        self.assertEqual(first(table, 'th')['scope'], 'col')
+        self.assertEqual(tags(tree['children'][3]), ['blockquote', 'p', 'br', 'ul', 'li'])
+        self.assertEqual(text_of(tree['children'][4]),
+                         'cf restart app\n  indented *not emphasis*')
+
+    def test_emphasis_escapes_and_names_with_underscores(self):
+        tree = self.render('*one* _two_ **three** __four__ a_b_c 2 * 3 * 4 \\*not\\* '
+                           '`x_y_z` snake_case_name\n')
+        paragraph = first(tree, 'p')
+        self.assertEqual(tags(paragraph), ['p', 'em', 'em', 'strong', 'strong', 'code'])
+        self.assertEqual(text_of(paragraph), 'one two three four a_b_c 2 * 3 * 4 *not* '
+                                             'x_y_z snake_case_name')
+
+    def test_lines_of_a_paragraph_keep_their_breaks_and_a_list_ends_at_plain_text(self):
+        tree = self.render('Audience: engineers\nTime: 25 min\n- K1.1: a point\n'
+                           'Example: an app.\n')
+        self.assertEqual([child['tag'] for child in tree['children']], ['p', 'ul', 'p'])
+        self.assertEqual(tags(tree['children'][0]), ['p', 'br'])
+        self.assertEqual(text_of(tree['children'][2]), 'Example: an app.')
+
+
+@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
+class PageScriptTests(PageCase):
+    """app.js, run for real against the server's own answers, in a document with no parser.
+
+    Each step presses a control the way Enter or Space would. A script that wrote markup,
+    left a control without a name, or put a click on something that is not a control fails.
+    """
+
+    def captured(self, method: str, target: str, sent=None) -> dict:
+        body = None if sent is None else json.dumps(sent).encode()
+        status, reply, _ = self.answer(method, target, body, origin=self.origin,
+                                       kind='application/json' if sent is not None else None)
+        return {'status': status, 'body': reply}
+
+    def read(self, endpoint: str, **params) -> dict:
+        return self.captured('GET', f'/api/{endpoint}' + (f'?{urlencode(params)}'
+                                                          if params else ''))
+
+    def run_page(self, answers: dict, steps: list, **plan) -> dict:
+        file = self.root.parent / 'plan.json'
+        file.write_text(json.dumps({'answers': answers, 'steps': steps, **plan}),
+                        encoding='utf-8')
+        done = subprocess.run([NODE, str(HARNESS), 'app', str(file)], text=True,
+                              capture_output=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        result = json.loads(done.stdout)
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['strayListeners'], [],
+                         'only a real control may answer a click, so the keyboard reaches it')
+        for name, shot in result['snapshots'].items():
+            with self.subTest(screen=name):
+                self.assertEqual(shot['unnamed'], [], 'every control has a name')
+                self.assertEqual(shot['foreign'], 0, 'nothing from a file became an element')
+                self.assertEqual(shot['bareBeads'], 0, 'every bead has words beside it')
+                self.assertLessEqual(len(shot['filled']), 1, 'one filled button on a screen')
+                self.assertNotRegex(shot['text'].replace(MARKUP_TITLE, ''), FORBIDDEN_WORDS)
+        return result
+
+    def a_gate_with_history(self) -> None:
+        """The learner guide at its gate on the page, changed since it was last approved."""
+        self.research()
+        self.content()
+        revised = self.root.parent / 'revised.md'
+        revised.write_text(test_cli.example('document.md').replace('25 minutes', '30 minutes')
+                           + '\n| Instances | Serving |\n| --- | --- |\n| 3 | two |\n')
+        self.cli('save', 'document', '--from', str(revised))
+        self.write('reviews/document.md', '## Review\n\n- The table is new. *My judgment.*\n')
+        self.cli('checkpoint', '--approval', 'page', '--gate', 'document', '--stage',
+                 'document', '--question', 'Is the guide ready?')
+
+    def test_a_change_is_asked_for_from_home_to_done(self):
+        self.a_gate_with_history()
+        other = self.another('second')
+        (other / '.training-studio' / 'session.json').write_text('{not json')
+        gate = {'path': str(self.root), 'artifact': 'document'}
+        answers = {'GET /api/trainings': [self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')],
+                   'GET /api/gate': [self.read('gate', **gate)]}
+        answers['POST /api/decide'] = [self.captured('POST', '/api/decide', {
+            **gate, 'decision': 'revise', 'note': 'Shorten the opening.'})]
+        answers['GET /api/trainings'].append(self.read('trainings'))
+        answers['GET /api/gate'].append(self.read('gate', **gate))
+        answers['GET /api/training'] = [self.read('training', path=str(self.root))]
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Review the learner guide'}, {'snapshot': 'gate'},
+            {'click': 'What changed'}, {'snapshot': 'changes'},
+            {'click': 'Ask for changes'}, {'snapshot': 'form'},
+            {'click': 'Send for changes'}, {'snapshot': 'refused'},
+            {'type': '  Shorten the opening.  '}, {'click': 'Send for changes'},
+            {'snapshot': 'done'},
+            {'click': 'Stay here'}, {'snapshot': 'after'},
+            {'click': 'Rolling restarts'}, {'snapshot': 'training'},
+            {'click': 'Trainings'}, {'snapshot': 'trainings'},
+        ])
+        shots = result['snapshots']
+
+        home = shots['home']
+        self.assertEqual((home['title'], home['heading'], home['badge']),
+                         ('(1) Training Studio', 'Home', '1 thing needs you'))
+        self.assertRegex(home['text'], r'Good (morning|afternoon|evening)\. One thing needs you\.')
+        self.assertLess(home['text'].index('Needs you'), home['text'].index('Cannot be read'))
+        self.assertIn('The learner guide is waiting for your review.', home['text'])
+        self.assertIn('Your assistant asks: Is the guide ready?', home['text'])
+        self.assertIn('This computer has not been checked yet.', home['text'])
+        self.assertEqual(home['filled'], ['Review the learner guide'])
+        self.assertEqual(home['focus'], 'title')
+        self.assertEqual(home['current'], ['Home1 thing needs you'])
+        self.assertEqual(home['buttons'][0], 'Home1 thing needs you')
+
+        gate_shot = shots['gate']
+        self.assertEqual(gate_shot['title'],
+                         '(1) The learner guide · Rolling restarts · Training Studio')
+        self.assertEqual((gate_shot['heading'], gate_shot['filled'], gate_shot['pressed']),
+                         ('The learner guide', ['Approve'], ['The document']))
+        for shown in ('Waiting for your review', 'Guide: yours to review',
+                      'Your assistant asks: Is the guide ready?', 'Checked for you',
+                      '1 check passed', 'Worth a look', 'The latest review note',
+                      'The table is new. My judgment.', 'What changed',
+                      "A rolling restart replaces an app's instances one batch at a time"):
+            self.assertIn(shown, gate_shot['text'])
+        self.assertNotIn('covers: O1', gate_shot['text'])
+        self.assertEqual(gate_shot['buttons'][1:6], ['Trainings', 'Status', 'Settings', 'Back',
+                                                     'Rolling restarts'])
+        self.assertEqual(gate_shot['buttons'][6:9], ['Ask for changes', 'More', 'Approve'])
+        self.assertEqual(gate_shot['posts'], 0)
+        self.assertEqual(gate_shot['current'], ['Trainings'])
+        self.assertEqual(set(gate_shot['beads']), {'done', 'review', 'none'})
+
+        changes = shots['changes']
+        self.assertEqual(changes['pressed'], ['What changed'])
+        self.assertIn('−**Time:** 25 minutes. (removed)', changes['text'])
+        self.assertIn('+**Time:** 30 minutes. (added)', changes['text'])
+
+        self.assertEqual(shots['form']['focus'], 'note-text')
+        self.assertEqual(shots['form']['filled'], ['Send for changes'])
+        self.assertIn('What should change?', shots['form']['sheet'])
+        self.assertNotIn('Approve', shots['form']['buttons'])
+        self.assertNotIn('Say what should change first.', shots['form']['sheet'])
+
+        # A missing note is refused beside the control, and nothing is sent.
+        self.assertIn('Say what should change first.', shots['refused']['sheet'])
+        self.assertEqual(shots['refused']['focus'], 'note-text')
+        posts = [request for request in result['requests'] if request['method'] == 'POST']
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]['address'], '/api/decide')
+        self.assertEqual(posts[0]['body'], {**gate, 'decision': 'revise',
+                                            'note': 'Shorten the opening.',
+                                            'seen': self.sha('document.md')})
+        self.assertEqual(posts[0]['headers'], {desk.TOKEN_HEADER: 'the-test-key',
+                                               'Content-Type': 'application/json'})
+
+        done = shots['done']
+        self.assertIn('Your changes are noted.', done['sheet'])
+        self.assertIn('You can close this page.', done['sheet'])
+        self.assertIn('Nothing else needs you right now.', done['sheet'])
+        self.assertEqual((done['filled'], done['focus'], done['badge']),
+                         (['Back to home'], 'sheet', ''))
+        self.assertEqual(done['title'], 'The learner guide · Rolling restarts · Training Studio')
+        self.assertIn('You asked for changes', done['text'])
+        self.assertNotIn('Waiting for your review', done['text'])
+
+        self.assertEqual((shots['after']['sheet'], shots['after']['filled']),
+                         ('', ['Approve']))
+        self.assertEqual(shots['after']['focus'], 'Ask for changes')
+
+        one = shots['training']
+        self.assertEqual((one['heading'], one['current'], one['filled']),
+                         ('Rolling restarts', ['Trainings'], []))
+        for shown in ('In progress', 'You asked for changes to the learner guide.', 'Files',
+                      'not approved yet, changes asked for', 'In the way', 'Checks',
+                      'Left out or limited', 'Practice', 'Research', 'Guidance',
+                      'How this training is decided', 'Carry on with your assistant',
+                      'Use training-studio to resume the training in'):
+            self.assertIn(shown, one['text'])
+        self.assertEqual(one['pressed'], ['On this page'])
+
+        every = shots['trainings']
+        self.assertEqual((every['heading'], every['filled']), ('Trainings', []))
+        self.assertIn('2 trainings on this computer', every['text'])
+        self.assertIn('Cannot be read', every['text'])
+        self.assertIn('not valid JSON', every['text'])
+
+    def test_an_approval_is_confirmed_in_the_sheet_and_names_what_was_read(self):
+        self.at_the_blueprint_gate()
+        other = self.root.parent / 'markup'
+        other.mkdir()
+        with contextlib.redirect_stdout(io.StringIO()):
+            training.main(['--dir', str(other), 'init', '--title', MARKUP_TITLE])
+        workspace.checkpoint(other, question='Who is it for?')
+        gate = {'path': str(self.root), 'artifact': 'blueprint'}
+        answers = {'GET /api/trainings': [self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')],
+                   'GET /api/gate': [self.read('gate', **gate)]}
+        seen = answers['GET /api/gate'][0]['body']['sha256']
+        answers['POST /api/decide'] = [self.captured('POST', '/api/decide', {
+            **gate, 'decision': 'approve', 'seen': seen})]
+        answers['GET /api/trainings'].append(self.read('trainings'))
+        answers['GET /api/gate'].append(self.read('gate', **gate))
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Review: Rolling restarts'}, {'snapshot': 'gate'},
+            {'click': 'Approve'}, {'snapshot': 'confirm'},
+            {'key': 'Escape'}, {'snapshot': 'put away'},
+            {'click': 'Approve'}, {'click': 'Approve'}, {'snapshot': 'done'},
+        ], notifications='granted')
+        shots = result['snapshots']
+        # A title that is markup is shown as the text it is.
+        self.assertIn(MARKUP_TITLE, shots['home']['text'])
+        self.assertIn('Two things need you.', shots['home']['text'])
+        self.assertEqual(shots['home']['title'], '(2) Training Studio')
+        self.assertEqual(shots['gate']['pressed'], [])
+        self.assertIn('You have not approved a version of this before', shots['gate']['text'])
+        confirm = shots['confirm']
+        self.assertIn('Approve the blueprint?', confirm['sheet'])
+        self.assertEqual((confirm['filled'], confirm['focus'], confirm['posts']),
+                         (['Approve'], 'sheet', 0))
+        self.assertEqual((shots['put away']['sheet'], shots['put away']['filled']),
+                         ('', ['Approve']))
+        self.assertEqual(shots['put away']['focus'], 'Approve')
+        posts = [request for request in result['requests'] if request['method'] == 'POST']
+        self.assertEqual([post['body'] for post in posts],
+                         [{**gate, 'decision': 'approve', 'seen': seen}])
+        done = shots['done']
+        self.assertIn('Approved.', done['sheet'])
+        self.assertIn('A question is waiting for you: Who is it for?', done['sheet'])
+        self.assertEqual(done['filled'], ['Open the next one'])
+        self.assertIn('You approved this on this page', done['text'])
+        self.assertEqual(done['title'], '(1) The blueprint · Rolling restarts · Training Studio')
+
+    def test_in_the_conversation_the_gate_says_so_and_offers_one_control(self):
+        self.at_the_blueprint_gate(approval='chat')
+        gate = {'path': str(self.root), 'artifact': 'blueprint'}
+        answers = {'GET /api/trainings': [self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')],
+                   'GET /api/gate': [self.read('gate', **gate)]}
+        answers['POST /api/approval'] = [self.captured('POST', '/api/approval', {
+            'path': str(self.root), 'mode': 'page'})]
+        answers['GET /api/gate'].append(self.read('gate', **gate))
+        result = self.run_page(answers, [
+            {'click': 'Review the blueprint'}, {'snapshot': 'chat'},
+            {'click': 'Decide on this page instead'}, {'snapshot': 'page'},
+        ])
+        chat = result['snapshots']['chat']
+        self.assertIn('approving happens in your conversation with your assistant', chat['text'])
+        self.assertEqual(chat['filled'], [])
+        for absent in ('Approve', 'Ask for changes', 'More'):
+            self.assertNotIn(absent, chat['buttons'])
+        page = result['snapshots']['page']
+        self.assertEqual((page['filled'], page['focus']), (['Approve'], 'Approve'))
+        self.assertEqual(page['toasts'], ['Decisions for this training are now made on this '
+                                          'page.'])
+        self.assertNotIn('Decide on this page instead', page['buttons'])
+
+    def test_status_and_settings_and_a_new_thing_that_needs_the_user(self):
+        self.at_the_blueprint_gate()
+        quiet = self.read('trainings')
+        quiet['body']['trainings'][0].update(state='in-progress', waiting=None,
+                                             sentence='Drafting the blueprint.')
+        quiet['body']['needs'] = 0
+        result_of_check = self.ComputerLook.result
+        answers = {'GET /api/trainings': [quiet, self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')],
+                   'POST /api/computer': [{'status': 200, 'body': {'computer': result_of_check}}],
+                   'POST /api/approval': [{'status': 409, 'body': {'error': 'Not now.'}}]}
+        result = self.run_page(answers, [
+            {'snapshot': 'quiet'}, {'poll': True}, {'snapshot': 'needed'},
+            {'click': 'Status'}, {'snapshot': 'status'},
+            {'click': 'Check this computer'}, {'snapshot': 'checked'},
+            {'click': 'Settings'}, {'snapshot': 'settings'},
+            {'click': 'In the conversation'}, {'snapshot': 'refused'},
+        ], notifications='granted')
+        shots = result['snapshots']
+        self.assertIn('Nothing needs you right now.', shots['quiet']['text'])
+        self.assertEqual((shots['quiet']['title'], shots['quiet']['filled'],
+                          shots['quiet']['badge']), ('Training Studio', [], ''))
+        self.assertEqual((shots['needed']['title'], shots['needed']['badge']),
+                         ('(1) Training Studio', '1 thing needs you'))
+        said = 'Rolling restarts: The blueprint is waiting for your review.'
+        self.assertEqual(result['notifications'],
+                         [{'title': 'Training Studio needs you', 'body': said}])
+        self.assertEqual(shots['needed']['toasts'], [said])
+
+        status = shots['status']
+        self.assertEqual((status['heading'], status['filled'], status['current']),
+                         ('Status', ['Check this computer'], ['Status']))
+        for shown in ('Rolling restarts', 'Blueprint', 'Waiting for you', 'This computer',
+                      'It asks each one for its version and nothing more.'):
+            self.assertIn(shown, status['text'])
+        checked = shots['checked']
+        for shown in ('Not ready yet. To put right: harness-slides.', 'Claude Code', 'Ready',
+                      'Signed in: cannot be asked', 'Needs attention', 'Try another network',
+                      'Not installed', 'Not installed (optional)'):
+            self.assertIn(shown, checked['text'])
+        self.assertEqual(checked['filled'], ['Check this computer again'])
+        self.assertIn('This computer needs something put right.', checked['toasts'])
+
+        settings = shots['settings']
+        self.assertEqual((settings['heading'], settings['pressed']),
+                         ('Settings', ['On this page']))
+        for shown in ('Notifications', 'On. This browser tells you when something needs you',
+                      'Where each training is decided', 'Nothing you read or decide here is '
+                      'sent anywhere else.'):
+            self.assertIn(shown, settings['text'])
+        # The thumb slides back when the answer is no, and the reason is said.
+        self.assertEqual(shots['refused']['pressed'], ['On this page'])
+        self.assertIn('Not now.', shots['refused']['toasts'])
+
+    class ComputerLook:
+        result = {'checked_at': '2030-01-02T03:04:05Z', 'ready': False,
+                  'assistants': ['Claude Code'], 'wrong': ['harness-slides'], 'items': [
+                      computer.item('claude', 'Claude Code', 'ok', [
+                          computer.fact('Installed', 'ok', '2.1.0'),
+                          computer.fact('Signed in', 'unknown', 'cannot be asked'),
+                          computer.fact('Reachable from this network', 'ok', 'a.example')]),
+                      computer.item('codex', 'Codex', 'problem', [
+                          computer.fact('Installed', 'ok', '0.48.0'),
+                          computer.fact('Reachable from this network', 'problem', 'no')],
+                          'Try another network.'),
+                      computer.item('harness-slides', 'harness-slides', 'missing', [
+                          computer.fact('Installed', 'problem', 'not found')], 'Get it.'),
+                      computer.item('pandoc', 'pandoc', 'missing', [
+                          computer.fact('Installed', 'problem', 'not found')], 'Optional.',
+                          optional=True)]}
+
+    def test_no_trainings_is_an_invitation_and_a_link_without_its_key_says_so(self):
+        answers = {'GET /api/trainings': [self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')]}
+        result = self.run_page(answers, [{'snapshot': 'empty'}, {'click': 'Trainings'},
+                                         {'snapshot': 'none'}])
+        empty = result['snapshots']['empty']
+        self.assertIn('Start your first training', empty['text'])
+        self.assertIn('Use training-studio to build a 101 training on rolling restarts.',
+                      empty['text'])
+        self.assertIn('Start your first training', result['snapshots']['none']['text'])
+        result = self.run_page(answers, [{'snapshot': 'no key'}], hash='')
+        self.assertIn('Run the desk command again in your terminal',
+                      result['snapshots']['no key']['notice'])
+        self.assertEqual(result['requests'], [])
+
+    def test_a_link_with_the_wrong_key_is_explained(self):
+        refused = {'status': 403, 'body': {'error': 'This needs the key.'}}
+        result = self.run_page({'GET /api/trainings': [refused]}, [{'snapshot': 'refused'}])
+        self.assertIn('This link does not match the page that is running.',
+                      result['snapshots']['refused']['notice'])
+
+
+MARKUP_TITLE = '<img src=x onerror=alert(1)>'
+
+
+class AnnounceTests(unittest.TestCase):
+    """What the command prints, and to whom."""
+
+    class Server:
+        address = 'http://127.0.0.1:4321/'
+        url = 'http://127.0.0.1:4321/#token=the-key-only-a-person-may-hold'
+
+    def test_a_terminal_is_given_the_link_whole_and_nothing_is_opened(self):
+        printed = cmd_desk.announce(self.Server, True, opener=never)
+        self.assertEqual(printed, {'url': self.Server.url})
+
+    def test_anything_else_is_given_the_address_without_its_key(self):
+        opened = []
+        printed = cmd_desk.announce(self.Server, False, opener=lambda url: opened.append(url)
+                                    or True)
+        self.assertEqual(printed, {'address': 'http://127.0.0.1:4321/', 'opened': True,
+                                   'note': cmd_desk.NOT_A_PERSON})
+        self.assertEqual(opened, [self.Server.url])
+        self.assertNotIn('the-key', json.dumps(printed))
+        self.assertNotIn('token', json.dumps(printed))
+        self.assertIn('run this command in a terminal of your own', printed['note'])
+
+    def test_where_no_browser_can_be_opened_it_says_so(self):
+        printed = cmd_desk.announce(self.Server, False, opener=lambda url: False)
+        self.assertEqual((printed['opened'], printed['address']),
+                         (False, 'http://127.0.0.1:4321/'))
+        with mock.patch.dict(os.environ, {'BROWSER': 'a-browser'}):
+            with mock.patch.object(cmd_desk.webbrowser, 'open',
+                                   side_effect=RuntimeError('none')):
+                self.assertFalse(cmd_desk.show(self.Server.url))
+            with mock.patch.object(cmd_desk.webbrowser, 'open', return_value=True) as opened:
+                self.assertTrue(cmd_desk.show(self.Server.url))
+            opened.assert_called_once_with(self.Server.url)
+
+    def test_with_no_screen_no_browser_is_started_at_all(self):
+        without = {name: value for name, value in os.environ.items()
+                   if name not in ('BROWSER', 'DISPLAY', 'WAYLAND_DISPLAY')}
+        with mock.patch.dict(os.environ, without, clear=True), \
+                mock.patch.object(cmd_desk.sys, 'platform', 'linux'), \
+                mock.patch.object(cmd_desk.webbrowser, 'open', never):
+            self.assertFalse(cmd_desk.show(self.Server.url))
+            self.assertFalse(cmd_desk.announce(self.Server, False)['opened'])
+
+
+class WireTests(DeskCase):
+    """A decision sent over a real connection, as the browser sends one."""
+
+    def setUp(self):
+        super().setUp()
+        self.at_the_blueprint_gate()
+        self.approve = {'path': str(self.root), 'artifact': 'blueprint', 'decision': 'approve',
+                        'seen': self.sha('blueprint.md')}
+
+    def test_a_decision_from_the_page_is_made_and_seen_in_status(self):
+        gate = self.api('gate', path=str(self.root), artifact='blueprint')
+        self.assertEqual((gate['waiting'], gate['decisions'][0], gate['sha256']),
+                         (True, 'approve', self.approve['seen']))
+        outcome = self.send('decide', self.approve)
+        self.assertEqual(outcome['decided']['by'], 'page')
+        self.assertEqual(self.cli('status')['artifacts']['blueprint'], 'approved')
+        self.assertEqual(self.api('trainings')['needs'], 0)
+
+    def test_a_decision_without_the_key_the_origin_or_json_is_refused(self):
+        before = self.on_disk()
+        body = json.dumps(self.approve).encode()
+        origin = f'http://127.0.0.1:{self.desk.port}'
+        json_kind = {'Content-Type': 'application/json'}
+        for label, expect, options in (
+                ('no key', 403, {'token': False, 'headers': {**json_kind, 'Origin': origin}}),
+                ('no origin', 403, {'headers': json_kind}),
+                ('another origin', 403, {'headers': {**json_kind,
+                                                     'Origin': 'http://example.com'}}),
+                ('a form', 415, {'headers': {
+                    'Origin': origin, 'Content-Type': 'application/x-www-form-urlencoded'}}),
+                ('another host', 403, {'host': 'example.com',
+                                       'headers': {**json_kind, 'Origin': origin}})):
+            with self.subTest(label):
+                status, headers, data = self.fetch('/api/decide', method='POST', body=body,
+                                                   **options)
+                self.assertEqual(status, expect, data)
+                self.assertEqual(headers.get_content_type(), 'application/json')
+                for name, value in SECURITY_HEADERS.items():
+                    self.assertEqual(headers.get_all(name), [value])
+        self.assertEqual(self.on_disk(), before)
+
+    def test_a_body_that_is_too_long_is_refused_unread(self):
+        before = self.on_disk()
+        long = json.dumps({**self.approve, 'note': 'x' * desk.BODY_LIMIT}).encode()
+        refusal = self.send('decide', long, 413)
+        self.assertIn('64,000 bytes', refusal['error'])
+        self.assertEqual(self.on_disk(), before)
+        self.assertEqual(self.api('trainings')['needs'], 1)
+
+    def test_every_other_method_is_still_refused(self):
+        before = self.on_disk()
+        body = json.dumps(self.approve).encode()
+        headers = {'Origin': f'http://127.0.0.1:{self.desk.port}',
+                   'Content-Type': 'application/json'}
+        for method in ('PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'TRACE'):
+            for target, allow in (('/api/decide', 'POST'), ('/api/approval', 'POST'),
+                                  ('/api/computer', 'GET, POST'), ('/api/trainings', 'GET')):
+                with self.subTest(method=method, target=target):
+                    status, replied, _ = self.fetch(target, method=method, body=body,
+                                                    headers=headers)
+                    self.assertEqual((status, replied['Allow']), (405, allow))
+        status, replied, _ = self.fetch('/api/decide', method='GET')
+        self.assertEqual((status, replied['Allow']), (405, 'POST'))
+        self.assertEqual(self.on_disk(), before)
+
+    def test_another_site_cannot_ask_leave_to_send_a_decision(self):
+        status, headers, _ = self.fetch('/api/decide', method='OPTIONS', token=False, headers={
+            'Origin': 'http://example.com', 'Access-Control-Request-Method': 'POST',
+            'Access-Control-Request-Headers': 'content-type,x-training-studio-token'})
+        self.assertEqual(status, 405)
+        self.assertFalse([name for name in headers if name.lower().startswith('access-control')])
+
+    def test_the_computer_is_looked_at_only_when_asked(self):
+        with mock.patch.object(computer, 'check', return_value={'ready': True}) as looked:
+            self.assertEqual(self.api('computer'), {'computer': None})
+            self.assertEqual(self.send('computer', {}), {'computer': {'ready': True}})
+            self.assertEqual(self.api('computer'), {'computer': {'ready': True}})
+        looked.assert_called_once_with(google=False)
 
 
 class CommandTests(DeskCase):
-    """`training.py desk`, run as the assistant runs it."""
+    """`training.py desk`, run by a person in a terminal and by anything else."""
 
-    def launch(self, *args) -> subprocess.Popen:
+    def launch(self, *args, stdout=subprocess.PIPE, opened: Path | None = None):
+        environment = dict(os.environ)
+        if opened is not None:
+            # A stand-in for the browser: it writes down the link it was asked to open.
+            recorder = self.root.parent / 'recorder.py'
+            recorder.write_text('import sys\nopen(sys.argv[1], "w").write(sys.argv[2])\n')
+            environment['BROWSER'] = f'{sys.executable} {recorder} {opened} %s'
         process = subprocess.Popen(
-            [sys.executable, str(test_cli.CLI), 'desk', *args], cwd=self.root,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            [sys.executable, str(test_cli.CLI), 'desk', *args], cwd=self.root, stdout=stdout,
+            stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, env=environment)
         guard = threading.Timer(30, process.kill)
         guard.start()
 
@@ -585,7 +2246,8 @@ class CommandTests(DeskCase):
                 process.kill()
                 process.wait()
             for stream in (process.stdout, process.stderr):
-                stream.close()
+                if stream is not None:
+                    stream.close()
         self.addCleanup(finish)
         return process
 
@@ -595,16 +2257,27 @@ class CommandTests(DeskCase):
         return [signal.SIGTERM] if ignored else [signal.SIGINT, signal.SIGTERM]
 
     @unittest.skipIf(os.name == 'nt', 'signals are delivered differently on Windows')
-    def test_it_prints_one_line_with_the_link_then_serves_until_stopped(self):
+    def test_to_anything_but_a_terminal_it_prints_no_key_and_opens_the_page_itself(self):
         self.cli('init', '--title', 'Topic')
         for how in self.usable_signals():
             with self.subTest(signal.Signals(how).name):
-                process = self.launch()
+                opened = self.root.parent / f'opened-{int(how)}.txt'
+                process = self.launch(opened=opened)
                 line = process.stdout.readline()
-                url = json.loads(line)['url']
+                printed = json.loads(line)
+                self.assertEqual(set(printed), {'address', 'opened', 'note'})
+                self.assertRegex(printed['address'], r'^http://127\.0\.0\.1:\d+/$')
+                self.assertNotIn('token', line)
+                self.assertNotIn('#', line)
+                self.assertIn('terminal of your own', printed['note'])
+                self.assertTrue(printed['opened'])
+                # The key went to the browser and nowhere else.
+                url = opened.read_text()
                 self.assertRegex(url, r'^http://127\.0\.0\.1:\d+/#token=[A-Za-z0-9_-]{32,}$')
                 address, _, fragment = url.partition('#')
                 token = fragment.removeprefix('token=')
+                self.assertEqual(address, printed['address'])
+                self.assertNotIn(token, line)
                 self.assertEqual(ask(address)[0], 200)
                 status, _, body = ask(f'{address}api/trainings', {desk.TOKEN_HEADER: token})
                 self.assertEqual(status, 200)
@@ -615,6 +2288,31 @@ class CommandTests(DeskCase):
                 process.send_signal(how)
                 rest, errors = process.communicate(timeout=20)
                 self.assertEqual((process.returncode, rest, errors), (0, '', ''))
+
+    @unittest.skipIf(os.name == 'nt', 'there is no pseudo-terminal on Windows')
+    def test_to_a_terminal_it_prints_the_link_whole_and_opens_nothing(self):
+        import pty
+        import select
+        self.cli('init', '--title', 'Topic')
+        opened = self.root.parent / 'opened.txt'
+        primary, secondary = pty.openpty()
+        self.addCleanup(os.close, primary)
+        process = self.launch(stdout=secondary, opened=opened)
+        os.close(secondary)
+        line = b''
+        while not line.endswith(b'\n'):
+            ready, _, _ = select.select([primary], [], [], 20)
+            self.assertTrue(ready, 'the command printed nothing')
+            line += os.read(primary, 4096)
+        url = json.loads(line)['url']
+        self.assertRegex(url, r'^http://127\.0\.0\.1:\d+/#token=[A-Za-z0-9_-]{32,}$')
+        address, _, fragment = url.partition('#')
+        status, _, _ = ask(f'{address}api/trainings',
+                           {desk.TOKEN_HEADER: fragment.removeprefix('token=')})
+        self.assertEqual(status, 200)
+        self.assertFalse(opened.exists())
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=20), 0)
 
     def test_a_port_can_be_asked_for_and_one_in_use_is_a_json_refusal(self):
         taken = subprocess.run(
@@ -638,26 +2336,38 @@ class CommandTests(DeskCase):
         self.addCleanup(again.stop)
         self.assertEqual(again.port, self.desk.port)
         self.assertIn(f':{self.desk.port}/#token=', again.url)
+        self.assertEqual(again.address, f'http://127.0.0.1:{self.desk.port}/')
 
 
 class PackageTests(unittest.TestCase):
-    def test_the_guidance_fits_in_500_estimated_tokens(self):
-        guidance = (helpers.SKILL / 'references' / 'desk.md').read_text(encoding='utf-8')
-        self.assertLessEqual(validate_package.estimate(guidance), 500)
+    def guidance(self, name: str = 'desk') -> str:
+        return (helpers.SKILL / 'references' / f'{name}.md').read_text(encoding='utf-8')
 
-    def test_the_desk_is_part_of_the_package(self):
+    def test_the_guidance_fits_in_500_estimated_tokens(self):
+        self.assertLessEqual(validate_package.estimate(self.guidance()), 500)
+
+    def test_the_page_is_part_of_the_package(self):
         for name in ('references/desk.md', 'scripts/desk.py', 'scripts/cmd_desk.py',
-                     *(f'scripts/desk/{name}' for name in PAGE_FILES)):
+                     'scripts/computer.py', *(f'scripts/desk/{name}' for name in PAGE_FILES)):
             self.assertIn(name, validate_package.REQUIRED)
         files, budget = validate_package.loading_sets()['desk']
         self.assertEqual((files, budget), (['SKILL.md', 'references/desk.md'], 2000))
 
     def test_the_guidance_names_no_assistant_and_none_of_its_tools(self):
-        guidance = (helpers.SKILL / 'references' / 'desk.md').read_text(encoding='utf-8')
-        for word in ('Claude', 'Codex', 'Bash', 'run_in_background', 'BashOutput', 'KillShell'):
-            self.assertNotIn(word, guidance)
-        for needed in ('training.py desk', 'background', 'read-only', '`url`', 'stop'):
-            self.assertIn(needed, guidance.lower())
+        for name in ('desk', 'gates', 'intake'):
+            for word in ('Claude', 'Codex', 'Bash', 'run_in_background', 'BashOutput',
+                         'KillShell'):
+                self.assertNotIn(word, self.guidance(name))
+
+    def test_the_guidance_says_how_a_gate_is_decided_on_the_page(self):
+        guidance = self.guidance()
+        for needed in ('training.py desk', 'terminal of their own', '--gate', '`status`',
+                       '`requests`', 'Never open it yourself', 'session.json',
+                       'Do not ask for approval in chat'):
+            self.assertIn(needed, guidance)
+        self.assertIn('desk reference', self.guidance('gates'))
+        self.assertIn('--gate', self.guidance('gates'))
+        self.assertIn('--approval page', self.guidance('intake'))
 
 
 if __name__ == '__main__':

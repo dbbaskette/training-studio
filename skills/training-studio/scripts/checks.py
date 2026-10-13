@@ -25,6 +25,13 @@ def result(check: str, problems: list[str], unavailable: str | None = None) -> d
     return {'check': check, 'status': 'failed' if problems else 'passed', 'problems': problems}
 
 
+def artifact_of(check: str) -> str:
+    """The artifact a check is about: `yoodli:main.fields@301` is about `yoodli:main@301`."""
+    base, _, rest = check.partition('.')
+    level = rest.partition('@')[2]
+    return f'{base}@{level}' if level else base
+
+
 def tagged(pattern: re.Pattern, text: str, token: re.Pattern) -> list[str]:
     """Tokens named inside comments such as <!-- covers: O1 K1.2 -->, in order."""
     return [found for group in pattern.findall(text) for found in token.findall(group)]
@@ -638,7 +645,8 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
               skipped: list[str], unavailable: dict[str, str],
               without_scenario: list[str], pending_question: str | None = None,
               decisions: list[dict] | None = None, yoodli: bool = False,
-              docs: dict[str, str] | None = None) -> dict:
+              docs: dict[str, str] | None = None,
+              requests: list[dict] | None = None) -> dict:
     """Whether the training is complete, what blocks it, and what it had to leave out.
 
     `artifacts` lists each artifact's name, stage and status. `without_scenario` names the
@@ -646,6 +654,7 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
     `yoodli` says the optional Yoodli stage is wanted, which makes the brief's copy an upload:
     its export, or its Google Doc when no export is kept.
     `exports` and `docs` hold only the Word copies and Google Docs this training keeps.
+    `requests` are the changes and rebuilds the user asked for that are still open.
     """
     blocking = [f"{item['name']} is {item['status']}" for item in artifacts
                 if item['status'] not in ('approved', 'skipped', 'unavailable')]
@@ -658,6 +667,10 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
             blocking.append(f"{outcome['check']} could not run: {outcome['problems'][0]}")
     if pending_question:
         blocking.append(f'A question is waiting on the user: {pending_question}')
+    for request in requests or []:
+        asked = 'a rebuild' if request.get('kind') == 'rebuild' else 'changes'
+        blocking.append(f"The user asked for {asked} to {request.get('artifact')}, "
+                        'and that is still to do')
     limitations = [f'{stage} was skipped' for stage in skipped]
     limitations += [f"{decision['artifact']} was accepted as it was after its inputs "
                     f"changed: {decision['reason']}" for decision in decisions or []
