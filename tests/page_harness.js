@@ -12,6 +12,13 @@
 // {stay: true}: then they are still typing in it. A chosen file is {name, text} or {name,
 // bytes}; {size} says how large it claims to be, for one too large to write out here.
 //
+// An answer may be a picture: {status: 200, picture: its bytes in base64}. The page keeps
+// one in memory under an address it makes up, and each snapshot says which pictures are on
+// the screen and which are still held; what was let go is listed beside the requests.
+// Nothing is laid out here, so nothing scrolls into view by itself: {see: the words a
+// picture's place begins with} says that it has. A plan with {unwatched: true} is a browser
+// that cannot say when anything comes into view.
+//
 // The document here has no HTML parser at all. A script that tried to set innerHTML would
 // throw, so anything that reaches the page as markup fails the test that runs this.
 'use strict';
@@ -22,7 +29,11 @@ const vm = require('vm');
 
 const PAGE = path.join(__dirname, '..', 'skills', 'training-studio', 'scripts', 'desk');
 const NATIVE = ['BUTTON', 'A', 'SUMMARY', 'INPUT', 'TEXTAREA', 'SELECT'];
-const report = { errors: [], requests: [], notifications: [], strayListeners: [], paces: [] };
+const report = { errors: [], requests: [], notifications: [], strayListeners: [], paces: [],
+  released: [] };
+// The pictures the page holds in memory: the address it made up for each, and what it is of.
+const kept = new Map();
+const watchers = [];
 
 // --- a document with no parser -------------------------------------------------------
 
@@ -353,6 +364,49 @@ function box(label) {
   return found[0][1];
 }
 
+// There are no object URLs here. The page is handed a made-up address for what it fetched,
+// and letting go of one is remembered, so a test can see what is held and what was let go.
+const objects = {
+  made: 0,
+  createObjectURL(fetched) {
+    this.made += 1;
+    kept.set('memory:' + this.made, fetched.from);
+    return 'memory:' + this.made;
+  },
+  revokeObjectURL(address) {
+    if (kept.has(address)) report.released.push(kept.get(address));
+    kept.delete(address);
+  },
+};
+
+// What says a picture's place has come into view. Here only a step says so.
+class IntersectionObserver {
+  constructor(seen) {
+    this.seen = seen;
+    this.watched = [];
+    watchers.push(this);
+  }
+
+  observe(node) { this.watched.push(node); }
+
+  unobserve(node) { this.watched = this.watched.filter((other) => other !== node); }
+
+  disconnect() { this.watched = []; }
+}
+
+function see(words) {
+  for (const watcher of watchers) {
+    const found = watcher.watched.filter((node) => document.body.contains(node)
+      && visible(node) && name(node).startsWith(words));
+    if (found.length) watcher.seen(found.map((target) => ({ target, isIntersecting: true })));
+  }
+}
+
+// A picture is the page's own when it is shown from memory. Any other is from somewhere else.
+function own(node) {
+  return node.tagName === 'IMG' && kept.has(node.src);
+}
+
 function snapshot() {
   const controls = document.body.querySelectorAll('button, a, summary, textarea, input');
   const unnamed = [];
@@ -380,7 +434,11 @@ function snapshot() {
     bareBeads: document.body.querySelectorAll('.bead')
       .filter((node) => !name(node.parentNode)).length,
     unnamed,
-    foreign: document.body.querySelectorAll('img, script, iframe, object, embed').length,
+    foreign: document.body.querySelectorAll('img, script, iframe, object, embed')
+      .filter((node) => !own(node)).length,
+    pictures: document.body.querySelectorAll('img').filter((node) => own(node) && visible(node))
+      .map((node) => ({ alt: node.alt || '', of: kept.get(node.src) })),
+    held: [...kept.values()],
     focus: document.activeElement === document.body ? '(nowhere)'
       : document.activeElement ? (document.activeElement.id || name(document.activeElement)) : '',
     notice: document.getElementById('notice').hidden ? '' : document.getElementById('notice').textContent,
@@ -510,6 +568,8 @@ async function app(file) {
     },
     clearTimeout() {},
     URLSearchParams,
+    URL: objects,
+    ...(plan.unwatched ? {} : { IntersectionObserver }),
     console,
     fetch: async (address, options) => {
       const method = (options && options.method) || 'GET';
@@ -520,7 +580,14 @@ async function app(file) {
       const held = answers[method + ' ' + address] || answers[key];
       if (!held) return { ok: false, status: 404, json: async () => ({ error: 'No answer for ' + key }) };
       const answer = held.length > 1 ? held.shift() : held[0];
-      return { ok: answer.status === 200, status: answer.status, json: async () => answer.body };
+      if (answer.picture === undefined) {
+        return { ok: answer.status === 200, status: answer.status, json: async () => answer.body };
+      }
+      // A picture is answered as bytes: what the page is handed says what kind they are, how
+      // many there are, and which request they answer.
+      return { ok: true, status: 200, json: async () => { throw new Error('Not JSON.'); },
+        blob: async () => ({ type: answer.type || 'image/png',
+          size: Buffer.from(answer.picture, 'base64').length, from: address }) };
     },
   };
   window.window = window;
@@ -550,6 +617,7 @@ async function app(file) {
         held.files = step.files.map(chosen);
         held.dispatch('change', { target: held });
       }
+      if (step.see !== undefined) see(step.see);
       if (step.poll) await timers.filter((timer) => timer.name === 'refresh').pop()();
       if (step.key) for (const listener of documentListeners.keydown || []) listener({ key: step.key });
     } catch (failure) {
