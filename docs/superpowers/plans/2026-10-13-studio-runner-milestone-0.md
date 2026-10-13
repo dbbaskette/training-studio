@@ -76,4 +76,55 @@ One of three answers, with the evidence:
 
 ## Results
 
-Not run yet.
+Run on 2026-10-13 with Claude Code 2.1.287 and Codex 0.162.1.
+
+**Ending: go, with changes, on Claude. Codex is not yet tested.**
+
+### Codex could not be run
+
+Every Codex job failed before it started, and so did a plain `codex exec` with none of the spike's options. The computer was on a network whose firewall intercepts the connection to Codex's service and presents a certificate the computer does not trust. That is a control on the network, not a fault to work around. The Codex half of every experiment is still to do, from a network where Codex works.
+
+It is also a finding: being signed in is not enough. Whether an agent can be reached depends on the network a person is on that day.
+
+### Claude
+
+| | Experiment | Result | Detail |
+| --- | --- | --- | --- |
+| 1 | Starts and returns | Pass | 6 seconds. The result matched the schema; time and cost were reported |
+| 2 | Confined to the folder | Pass | With file tools only, nothing outside the folder could be created, changed, deleted or read. With a shell added, the sandbox refused every write and delete outside; reading outside was allowed until a deny rule was added |
+| 3 | No network unless given | Pass | The drafting profile had no means at all. A shell's `curl` and `python3` were refused by the sandbox. The research profile could search, and could fetch only through the runner's tool |
+| 4 | Ignores the person's setup | Pass, with one exception | None of the many skills installed on the computer was visible, nor any settings, instruction file or other MCP server. The exception: the signed-in account's email address is placed in the worker's context automatically |
+| 5 | Uses the runner's tools | Pass | A deliberately broken blueprint was refused with the lint's own messages; the worker fixed it and the second submission was accepted |
+| 6 | Drafting | Accepted first time | A 1,500-word blueprint from the live run's 26 findings in 51 seconds. It left the five unresolved questions out of the teaching and listed them as gaps. Its quality is for the owner to judge |
+| 7 | Research, easy | Pass | Three official pages saved, six quoted passages, accepted by the runner's check and then by the real `harness-research record`. The live run's finding for the same question quoted three fragments of two or three words |
+| 8 | Research, hard | Pass | The page that refused an automated request in the live run was fetched by the runner with ordinary browser headers. Finding accepted by `harness-research record` |
+| 9 | Reads a picture | Pass | Four yes-or-no questions about a rendered slide, all correct, in 6 seconds |
+
+Fourteen jobs in all. Each took between 6 and 70 seconds. The reported cost was about two dollars in total, as an estimate; under a subscription it is usage, not a charge.
+
+### What worked as the worker mode
+
+```
+claude -p --restricted --strict-mcp-config --mcp-config <the runner's tools> \
+  --permission-prompts none --permission-mode acceptEdits \
+  --tools <only what the step needs> --allowedTools <the runner's tools> \
+  --no-session-persistence --max-budget-usd <limit> --output-format stream-json --verbose
+```
+
+`--restricted` does most of the work: it ignores the person's settings, removes the tools that run code unless they are named, and confines the file tools to the working folder. `--permission-prompts none` turns anything that would ask a question into a refusal.
+
+### What the design must change
+
+1. **No shell for workers.** Every experiment that needed a shell was a test of the shell. Drafting, research and review needed only file tools and the runner's tools. Commands are the runner's job. Without a shell there is nothing to sandbox and no way to read outside the folder.
+2. **Research needs no network for the worker's own code.** A search tool plus the runner's `save_source` was enough. The runner fetches; the worker never does.
+3. **The runner works out where a quote sits.** Workers supplied exact quotes and the runner found the offsets. Nothing was refused for a wrong offset, because no worker had to count one.
+4. **Each research job must be told what the training is about.** Given only its question, the worker answered the easy one from general documentation and missed the product-specific angle the live run found.
+5. **Staging folders must not sit under a shared temporary folder,** and the runner must set each worker's own temporary folder. The first shell test failed for this reason alone: the "outside" folder was inside an area the sandbox allows by default.
+6. **Readiness means reachable, not signed in.** The status screen has to try each agent from the current network.
+7. **The account's email address reaches every worker.** It cannot be switched off with the options tried. Recorded as a known exposure.
+
+### Not answered
+
+- Everything about Codex. Known before testing: its sandbox makes the shared temporary folder writable by default, does not restrict reading, and its shell cannot be removed.
+- Pages that need a browser to render. The three pages tried did not.
+- Whether the drafted blueprint is good enough, which only a person can say.
