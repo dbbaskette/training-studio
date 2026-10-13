@@ -313,6 +313,12 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 61 | Yoodli off; everything else approved | `check --complete` | `ready` true; no Yoodli limitation; practice taken from the practice plan |
 | 62 | Row 61 | `skip yoodli --clear` | `ready` false until each Yoodli scenario is built and approved |
 | 63 | A stale document | its text is replaced from a file as an edit (a Google Docs pull) | history keeps the old version; the document is still `stale` |
+| 64 | A training started with no copies asked for | everything approved | `exports` and `google_docs` are empty; `ready` true with no limitation |
+| 65 | Copies do not include `word` | `export document` | refused, naming `checkpoint --copies`; nothing recorded |
+| 66 | Yoodli on, copies do not include `word` | `status` | `exports` lists the brief and each Yoodli file, not the document |
+| 67 | Copies include `google`; document and brief approved, no Doc made | `check --complete` | `ready` true; limitation "is not in a Google Doc" for each |
+| 68 | Copies include `google`; document pushed | `document.md` changed and approved | `google_docs` says `outdated`; `check` blocks until it is pushed again |
+| 69 | Document approved, no copies | `checkpoint --copies word`, then `--copies` alone | export `missing`, then not listed; no artifact changes status |
 
 ### A8. Guidance
 
@@ -453,7 +459,7 @@ Steps 3 to 5 need the user and their accounts. Do not simulate them.
 | 6.3 Artifacts, inputs, discovery, levels | A2, A7 rows 11 to 19 and 42 to 47 |
 | 7.5 Levels | A2, A5, A7 rows 42 to 50, A8 `levels.md` |
 | 6.4 Status and approval | A3, A7 rows 1 to 6, 39, 40 |
-| 6.5 Exports | A3 `export`, A7 rows 23 to 25 |
+| 6.5 Exports | A3 `export`, A7 rows 23 to 25 and 64 to 69 |
 | 6.6 History | A7 rows 40 and 41 |
 | 6.7 Helper and readiness | A4, A7 rows 27, 28, 31, 32 |
 | 6.8 Robustness | A7 rows 33 to 36 |

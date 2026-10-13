@@ -188,6 +188,17 @@ class DetailTests(DeskCase):
         self.assertEqual(shown['status']['research']['run'], 'run-1')
         self.assertIn('guidance', shown['status'])
 
+    def test_the_google_docs_a_training_keeps_are_shown_with_their_state(self):
+        self.research(yoodli=False, copies=('google',))
+        for name, file in (('blueprint', 'blueprint.md'), ('document', 'document.md'),
+                           ('brief', 'product-brief.md')):
+            self.make(name, file, test_cli.example(file))
+        shown = self.api('training', path=str(self.root))
+        self.assertEqual(shown['status']['google_docs'],
+                         {'brief': 'missing', 'document': 'missing'})
+        self.assertEqual(shown['status']['exports'], {})
+        self.assertIn('document is not in a Google Doc', shown['check']['limitations'])
+
     def test_a_failed_check_comes_with_its_problems(self):
         self.research()
         self.write('blueprint.md',

@@ -55,7 +55,7 @@ See the [example Yoodli scenario](../skills/training-studio/assets/examples/yood
 
 **Roleplay Agent is optional.** You can give Yoodli's agent the Yoodli file and the brief and let it draft the roleplay. It cannot create new custom goals, so create those in the Builder first and ask the agent to add them. Compare its draft with the file.
 
-**The reference file.** Upload the brief's Word copy as an AI asset. Turning on strict mode keeps the AI within the brief, and uses more of the roleplay's capacity.
+**The reference file.** Upload the brief's Word copy as an AI asset. It is made whenever Yoodli is on, even if you did not ask for Word copies, because Yoodli does not list markdown among the files it accepts. Turning on strict mode keeps the AI within the brief, and uses more of the roleplay's capacity.
 
 Training Studio prepares these files on your computer. It does not create, upload or enable anything in Yoodli.
 

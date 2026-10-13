@@ -6,7 +6,7 @@ The last stage writes the index and reports whether the training is ready. It ha
 
 Run `training.py check --complete --all` and `training.py status`.
 
-- `ready` is true only when every wanted artifact is approved, nothing is stale, no check failed or could not run, no export is out of date, and no question is waiting on the user.
+- `ready` is true only when every wanted artifact is approved, nothing is stale, no check failed or could not run, no copy is out of date, and no question is waiting on the user.
 - `blocking` lists each reason it is not ready.
 - `limitations` lists what was skipped at the user's request or could not be produced.
 
@@ -17,7 +17,7 @@ If `ready` is false, resolve what you can, tell the user what remains, and do no
 1. **Title, audience, purpose, size and levels**, from intake and the blueprints.
 2. **Objectives**, in plain language. With levels, a section per level.
 3. **What is here.** A table of every artifact: what it is, its file as a link, and its status.
-4. **Exports.** Each export whose state is `current`, with its path. List no file that is not `current`. If Yoodli is on and the brief's export is missing or unavailable, say the Yoodli handoff is incomplete and what the user can do instead.
+4. **Copies.** Each Google Doc that `google_docs` reports `current`, with its link from `training.py google status --offline`, and each export that is `current`, with its path. List none that is not `current`. If Yoodli is on and the brief's export is missing or unavailable, say the Yoodli handoff is incomplete and what the user can do instead.
 5. **Coverage**, one row per objective, with the basis of each column in its heading:
    - "Document (declared)", from the `document.coverage` check.
    - "Deck (reviewed)", from the recorded review.

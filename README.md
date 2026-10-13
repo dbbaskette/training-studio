@@ -51,7 +51,7 @@ mkdir valkey-training
 
 > Use training-studio to build a 101 training on Valkey for teams running Redis, with a competitive brief.
 
-**4. Answer a few questions.** It asks about the audience, what they already know, which levels you want, whether the brief is about one product or a comparison, and which of your documents to use.
+**4. Answer a few questions.** It asks about the audience, what they already know, which levels you want, whether the brief is about one product or a comparison, and which of your documents to use. If you want the learner guide and the brief kept as Google Docs, or as Word files, say so here; by default it makes neither.
 
 **5. Review each stage.** It stops seven times and waits for you:
 
@@ -67,7 +67,7 @@ mkdir valkey-training
 
 At each stop you can approve it, ask for changes, or skip that stage.
 
-**6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, and `scenario.md`, with Word copies where they could be made. If you asked for Yoodli scenarios there is a `yoodli/` folder too. `README.md` in your folder lists everything and says whether the training is complete.
+**6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, and `scenario.md`. If you chose Google Docs or Word copies, the guide and the brief are there too. If you asked for Yoodli scenarios there is a `yoodli/` folder too. `README.md` in your folder lists everything and says whether the training is complete.
 
 ## Things you can say
 
@@ -79,6 +79,7 @@ At each stop you can approve it, ask for changes, or skip that stage.
 - "Add a scenario." adds another practice situation.
 - "More research on licensing." extends the research.
 - "Put the guide in a Google Doc." sends the learner guide or the brief out for review. "Pull the Google Doc." brings the edits back.
+- "Keep the guide and the brief in Google Docs." does that for every one from now on. "Make Word copies too." adds Word files. Neither is made unless you ask.
 - "What trainings do I have?" lists the trainings on this computer.
 - "Open the desk." shows every training in your browser.
 - "Publish this to the team hub." shares what you have approved with your team, through a private git repository you control.
@@ -142,7 +143,7 @@ For each scenario, Training Studio then writes a file under `yoodli/` laid out i
 | --- | --- |
 | It stops at research and names harness-research | That skill is not installed. Install it and ask again |
 | The deck is "unavailable" | harness-slides is not installed. Everything else still works |
-| A Word copy is "unavailable" | No converter was found. Installing [pandoc](https://pandoc.org) fixes it |
+| A Word copy is "unavailable" | You asked for Word copies and no converter was found. Installing [pandoc](https://pandoc.org) fixes it |
 | Something is "stale" | A file it was built from has changed. Ask to rebuild it, or say it is fine as it is |
 | It refuses to start in a folder | The folder already holds files with the names it uses, or it is this repository. Use a new folder |
 

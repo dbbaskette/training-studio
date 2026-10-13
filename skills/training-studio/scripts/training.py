@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import checks
+import gdocs
 import home
 import sync_guidance
 import workspace
@@ -123,7 +124,7 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
         [stage for stage in workspace.SKIPPABLE
          if stage not in wanted and stage not in workspace.OPTIONAL],
         session['unavailable'], without_scenario, session.get('pending_question'),
-        session['decisions'], 'yoodli' in wanted)
+        session['decisions'], 'yoodli' in wanted, gdocs.copy_states(root, session))
     failed = [outcome for outcome in outcomes if outcome['status'] == 'failed']
     passed = [outcome for outcome in outcomes if outcome['status'] == 'passed']
     return {
@@ -163,10 +164,17 @@ def plugins() -> list:
     return found
 
 
-def summarise(root: Path) -> dict:
-    """Status for the user, with the guidance pin; also remembers where this training is."""
+def describe(root: Path) -> dict:
+    """Status for the user: the workspace's, with the Google Docs it keeps and the guidance pin."""
     report = workspace.status(root)
+    report['google_docs'] = gdocs.copy_states(root, workspace.load(root))
     report['guidance'] = sync_guidance.summary(root)
+    return report
+
+
+def summarise(root: Path) -> dict:
+    """Status for the user; also remembers where this training is."""
+    report = describe(root)
     home.remember(root, report['title'], report['levels'])
     return report
 
@@ -186,6 +194,8 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument('--brand')
     init.add_argument('--yoodli', action='store_true',
                       help='also build a Yoodli scenario from each scenario file (optional)')
+    init.add_argument('--copies', nargs='*', choices=workspace.COPIES, default=[],
+                      help='copies to keep of each document and brief (optional)')
 
     commands.add_parser('status', help='stage, next step and the status of every artifact')
 
@@ -229,6 +239,8 @@ def parser() -> argparse.ArgumentParser:
     checkpoint.add_argument('--brief-kind')
     checkpoint.add_argument('--levels', type=comma_list,
                             help='the levels of a levelled training, comma-separated')
+    checkpoint.add_argument('--copies', nargs='*', choices=workspace.COPIES,
+                            help='copies to keep of each document and brief; alone, none')
 
     pin = commands.add_parser('pin', help='record a harness skill task to resume with')
     pin.add_argument('skill')
@@ -256,7 +268,7 @@ def dispatch(args: argparse.Namespace, root: Path) -> dict:
         return {'trainings': home.trainings()}
     if args.command == 'init':
         workspace.init(root, args.title, args.levels, args.brief_kind, args.deck_target,
-                       args.brand, args.yoodli)
+                       args.brand, args.yoodli, args.copies)
         sync_guidance.adopt(root)
         return summarise(root)
     if args.command == 'status':
@@ -281,7 +293,7 @@ def dispatch(args: argparse.Namespace, root: Path) -> dict:
     if args.command == 'checkpoint':
         return workspace.checkpoint(root, args.stage, args.next_step, args.question,
                                     args.no_question, args.deck_target, args.brand,
-                                    args.brief_kind, args.level, args.levels)
+                                    args.brief_kind, args.level, args.levels, args.copies)
     if args.command == 'pin':
         return workspace.pin(root, args.skill, args.task, args.runtime, args.run,
                              args.level)

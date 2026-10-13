@@ -429,6 +429,15 @@ are unchanged. The brief is accepted or rebuilt separately.
 
 ### 6.5 Exports
 
+**Revised in 0.6.0: copies are a choice.** `settings.copies` holds any of
+`google` and `word`, and is empty unless the user asks. With `word`, the
+document and the brief each need an export. With `google`, each needs a Google
+Doc (phase 3): one that is behind its file blocks readiness, and one not yet
+made is a limitation. With neither, only what Yoodli takes as an upload is
+exported: the brief and each Yoodli file, and only while Yoodli is on.
+`export` refuses an artifact whose export is not wanted. The setting is not an
+input of any artifact, so changing it makes nothing stale.
+
 An export is a converted copy for sharing or upload: `document.docx`, the
 brief's `.docx`, and each `yoodli/<id>.docx`. Exports have no approval gate,
 but the helper records, for each one, the source hash it was made from, its

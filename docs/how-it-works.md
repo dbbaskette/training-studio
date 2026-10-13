@@ -50,7 +50,7 @@ Changing a setting affects only what uses it. A new brand makes the deck stale a
 
 ## Ready, or not
 
-`check` reports two things. **Checks passed** means nothing it could check has failed. **Ready** means the training is complete: every wanted file is approved, nothing is stale, no check failed or could not run, and no Word copy is out of date. A question still waiting on you also blocks it. It lists what is blocking, and separately what was left out because you skipped it, it could not be produced, or you accepted it as it was after something it was built from changed.
+`check` reports two things. **Checks passed** means nothing it could check has failed. **Ready** means the training is complete: every wanted file is approved, nothing is stale, no check failed or could not run, and no Google Doc or Word copy you asked for is out of date. A question still waiting on you also blocks it. It lists what is blocking, and separately what was left out because you skipped it, it could not be produced, or you accepted it as it was after something it was built from changed.
 
 Some checks are stronger than others, and the report says which:
 
@@ -66,8 +66,8 @@ valkey-training/
   intake.md
   research-report.md       the approved research report
   blueprint.md
-  document.md              and document.docx
-  product-brief.md         or competitive-brief.md, and its .docx
+  document.md              and document.docx, if you asked for Word copies
+  product-brief.md         or competitive-brief.md; its .docx with Word copies or Yoodli
   deck-handoff.md          the note given to harness-slides
   deck.pptx                or deck-link.md for Google Slides
   scenario.md              your scenario; more go under scenarios/
@@ -102,9 +102,10 @@ The skill drives a small command-line helper, `skills/training-studio/scripts/tr
 | `status` | The stage, what is waiting, and the status of every file |
 | `check` | Runs every check that applies and reports readiness |
 | `save`, `approve` | Record a version, and record your approval of it |
-| `export` | Records a Word or PDF copy |
+| `export` | Records a Word or PDF copy, when you asked for them |
+| `google` | Sends the guide or the brief to a Google Doc and brings edits back |
 | `skip` | Leaves a stage out, or brings it back |
-| `checkpoint` | Records where the run stopped, and changes settings |
+| `checkpoint` | Records where the run stopped, and changes settings such as which copies to keep |
 | `list` | The trainings on this computer |
 
 It needs only Python, never touches the network, and never commits to git. The assistant's instructions for using it are in [the workspace reference](../skills/training-studio/references/workspace.md).

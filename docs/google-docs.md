@@ -13,6 +13,16 @@ This works for the learner guide and the brief only. A deck is built by harness-
 
 Your assistant asks before it creates or changes a Doc. Saying yes for one Doc covers later updates to that same Doc. It asks again for a new Doc.
 
+## Google Docs for every guide and brief
+
+If you say at the start that you want Google Docs, or later say "Keep the guide and the brief in Google Docs", that is your go-ahead for the whole training. Each guide and brief is put in a Doc when you approve it, and the Doc is updated when you approve a change.
+
+- The training is not reported as ready while a Doc is behind its file.
+- A guide or brief that has no Doc yet is listed as a limitation, not a blocker.
+- `README.md` in your folder lists the links.
+
+Word copies are a separate choice and are off unless you ask for them. You can have either, both or neither, and change your mind at any time: "Stop keeping Google Docs", or "Make Word copies too".
+
 ## What you need
 
 One of these two.

@@ -1,6 +1,6 @@
 # Workspace
 
-Deliverables are visible files in the training directory. Bookkeeping is under `.training-studio/`.
+Deliverables are files in the training directory. Bookkeeping is under `.training-studio/`.
 
 ## Artifacts
 
@@ -14,7 +14,7 @@ Deliverables are visible files in the training directory. Bookkeeping is under `
 | `brief` | `product-brief.md` or `competitive-brief.md` | `blueprint`, `research`, the brief kind |
 | `deck` | `deck.pptx`, or `deck-link.md` for Google Slides | `blueprint`, `document`, the deck target and brand |
 | `scenario:<id>` | `scenario.md` (the ID is `main`) or `scenarios/<id>.md` | nothing; the user owns it |
-| `yoodli:<id>`, only when the optional Yoodli stage is on | `yoodli/<id>.md` | `blueprint`, `brief`, `scenario:<id>`, the Yoodli profile |
+| `yoodli:<id>`, only if Yoodli is on | `yoodli/<id>.md` | `blueprint`, `brief`, `scenario:<id>`, the Yoodli profile |
 
 `deck-handoff.md` and `README.md` are derived: regenerate them, never `save` them.
 
@@ -26,9 +26,9 @@ Deliverables are visible files in the training directory. Bookkeeping is under `
 | `draft` | Not approved in its current form |
 | `approved` | The content and what it was built from are what the user approved |
 | `stale` | Something it was built from has changed, or is itself stale |
-| `skipped`, `unavailable` | The user skipped its stage, or it could not run |
+| `skipped`, `unavailable` | Its stage was skipped, or could not run |
 
-Status is computed from the files each time. A hand edit shows as `draft` on the edited file and `stale` on what was built from it. Changing a setting makes only the artifacts that use it stale.
+Status is computed from the files each time. Changing a setting makes only the artifacts that use it stale.
 
 ## Saving
 
@@ -38,23 +38,22 @@ Status is computed from the files each time. A hand edit shows as `draft` on the
 | `training.py save <artifact> --from <file>` | A rebuilt version. Write it to a scratch file outside the directory first. The version it replaces is kept |
 | `training.py save <artifact>` | A hand edit. It never claims a rebuild and never clears staleness |
 
-Do not use `--built` or `--from` to make a stale flag go away. They say the artifact was rebuilt against its current inputs, and the rebuild then needs approval again.
+Never use `--built` or `--from` to clear a stale flag. They say the artifact was rebuilt against its current inputs, and the rebuild then needs approval again.
 
-**When the user has edited a file themselves:** `status` shows it as `draft` and what depends on it as `stale`. Tell them. If they are still working, `training.py save <artifact>` records the edit and approves nothing. When they are done, `training.py approve <artifact>` records it and approves it. Then rebuild what became stale, or ask whether to accept it as it is.
+**When the user has edited a file themselves:** `status` shows it as `draft` and what depends on it as `stale`. Say so. If they are still working, `training.py save <artifact>` records the edit and approves nothing. When they are done, `training.py approve <artifact>` records and approves it. Then rebuild what became stale, or ask whether to accept it.
 
-## Exports
+## Copies
 
-`document`, `brief` and each `yoodli:<id>` have an export, a `.docx` beside the source. Make it with `pandoc <source> -o <export>` if `pandoc` is on the path, otherwise with the harness's own document capability.
+`settings.copies` in `status` is what the user chose: `google`, `word`, both or neither. Change it with `training.py checkpoint --copies google word`; `--copies` alone is none. Each wanted copy is `current`, `outdated`, `missing` or, for Word, `unavailable`.
 
-- Made: `training.py export <artifact>`, or `--file <path>` for another name or format.
-- Could not be made: `training.py export <artifact> --unavailable "<why>"`.
+- **Google Docs.** `google_docs` lists each document and brief. `training.py google push <artifact>` makes or updates one; see the google reference.
+- **Word.** `exports` lists each artifact that needs a `.docx` beside its source. With Yoodli on it lists the brief and each `yoodli:<id>` whatever was chosen. Make one with `pandoc <source> -o <export>`, or the harness's own document capability. Then `training.py export <artifact>` (`--file <path>` for another name or format), or `--unavailable "<why>"`.
 
-`status` reports each export as `current`, `outdated`, `missing` or `unavailable`. Re-export after every change to the source. Never tell the user to upload an export that is not `current`.
+Redo a copy after every change to its source. Never tell the user to share or upload one that is not `current`. For a one-off Word copy while `word` is off, make it and record nothing.
 
 ## History and other rules
 
-- Earlier versions are in `.training-studio/history/`, in a folder named for the artifact with `:` and `@` written as `-` (`document-201`, `scenario-main-101`), each file named by its SHA-256. `events` in `session.json` gives the order. Restore one with `training.py save <artifact> --from <that file>`.
+- Earlier versions are in `.training-studio/history/`, in a folder named for the artifact with `:` and `@` written as `-` (`scenario-main-101`), each file named by its SHA-256. `events` in `session.json` gives the order. Restore one with `training.py save <artifact> --from <that file>`.
 - Never edit `session.json` or the history. The research plan is the only file under `.training-studio/` that you write.
-- One command at a time. A second is refused while the first holds the lock.
-- A refusal is `{"error": ...}` with exit code 2. Show it to the user as it is.
-- The helper never commits to git. Commit for the user only when they ask.
+- A refusal is `{"error": ...}` with exit code 2. Show it to the user as it is. Run one command at a time.
+- The helper never commits to git. Commit only when the user asks.

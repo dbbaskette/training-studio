@@ -20,4 +20,4 @@ A go-ahead covers further actions of the same kind on the same destination: perm
 
 ## Exports
 
-An export contains everything in its source. If any source was private, say so before the user shares the export outside their organisation.
+A Word copy or Google Doc contains everything in its source. If any source was private, say so before the user shares it outside their organisation.

@@ -4,7 +4,7 @@ The `document` and the `brief` can go to a Google Doc for review and come back. 
 
 ## Ask first
 
-Creating or changing a Google Doc is an action on the user's behalf and needs their go-ahead. A go-ahead for one Doc covers later updates to that Doc. A new Doc, or another artifact, needs asking again. Send only what the user asked for. Never delete a Doc or change who can see it; sharing is the user's action. If a source was private, say so first, as the privacy reference describes.
+Creating or changing a Google Doc is an action on the user's behalf and needs their go-ahead. A go-ahead for one Doc covers later updates to that Doc. A new Doc, or another artifact, needs asking again. If `settings.copies` in `training.py status` includes `google`, the user asked for Google Docs for this training: that is the go-ahead for its documents and briefs. Send only what the user asked for. Never delete a Doc or change who can see it; sharing is the user's action. If a source was private, say so first, as the privacy reference describes.
 
 ## Through gcloud
 

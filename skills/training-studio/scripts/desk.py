@@ -16,7 +16,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import home
-import sync_guidance
 import training
 import workspace
 
@@ -69,9 +68,7 @@ def read(root: Path) -> tuple[dict, dict]:
     The same as `status` and `check`, except that reading here is not remembered in the
     registry: the desk writes nothing.
     """
-    report = workspace.status(root)
-    report['guidance'] = sync_guidance.summary(root)
-    return report, training.run_checks(root)
+    return training.describe(root), training.run_checks(root)
 
 
 def touched(root: Path, seen: str) -> str:
