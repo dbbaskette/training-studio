@@ -124,7 +124,8 @@ def run_checks(root: Path, show_all: bool = False) -> dict:
         [stage for stage in workspace.SKIPPABLE
          if stage not in wanted and stage not in workspace.OPTIONAL],
         session['unavailable'], without_scenario, session.get('pending_question'),
-        session['decisions'], 'yoodli' in wanted, gdocs.copy_states(root, session))
+        session['decisions'], 'yoodli' in wanted, gdocs.copy_states(root, session),
+        session['requests'])
     failed = [outcome for outcome in outcomes if outcome['status'] == 'failed']
     passed = [outcome for outcome in outcomes if outcome['status'] == 'passed']
     return {
@@ -179,6 +180,18 @@ def summarise(root: Path) -> dict:
     return report
 
 
+def decide(root: Path, target: str, decision: str, note: str | None = None,
+           by: str = 'chat', seen: str | None = None) -> dict:
+    """Record a decision and say which checks are failing once it is made.
+
+    The command line and the page both decide through here; only `by` tells them apart.
+    """
+    outcome = workspace.decide(root, target, decision, note, by, seen)
+    outcome['failing_checks'] = [item['check'] for item in run_checks(root)['checks']
+                                 if item['status'] == 'failed']
+    return outcome
+
+
 def parser() -> argparse.ArgumentParser:
     top = JsonParser(prog='training.py', description=__doc__)
     top.add_argument('--dir', default='.',
@@ -196,6 +209,8 @@ def parser() -> argparse.ArgumentParser:
                       help='also build a Yoodli scenario from each scenario file (optional)')
     init.add_argument('--copies', nargs='*', choices=workspace.COPIES, default=[],
                       help='copies to keep of each document and brief (optional)')
+    init.add_argument('--approval', choices=workspace.APPROVAL, default='chat',
+                      help='where gates are decided: in the conversation, or on the page')
 
     commands.add_parser('status', help='stage, next step and the status of every artifact')
 
@@ -241,6 +256,10 @@ def parser() -> argparse.ArgumentParser:
                             help='the levels of a levelled training, comma-separated')
     checkpoint.add_argument('--copies', nargs='*', choices=workspace.COPIES,
                             help='copies to keep of each document and brief; alone, none')
+    checkpoint.add_argument('--gate', metavar='ARTIFACT',
+                            help='the artifact waiting at the gate; --no-question clears it')
+    checkpoint.add_argument('--approval', choices=workspace.APPROVAL,
+                            help='where gates are decided; only the page moves it back to chat')
 
     pin = commands.add_parser('pin', help='record a harness skill task to resume with')
     pin.add_argument('skill')
@@ -268,7 +287,7 @@ def dispatch(args: argparse.Namespace, root: Path) -> dict:
         return {'trainings': home.trainings()}
     if args.command == 'init':
         workspace.init(root, args.title, args.levels, args.brief_kind, args.deck_target,
-                       args.brand, args.yoodli, args.copies)
+                       args.brand, args.yoodli, args.copies, args.approval)
         sync_guidance.adopt(root)
         return summarise(root)
     if args.command == 'status':
@@ -282,18 +301,19 @@ def dispatch(args: argparse.Namespace, root: Path) -> dict:
         state = workspace.status(root)['artifacts'][args.artifact]
         return {'artifact': args.artifact, 'sha256': entry['sha256'], 'status': state}
     if args.command == 'approve':
-        outcome = workspace.approve(root, args.artifact, args.accept_stale)
-        outcome['failing_checks'] = [item['check'] for item in run_checks(root)['checks']
-                                     if item['status'] == 'failed']
-        return outcome
+        return decide(root, args.artifact, 'accept' if args.accept_stale else 'approve',
+                      args.accept_stale)
     if args.command == 'export':
         return workspace.export(root, args.artifact, args.file, args.unavailable)
     if args.command == 'skip':
-        return workspace.skip(root, args.stage, args.reason, args.unavailable, args.clear)
+        if args.unavailable and not args.clear:  # a report that it could not run, not a decision
+            return workspace.skip(root, args.stage, args.reason, unavailable=True)
+        return decide(root, args.stage, 'restore' if args.clear else 'skip', args.reason)
     if args.command == 'checkpoint':
         return workspace.checkpoint(root, args.stage, args.next_step, args.question,
                                     args.no_question, args.deck_target, args.brand,
-                                    args.brief_kind, args.level, args.levels, args.copies)
+                                    args.brief_kind, args.level, args.levels, args.copies,
+                                    args.approval, args.gate)
     if args.command == 'pin':
         return workspace.pin(root, args.skill, args.task, args.runtime, args.run,
                              args.level)

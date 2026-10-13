@@ -109,3 +109,31 @@ Rebuild the desk's front end as three screens, following section 5.8 of the pare
 - With a training in `page` mode, `approve` and `skip` from the command line are refused, and the same decisions made on the page are recorded and visible in `status`.
 - The three screens work on real data in a browser, in light and dark, at desktop and phone width.
 - A walk-through by someone who has not seen it is still to do; it needs a person and is not part of the build.
+
+## Deviations
+
+Recorded when it was built. Each is something the text above does not say, or says differently.
+
+- **Two more screens, and the decision in the toolbar.** The sidebar the look asks for has four entries: Home, Trainings, Status and Settings. Trainings lists every training as a card. Settings holds notifications and where each training is decided. Status still shows every training and this computer. The main action of a screen, at a gate the decision, sits in the toolbar, not in a bar beneath the document.
+- **Cards are translucent but do not blur.** Only the sidebar, the toolbar, a sheet and a toast blur what is behind them, to keep the page smooth. A card sits straight on the backdrop, which is already soft.
+- **The accent colour fills; it does not write.** The system's accent is used for the filled button and the bead that is filling. Links and the focus ring use a fixed blue, because an accent the person chose may not be readable as text.
+- **A decision is confirmed in a sheet.** Approve, and bringing a stage back, open a sheet that drops from the toolbar and ask once more. The decisions that take a note are written in the same sheet. The sheet does not cover the document, so it can still be read while a note is written.
+- **What changed is a second view of the document,** chosen with a control above it, not a section of the review column.
+- **A sixth decision, `restore`.** The command line refuses `skip --clear` in `page` mode and says the decision is made on the page, so the page has to be able to make it. It also takes a stage by name, which is how Yoodli is turned on there.
+- **`skip --clear` is still allowed from the command line when the stage is wanted,** where all it does is clear an `--unavailable` mark. That is a report, like `--unavailable` itself.
+- **A request is refused from the command line in `page` mode too,** as `approve` and `skip` are.
+- **An approval names the version that was read.** The page sends the hash of the document it showed, and an approval of anything else is refused. If the document changes while it is open, the page says so and waits. Without this a file rewritten while the page was open could be approved unseen.
+- **An open request blocks readiness** (row 95). Otherwise a training could report itself ready with a change the user asked for still to make.
+- **Every decision clears the recorded gate** as well as the question.
+- **Decisions made in the conversation are written to the review and set `next_step` too,** because they go through the same function. The gates reference no longer tells the assistant to append the decision itself.
+- **The page does not decide for a training whose approval is in the conversation.** The server refuses it; the page offers the control that moves approval.
+- **A gate needs a question or a recorded gate to count as waiting.** The fallback to the first draft or out-of-date file applies when a question is recorded without a gate, which is what guidance pinned before this version does. A draft with neither is in progress, not waiting.
+- **Intake turns approval on last.** The guidance records `--approval page` with the checkpoint that ends intake, after the stages the user left out, since `skip` is refused once it is on.
+- **Signed in is not asked of Claude Code.** None of the commands the check may run says so without starting it. The page says it cannot be asked.
+- **The Google Cloud CLI counts against readiness only when a training on this computer keeps a Google Doc or builds Google Slides.** Otherwise it is listed as an extra, like pandoc.
+- **Which service Codex is reached at is an assumption.** The check connects to `chatgpt.com`, or to `api.openai.com` when `codex login status` mentions an API key. Neither was confirmed against Codex itself.
+- **No text browser is started.** Where there is no screen, the page is not opened and the output says so.
+- **Two more response headers:** `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`.
+- **A fourth page file, `markdown.js`,** so the renderer can be tested on its own.
+- **"Working" is a guess.** The page cannot see an assistant at work. A row shimmers when its training's record changed in the last three minutes.
+- **What 5.8 asks of the test suite is met only in part.** Each screen is driven through its controls, and checked for names, for one filled button, and for the three words that must not appear, by running the page's scripts under Node in a document with no HTML parser. Contrast is computed from the stylesheet's tokens. No browser is driven, so focus order, the glass and the motion are checked by eye only.

@@ -17,7 +17,7 @@ This page explains what Training Studio does behind the conversation. For the fu
 | 7a | Yoodli, optional | Training Studio | A Yoodli scenario for each scenario file |
 | 8 | Package | Training Studio | The index and a readiness report |
 
-Stages 1 to 7 each end at a gate where you approve, revise, rebuild or skip. With levels, stages 0 to 2 happen once, all the blueprints are reviewed together, and stages 4 to 7 then run one level at a time.
+Stages 1 to 7 each end at a gate where you approve, ask for changes, have it rebuilt, or skip. With levels, stages 0 to 2 happen once, all the blueprints are reviewed together, and stages 4 to 7 then run one level at a time.
 
 The blueprint is the hub. The document and brief are written from it, and the deck is built from the blueprint and the document. A Yoodli scenario is built from your scenario file, the brief and the blueprint.
 
@@ -47,6 +47,15 @@ An approval covers both the content and what it was built from. Three consequenc
 - Accept a stale file as it is, with a reason, and only that file is approved. Files below it stay approved only if their own inputs did not change.
 
 Changing a setting affects only what uses it. A new brand makes the deck stale and leaves the research alone.
+
+## Where you approve
+
+Every decision at a gate is recorded with where it was made, and written into that file's review under `reviews/`.
+
+- **In the conversation.** You tell your assistant, and it records your decision. This is the default.
+- **On the page.** You decide on [the page](desk.md) in your browser. The helper then refuses `approve` and `skip` from the command line, so your assistant cannot record a decision you did not make. Asking for changes or a rebuild leaves a request your assistant acts on when you return to it; the request closes when the file is rebuilt or approved, and an open request keeps the training from being ready.
+
+Moving a training to the page raises the bar; it does not make forgery impossible. An assistant with a shell that set out to rewrite the session record could still do so. The guidance forbids it, and the planned runner, which keeps the assistant away from the training's folder altogether, is what will prevent it.
 
 ## Ready, or not
 
@@ -108,7 +117,8 @@ The skill drives a small command-line helper, `skills/training-studio/scripts/tr
 | `export` | Records a Word or PDF copy, when you asked for them |
 | `google` | Sends the guide or the brief to a Google Doc and brings edits back |
 | `skip` | Leaves a stage out, or brings it back |
-| `checkpoint` | Records where the run stopped, and changes settings such as which copies to keep |
+| `checkpoint` | Records where the run stopped and what is at the gate, and changes settings such as which copies to keep |
 | `list` | The trainings on this computer |
+| `desk` | Serves [the page](desk.md) until it is stopped |
 
-It needs only Python, never touches the network, and never commits to git. The assistant's instructions for using it are in [the workspace reference](../skills/training-studio/references/workspace.md).
+It needs only Python and never commits to git. Apart from `google`, the team hub and, on the page, the check of this computer that you ask for, none of it touches the network. The assistant's instructions for using it are in [the workspace reference](../skills/training-studio/references/workspace.md).

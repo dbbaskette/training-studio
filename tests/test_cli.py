@@ -229,11 +229,11 @@ class CommandTests(Flow):
 
     def test_settings_skips_pins_and_checkpoints_round_trip(self):
         self.cli('init', '--title', 'Topic', '--levels', '101')
+        self.cli('skip', 'deck', '--reason', 'Not needed')
         self.cli('checkpoint', '--stage', 'blueprint', '--level', '101', '--next', 'Draft it',
                  '--question', 'Approve?', '--brand', 'Acme', '--deck-target', 'google',
                  '--levels', '101,201')
         self.cli('pin', 'harness-research', '--task', 't-1', '--runtime', '/opt/r')
-        self.cli('skip', 'deck', '--reason', 'Not needed')
         report = self.cli('status')
         self.assertEqual((report['stage'], report['level'], report['levels']),
                          ('blueprint', '101', ['101', '201']))
@@ -686,6 +686,136 @@ class DryRunFindingTests(Flow):
                   json.dumps(helpers.PLAN))
         self.write('.harness-research/research.json', json.dumps(helpers.RESEARCH))
         self.make('research', '.harness-research/research-report.md', '# Research brief\n')
+
+
+class PageApprovalTests(Flow):
+    """Approval that only the page can give, seen from the command line (matrix rows 75 to
+    80 and 95)."""
+
+    REFUSAL = 'decided on the page for this training, not on the command line'
+
+    def on_the_page(self) -> None:
+        """Research approved in the conversation, then approval moved to the page."""
+        self.research()
+        self.write('blueprint.md', example('blueprint.md'))
+        self.cli('save', 'blueprint', '--built')
+        self.assertEqual(self.cli('checkpoint', '--approval', 'page')['settings']['approval'],
+                         'page')
+
+    def record(self) -> dict:
+        path = self.root / '.training-studio' / 'session.json'
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    def test_row_77_approve_is_refused_and_says_how_the_user_opens_the_page(self):
+        self.on_the_page()
+        for extra in ((), ('--accept-stale', 'It is fine')):
+            refusal = self.cli('approve', 'blueprint', *extra, expect=2)['error']
+            self.assertIn('Approval of the blueprint is ' + self.REFUSAL, refusal)
+            self.assertIn('running `training.py desk` in a terminal of their own', refusal)
+        report = self.cli('status')
+        self.assertEqual((report['artifacts']['blueprint'], report['approval']),
+                         ('draft', 'page'))
+
+    def test_row_79_skip_and_restore_are_refused_and_unavailable_is_not(self):
+        self.on_the_page()
+        for stage in ('deck', 'yoodli'):
+            refusal = self.cli('skip', stage, '--reason', 'Not needed', expect=2)['error']
+            self.assertIn(self.REFUSAL, refusal)
+            self.assertIn('training.py desk', refusal)
+        self.cli('skip', 'yoodli', '--unavailable', '--reason', 'No account yet')
+        report = self.cli('status')
+        self.assertEqual(report['settings']['stages'],
+                         ['document', 'brief', 'deck', 'scenario', 'yoodli'])
+        self.assertEqual(report['unavailable_stages'], {'yoodli': 'No account yet'})
+        self.cli('skip', 'yoodli', '--clear')
+        self.assertEqual(self.cli('status')['unavailable_stages'], {})
+
+    def test_row_79_a_stage_left_out_is_not_restored_from_the_command_line(self):
+        self.research()
+        self.cli('skip', 'deck', '--reason', 'Not needed')
+        self.cli('checkpoint', '--approval', 'page')
+        refusal = self.cli('skip', 'deck', '--clear', expect=2)['error']
+        self.assertIn(self.REFUSAL, refusal)
+        self.assertEqual(self.cli('status')['artifacts']['deck'], 'skipped')
+
+    def test_row_76_the_command_line_cannot_move_approval_back(self):
+        self.on_the_page()
+        refusal = self.cli('checkpoint', '--approval', 'chat', '--stage', 'document',
+                           expect=2)['error']
+        self.assertIn('only the page can move it back', refusal)
+        self.assertIn('training.py desk', refusal)
+        report = self.cli('status')
+        self.assertEqual((report['approval'], report['stage']), ('page', 'intake'))
+        self.assertIn('invalid choice', self.cli('checkpoint', '--approval', 'email',
+                                                 expect=2)['error'])
+
+    def test_row_78_a_training_started_on_the_page_still_approves_intake_in_chat(self):
+        report = self.cli('init', '--title', 'Rolling restarts', '--approval', 'page')
+        self.assertEqual(report['approval'], 'page')
+        self.write('intake.md', '# Intake\n')
+        self.cli('save', 'intake', '--built')
+        approved = self.cli('approve', 'intake')
+        self.assertEqual((approved['by'], approved['approved']['by']), ('chat', 'chat'))
+        self.write('.training-studio/research-plan.json', json.dumps(helpers.PLAN))
+        self.cli('save', 'research-plan', '--built')
+        self.assertIn(self.REFUSAL, self.cli('approve', 'research-plan', expect=2)['error'])
+
+    def test_row_82_a_decision_from_the_command_line_is_recorded_as_made_in_chat(self):
+        self.research()
+        record = self.record()
+        self.assertEqual(record['artifacts']['research']['approved']['by'], 'chat')
+        approvals = [event for event in record['events'] if event['event'] == 'approve']
+        self.assertEqual([event['by'] for event in approvals], ['chat'] * 3)
+        self.cli('skip', 'yoodli', '--reason', 'Not using it')
+        self.assertEqual(self.record()['events'][-1],
+                         {'at': self.record()['events'][-1]['at'], 'event': 'skip',
+                          'stage': 'yoodli', 'reason': 'Not using it', 'by': 'chat'})
+
+    def test_row_88_a_decision_in_chat_answers_the_question_and_is_written_down(self):
+        self.research()
+        self.write('blueprint.md', example('blueprint.md'))
+        self.cli('save', 'blueprint', '--built')
+        gate = self.cli('checkpoint', '--question', 'Approve the blueprint?',
+                        '--gate', 'blueprint', '--next', 'Waiting for approval of blueprint')
+        self.assertEqual(gate['gate'], 'blueprint')
+        waiting = self.cli('status')
+        self.assertEqual((waiting['gate'], waiting['pending_question']),
+                         ('blueprint', 'Approve the blueprint?'))
+        approved = self.cli('approve', 'blueprint')
+        self.assertEqual((approved['decision'], approved['failing_checks']), ('approve', []))
+        report = self.cli('status')
+        self.assertEqual((report['gate'], report['pending_question'], report['next_step']),
+                         (None, None, 'The blueprint was approved in the conversation.'))
+        review = (self.root / 'reviews' / 'blueprint.md').read_text(encoding='utf-8')
+        self.assertIn('## Decision: approved in the conversation, ', review)
+
+    def test_row_93_the_gate_is_cleared_with_the_question(self):
+        self.research()
+        self.write('blueprint.md', example('blueprint.md'))
+        self.cli('checkpoint', '--gate', 'blueprint', '--question', 'Approve?')
+        self.assertEqual(self.cli('checkpoint', '--no-question')['gate'], None)
+        refusal = self.cli('checkpoint', '--gate', 'poster', expect=2)['error']
+        self.assertIn('cannot be at the gate', refusal)
+
+    def test_row_95_a_change_that_was_asked_for_blocks_readiness_until_it_is_made(self):
+        import workspace
+        self.research()
+        self.complete()
+        self.assertTrue(self.check('--complete')['ready'])
+        self.cli('checkpoint', '--approval', 'page')
+        workspace.decide(self.root, 'document', 'revise', 'Add a summary', by='page')
+        report = self.check('--complete', expect=1)
+        self.assertEqual(report['blocking'], ['The user asked for changes to document, and '
+                                              'that is still to do'])
+        self.assertEqual(self.cli('status')['artifacts']['document'], 'approved')
+        workspace.decide(self.root, 'deck', 'rebuild', by='page')
+        self.assertIn('The user asked for a rebuild to deck, and that is still to do',
+                      self.check(expect=0)['blocking'])
+        revised = self.root.parent / 'revised.md'
+        revised.write_text(example('document.md') + '\n## Summary\n\nIn short.\n')
+        self.cli('save', 'document', '--from', str(revised))
+        self.assertEqual([item['artifact'] for item in self.cli('status')['requests']],
+                         ['deck'])
 
 
 class LevelCheckTests(Flow):

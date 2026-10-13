@@ -131,13 +131,13 @@ All commands print JSON. A refusal, malformed JSON, a missing or unreadable file
 
 | Command | Flags |
 | --- | --- |
-| `init` | `--title T` (required), `--levels 101,301` (omit for a plain training), `--brief-kind product\|competitive` (default `product`), `--deck-target pptx\|google`, `--brand B` |
+| `init` | `--title T` (required), `--levels 101,301` (omit for a plain training), `--brief-kind product\|competitive` (default `product`), `--deck-target pptx\|google`, `--brand B`, `--approval chat\|page` (default `chat`) |
 | `status` | none. Output adds `scenarios` (`found`, `ignored`) and each artifact's `export` state |
 | `save ARTIFACT` | `--from FILE` or `--built` (mutually exclusive), `--coverage FILE` |
 | `approve ARTIFACT` | `--accept-stale REASON` |
 | `export ARTIFACT` | `--file PATH` or `--unavailable REASON` |
 | `skip STAGE` | `--reason R`, `--unavailable`, `--clear` |
-| `checkpoint` | `--stage`, `--level`, `--next`, `--question` or `--no-question`, `--deck-target`, `--brand`, `--brief-kind`, `--levels` (levelled trainings only) |
+| `checkpoint` | `--stage`, `--level`, `--next`, `--question` or `--no-question`, `--gate ARTIFACT`, `--approval chat\|page`, `--deck-target`, `--brand`, `--brief-kind`, `--levels` (levelled trainings only) |
 | `pin SKILL` | `--task`, `--runtime`, `--run`, `--level` (one `harness-slides` task per level) |
 | `check` | `--complete`, `--all`. Exit 1 if any check failed; with `--complete`, exit 1 unless ready. Lists only the checks that did not pass unless `--all` is given |
 
@@ -246,7 +246,7 @@ Before writing the profile, re-read the Roleplay Agent and AI Assets pages cited
 
 ### A7. State-transition matrix
 
-Each row is one test in `tests/test_workspace.py` or, where it names `check`, `tests/test_cli.py`. "Approved chain" means intake, research-plan, research, blueprint and document built and approved in order.
+Each row is one test in `tests/test_workspace.py` or, where it names `check`, `tests/test_cli.py`. Rows that name the page are in `tests/test_desk.py`. "Approved chain" means intake, research-plan, research, blueprint and document built and approved in order.
 
 | # | Given | When | Then |
 | --- | --- | --- | --- |
@@ -323,6 +323,31 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 71 | Row 70; everything approved, no Doc made | `check --complete` | blocked: the brief is not in a Google Doc and is the file to upload; the document is a limitation |
 | 72 | Row 71 | the document and brief are pushed | `ready` true, no limitation, no `.docx` anywhere |
 | 73 | Research saved, not approved | `status` | `research` gives the run and the counts from the live record, `approved_at` null; the same again once approved research changes |
+| 74 | A new training, or a record written before approval could move | `init` without `--approval`; `status` | `approval` is `chat`; `gate` null; `requests` empty |
+| 75 | Approval `chat` | `checkpoint --approval page` | `approval` is `page`; the event says who moved it |
+| 76 | Approval `page` | `checkpoint --approval chat` from the command line; the same from the page | refused, naming the page; then `chat` |
+| 77 | Approval `page`, a draft | `approve A`, with or without `--accept-stale` | refused, saying it is decided on the page and how the user opens it; nothing approved, no review written |
+| 78 | Approval `page` | `approve intake` | approved, `by: chat` |
+| 79 | Approval `page` | `skip S --reason R`; `skip S --clear` on a stage left out | refused; stages unchanged |
+| 80 | Approval `page` | `skip S --unavailable --reason R`; `skip S --clear` on a stage still wanted | allowed: a report, not a decision |
+| 81 | Approval `page` | a `revise` or `rebuild` recorded as made in chat | refused; no request |
+| 82 | A draft at its gate | a decision with `by: page`; one from the command line | `by` is on the approval and in the event log: `page`, or `chat` |
+| 83 | A stale artifact, its inputs approved | decision `accept` without a reason; with one | refused; `approved`, the reason and `by` kept |
+| 84 | A draft | decision `revise` without a note; with one | refused; nothing approved, `requests` gains `{artifact, kind, note, at}` |
+| 85 | A draft | decision `rebuild`, with or without a note | nothing approved; a request is opened |
+| 86 | An open request | plain `save`, or an edit pulled from elsewhere; `save --built` or `--from` | still open; closed |
+| 87 | An open request | the artifact is approved | closed |
+| 88 | A question pending and a gate recorded | any decision | `pending_question` and `gate` cleared; `next_step` says what was decided, with a long note shortened |
+| 89 | A draft at its gate | any decision, on the page or in chat | a dated entry in `reviews/<artifact>.md`, the note quoted; the file is made if missing and never written through a link |
+| 90 | A draft at its gate on the page | decision `skip` with a reason | the artifact's stage is skipped for every level; without a reason, refused |
+| 91 | A stage left out | decision `restore` on the page | the stage is wanted again |
+| 92 | The page showed one version; the file then changed | `approve` or `accept` naming the version seen | refused; nothing approved |
+| 93 | A draft | `checkpoint --gate A`; `checkpoint --no-question` | `status` reports `gate` A; then null |
+| 94 | Any | `checkpoint --gate` naming something that is not an artifact | refused; nothing recorded |
+| 95 | Everything approved | a change or a rebuild is asked for | `check --complete` is blocked until the request closes |
+| 96 | Approval `page`, a draft at its gate | the page approves it | `approve` from the command line was refused; `status` shows `approved`, the gate and question cleared, `by: page` |
+| 97 | Approval `chat` | any decision sent from the page | refused until approval is moved to the page |
+| 98 | A question recorded and no gate | the page lists the training | the first artifact in pipeline order that is a draft or stale is at the gate; a recorded gate wins; with neither, nothing waits |
 
 ### A8. Guidance
 

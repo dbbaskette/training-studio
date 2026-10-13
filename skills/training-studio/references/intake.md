@@ -21,6 +21,7 @@ In a single message, ask only for what the user has not already said. Offer a de
 | Stages | All by default. Ask only if they hinted at wanting fewer |
 | Yoodli | Optional and off. Turn it on only if they ask for Yoodli scenarios |
 | Copies | Optional and off. `google` keeps each approved guide and brief in a Google Doc; `word` keeps a `.docx` of each. Either, both or neither |
+| Approval | In chat by default. `page` if they would rather decide each stage on a page in their browser, where only they can approve |
 
 ## Files already in the directory
 
@@ -35,6 +36,6 @@ List the files, ignoring dot-directories.
 2. Write `intake.md` with these `##` headings and nothing else: Topic, Levels, Brief, Audience, Purpose, Source scope, Time limit. Settings such as the deck target stay out of it, so changing them later does not mark the research stale.
 3. `training.py save intake --built`, then `training.py approve intake`. The user's answers are the approval for this stage.
 4. For each stage they do not want: `training.py skip <stage> --reason "<their words>"`.
-5. `training.py checkpoint --stage research-plan --next "Draft the research questions"`.
+5. `training.py checkpoint --stage research-plan --next "Draft the research questions"`, adding `--approval page` last of all if they chose the page: from then on only the page skips or approves.
 
 Then read the research-plan reference. If the training has levels, read the levels reference first.

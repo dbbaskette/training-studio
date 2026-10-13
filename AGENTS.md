@@ -2,7 +2,7 @@
 
 - **No training content here.** Tests use temporary directories. Acceptance runs use disposable directories outside this repository. The helper refuses to start a training in this directory.
 - **Verification is proportional.** Work in coherent increments and run the targeted tests at each milestone. Run the whole suite once before calling work complete. A wording-only change to guidance needs `validate_package.py`, not the suite.
-- **The helper has no dependencies.** Python 3.11 or newer, standard library only. The core commands, `status` and `check` among them, never use the network. Only guidance sync, `google` and `hub` do, each at the user's request.
+- **The helper has no dependencies.** Python 3.11 or newer, standard library only. The core commands, `status` and `check` among them, never use the network. Only guidance sync, `google`, `hub` and the page's check of this computer do, each at the user's request.
 - **A format lives in four places.** The files under `skills/training-studio/assets/examples/` are the templates the guidance points to and the fixtures the tests read. Changing a format means changing the checker, its tests, the example and the guidance together.
 - **Guidance is disclosed progressively.** `SKILL.md` is the whole entry and links every reference and example itself. Each stage file carries its own commands. When a file goes over its budget, cut it; do not raise the budget. `validate_package.py` enforces this.
 - **Guidance is harness-neutral.** It names no harness-specific tools, so it runs on Claude Code and Codex alike.

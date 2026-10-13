@@ -2,68 +2,47 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <title>Training desk</title>
+  <title>Training Studio</title>
   <link rel="stylesheet" href="style.css">
+  <script src="markdown.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
-  <a class="skip" href="#main">Skip to the trainings</a>
+  <a class="skip" href="#main">Skip to the page</a>
+  <div class="backdrop" aria-hidden="true"></div>
 
-  <header class="masthead">
-    <div class="masthead-name">
-      <p class="label">Training Studio</p>
-      <h1>The training desk</h1>
-    </div>
-    <p class="masthead-note">Every training on this computer, as your assistant sees it. This page only reads. Approving, skipping and rebuilding stay in the conversation.</p>
-    <div class="masthead-tools">
-      <p id="read-at" class="meta" role="status"></p>
-      <button type="button" id="refresh" class="button">Read again</button>
-    </div>
-  </header>
+  <div class="window">
+    <nav id="sidebar" class="sidebar glass" aria-label="Screens">
+      <p class="brand">Training Studio</p>
+      <button type="button" id="go-home" class="nav-item" aria-current="page"><span class="nav-label">Home</span> <span id="needs-count" class="badge" hidden></span></button>
+      <button type="button" id="go-trainings" class="nav-item"><span class="nav-label">Trainings</span></button>
+      <button type="button" id="go-status" class="nav-item"><span class="nav-label">Status</span></button>
+      <button type="button" id="go-settings" class="nav-item"><span class="nav-label">Settings</span></button>
+    </nav>
 
-  <p id="notice" class="notice" role="alert" hidden></p>
-
-  <main id="main" class="desk" data-view="list" tabindex="-1">
-    <section class="shelf" aria-labelledby="shelf-heading">
-      <h2 id="shelf-heading" class="label">Trainings <span id="count" class="count"></span></h2>
-      <ol id="trainings" class="entries"></ol>
-      <div id="empty" class="empty" hidden>
-        <p class="empty-title">No trainings on this computer yet.</p>
-        <p>Start your assistant in a new folder and ask it to build one. It shows up here as soon as it has been created.</p>
+    <div class="content">
+      <div class="toolbar-wrap">
+        <header id="toolbar" class="toolbar glass">
+          <div id="toolbar-lead" class="toolbar-lead"></div>
+          <div class="toolbar-title">
+            <p id="above" class="above" hidden></p>
+            <h1 id="title" class="title" tabindex="-1">Training Studio</h1>
+          </div>
+          <div id="actions" class="toolbar-actions"></div>
+        </header>
+        <section id="sheet" class="sheet glass" role="dialog" aria-labelledby="sheet-title" tabindex="-1" hidden></section>
       </div>
-    </section>
 
-    <article id="sheet" class="sheet" tabindex="-1" aria-label="The chosen training">
-      <p id="sheet-empty" class="sheet-empty">Choose a training to see its files, what is blocking it and what was left out.</p>
-      <div id="sheet-body" class="sheet-body" hidden></div>
-    </article>
-  </main>
+      <p id="notice" class="notice" role="alert" hidden></p>
 
-  <footer class="key" aria-labelledby="key-heading">
-    <h2 id="key-heading" class="label">What each status means</h2>
-    <dl class="key-list">
-      <div><dt><span class="mark" data-status="approved" aria-hidden="true"></span> approved</dt><dd>You approved exactly this content, built from exactly these inputs.</dd></div>
-      <div><dt><span class="mark" data-status="draft" aria-hidden="true"></span> draft</dt><dd>Not approved in its current form.</dd></div>
-      <div><dt><span class="mark" data-status="stale" aria-hidden="true"></span> stale</dt><dd>Something it was built from has changed since.</dd></div>
-      <div><dt><span class="mark" data-status="not-started" aria-hidden="true"></span> not-started</dt><dd>The file does not exist yet.</dd></div>
-      <div><dt><span class="mark" data-status="skipped" aria-hidden="true"></span> skipped</dt><dd>You chose to leave its stage out.</dd></div>
-      <div><dt><span class="mark" data-status="unavailable" aria-hidden="true"></span> unavailable</dt><dd>Its stage could not run.</dd></div>
-    </dl>
-    <p class="meta">A training is ready when every wanted file is approved, nothing is stale, and no check failed or could not run. Limitations are what was left out on the way.</p>
-  </footer>
+      <main id="main" class="page" tabindex="-1">
+        <noscript>This page needs JavaScript to show your trainings. Nothing is loaded from anywhere but this computer.</noscript>
+      </main>
+    </div>
+  </div>
 
-  <dialog id="preview" class="preview" aria-labelledby="preview-title">
-    <header class="preview-head">
-      <div>
-        <p id="preview-artifact" class="label"></p>
-        <h2 id="preview-title" class="preview-title"></h2>
-      </div>
-      <button type="button" id="preview-close" class="button">Close</button>
-    </header>
-    <p id="preview-note" class="meta preview-note" role="status"></p>
-    <pre id="preview-text" class="preview-text" tabindex="0" hidden></pre>
-  </dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

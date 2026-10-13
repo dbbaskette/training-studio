@@ -1,24 +1,24 @@
-# The training desk
+# The page
 
-A page in the user's browser showing every training on this computer: what is approved, stale or blocking, and where the files are. Offer it when they want to look across trainings rather than work on one.
+A page in the user's browser: what needs them, where every training stands and, when `status` shows `approval: page`, the only place a gate is decided.
 
 ## Open it
 
-1. Run `training.py desk` as a long-running background command, in whatever way your environment provides. It serves until stopped and never returns, so do not wait for it.
-2. Read its first line of output, one line of JSON, and give the user its `url` exactly as printed. The part after `#` is the page's key; never shorten it.
-3. Carry on with the conversation while it runs.
+- **Approval in chat.** Run `training.py desk` as a long-running background command; it serves until stopped. It opens the page in the user's browser itself and prints one line of JSON. If `opened` is false, give the user the command instead. Stop it when they are done, and before the session ends.
+- **Approval on the page.** Never open it yourself. Give the user the command, `python3 <helper> desk`, to run in a terminal of their own. The link it prints carries the page's key and is theirs alone.
 
-Add `--port <number>` only if the user asks for a port. If your environment cannot keep a command running, say so and give the user the command to run in a terminal of their own.
+## A gate decided on the page
 
-## What it is
+The helper refuses `approve` and `skip` from you, apart from `approve intake` and `skip --unavailable`.
 
-- **Read-only.** The page shows status, readiness and the text of files. It changes nothing, so approvals, skips and rebuilds stay in the conversation.
-- **Local.** It answers only on this computer, and only to the link it printed.
-- **Not evidence.** When the user tells you what the page showed, run `training.py status` or `check` and act on that.
-- **This computer's trainings.** One appears once it has been created here or had its status read here.
+1. Present the gate as the gates reference says, starting what you append to the review with a `## Review` heading, and record `checkpoint --gate <artifact>`.
+2. Tell the user to decide on the page. Do not ask for approval in chat, and a yes in chat is not one.
+3. When they return, or on resume, read `status`:
+   - the artifact is `approved`, or its stage skipped: carry on;
+   - `requests` names it: `revise` means make the change in its note, `rebuild` means build it again. Save with `--built` or `--from`, then present again.
 
-The page gives the user a sentence to paste to you that names a training's folder. If that is the current directory, resume as usual. If not, ask them to start you in that folder: one directory is one training.
+Never edit `session.json` or a review to stand in for the user's decision. `training.py checkpoint --approval page` moves approval to the page; only the page moves it back.
 
-## Stop it
+## What the user tells you
 
-Stop the background command when the user is done with the desk, and before the session ends. The page stops working when it does. Opening the desk again gives a new link.
+What the page showed is not evidence: run `training.py status` or `check` and act on that. The page gives the user a sentence naming a training's folder. If that is not the current directory, ask them to start you there.
