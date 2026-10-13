@@ -1,16 +1,38 @@
 {
   "schema": 1,
   "profile": "yoodli",
-  "types": ["Custom", "Tutor", "Pitch", "Objection Handling", "Questionnaire", "Interview"],
+  "types": [
+    "Custom",
+    "Tutor",
+    "Pitch",
+    "Objection Handling",
+    "Questionnaire",
+    "Interview"
+  ],
   "mode_types": {
     "roleplay": "Objection Handling",
     "pitch": "Pitch",
     "tutor": "Tutor",
     "questionnaire": "Questionnaire"
   },
-  "persona_fields": ["Name", "Role", "Demeanor", "Background", "Behaviors"],
-  "persona_required_types": ["Objection Handling", "Pitch"],
-  "goal_types": ["Binary", "Rated", "Compound", "Knowledge-Based", "Screenshare"],
+  "persona_fields": [
+    "Name",
+    "Role",
+    "Demeanor",
+    "Background",
+    "Behaviors"
+  ],
+  "persona_required_types": [
+    "Objection Handling",
+    "Pitch"
+  ],
+  "goal_types": [
+    "Binary",
+    "Rated",
+    "Compound",
+    "Knowledge-Based",
+    "Screenshare"
+  ],
   "prerequisites": [
     {
       "for": "Custom goals",
@@ -32,7 +54,14 @@
     }
   ],
   "roleplay_agent": {
-    "drafts": ["title", "description", "context", "personas", "objections", "rubric goals"],
+    "drafts": [
+      "title",
+      "description",
+      "context",
+      "personas",
+      "objections",
+      "rubric goals"
+    ],
     "creates_custom_goals": false,
     "edits_existing_roleplays": false,
     "files_max": 5,
@@ -42,10 +71,17 @@
   },
   "ai_assets": {
     "strict_mode_uses_more_capacity": true,
-    "show_to_user_disabled_for": ["Word", "PowerPoint", "Excel", "audio"],
+    "show_to_user_disabled_for": [
+      "Word",
+      "PowerPoint",
+      "Excel",
+      "audio"
+    ],
+    "pdf_can_be_shown_to_user": true,
+    "links_can_be_added": true,
     "markdown_listed": false,
     "source": "https://support.yoodli.ai/en/articles/16054213-add-ai-assets-to-a-roleplay",
-    "retrieved": "2026-10-12"
+    "retrieved": "2026-10-13"
   },
   "limits": {
     "context_chars": {

@@ -435,6 +435,13 @@ document and the brief each need an export. With `google`, each needs a Google
 Doc (phase 3): one that is behind its file blocks readiness, and one not yet
 made is a limitation. With neither, only what Yoodli takes as an upload is
 exported: the brief and each Yoodli file, and only while Yoodli is on.
+
+**Revised in 0.7.0, after the first live run.** When Google Docs are kept and
+Word copies are not, Yoodli asks for no Word copy: the brief's Google Doc,
+downloaded as a PDF, is the upload, and a brief with no Doc blocks readiness
+while Yoodli is on. `status` summarises research from the live record before it
+is approved. Each gate review is appended to `reviews/<artifact>.md`, and
+working files go under `work/`.
 `export` refuses an artifact whose export is not wanted. The setting is not an
 input of any artifact, so changing it makes nothing stale.
 

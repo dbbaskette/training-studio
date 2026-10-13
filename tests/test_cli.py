@@ -519,6 +519,42 @@ class CopiesTests(Flow):
         self.assertNotIn('The Google Doc of document is behind its file',
                          self.check()['blocking'])
 
+    def with_yoodli_and_google_docs(self) -> None:
+        """Everything approved with Yoodli on and Google Docs kept, and no Doc made yet."""
+        self.research(copies=('google',))
+        for name, file in (('blueprint', 'blueprint.md'), ('document', 'document.md'),
+                           ('brief', 'product-brief.md')):
+            self.make(name, file, example(file))
+        self.deck()
+        self.scenario()
+
+    def test_row_71_yoodli_needs_the_briefs_google_doc_when_no_word_copy_is_kept(self):
+        self.with_yoodli_and_google_docs()
+        self.assertEqual(self.cli('status')['exports'], {})
+        report = self.check('--complete', expect=1)
+        self.assertEqual(report['blocking'], ['brief is not in a Google Doc, and the Yoodli '
+                                              'scenario names it as the file to upload'])
+        self.assertEqual(report['limitations'], ['document is not in a Google Doc'])
+
+    def test_row_72_with_the_docs_made_a_yoodli_training_is_ready_without_word(self):
+        self.with_yoodli_and_google_docs()
+        drive = FakeTransport()
+        for name in ('document', 'brief'):
+            gdocs.push(self.root, name, drive)
+        report = self.check('--complete')
+        self.assertEqual((report['ready'], report['blocking'], report['limitations']),
+                         (True, [], []))
+        self.assertFalse(list(self.root.rglob('*.docx')))
+
+    def test_with_both_kinds_kept_the_word_copy_is_the_upload(self):
+        self.research(copies=('google', 'word'))
+        self.complete()
+        report = self.check('--complete')
+        self.assertTrue(report['ready'])
+        self.assertEqual(report['limitations'], ['yoodli:main has no export',
+                                                 'document is not in a Google Doc',
+                                                 'brief is not in a Google Doc'])
+
     def test_a_linked_doc_is_not_tracked_unless_google_copies_were_asked_for(self):
         self.built()
         gdocs.push(self.root, 'document', FakeTransport())
@@ -617,7 +653,32 @@ class DryRunFindingTests(Flow):
         self.assertEqual(report['research']['findings'],
                          {'supported': 5, 'insufficient': 1, 'pending': 1, 'contradicted': 1})
         self.assertEqual(report['research']['run'], 'run-1')
+        self.assertTrue(report['research']['approved_at'])
         self.assertEqual(report['unavailable_stages'], {'deck': 'Not installed'})
+
+    def test_row_73_research_is_summarised_before_it_is_approved(self):
+        counts = {'supported': 5, 'insufficient': 1, 'pending': 1, 'contradicted': 1}
+        self.cli('init', '--title', 'Rolling restarts')
+        self.make('intake', 'intake.md', 'v1\n')
+        self.make('research-plan', '.training-studio/research-plan.json',
+                  json.dumps(helpers.PLAN))
+        self.write('.harness-research/research.json', json.dumps(helpers.RESEARCH))
+        self.write('.harness-research/research-report.md', '# Research brief\n')
+        self.cli('save', 'research', '--built')
+        waiting = self.cli('status')
+        self.assertEqual(waiting['artifacts']['research'], 'draft')
+        self.assertEqual(waiting['research'],
+                         {'approved_at': None, 'run': 'run-1', 'findings': counts})
+        self.cli('approve', 'research')
+        self.assertTrue(self.cli('status')['research']['approved_at'])
+        answered = json.loads(json.dumps(helpers.RESEARCH))
+        answered['results']['rollback'] = {'status': 'supported'}
+        self.write('.harness-research/research.json', json.dumps(answered))
+        changed = self.cli('status')
+        self.assertEqual(changed['artifacts']['research'], 'draft')
+        self.assertEqual(changed['research'], {
+            'approved_at': None, 'run': 'run-1',
+            'findings': {'supported': 6, 'insufficient': 1, 'contradicted': 1}})
 
     def research_only(self) -> None:
         self.make('intake', 'intake.md', 'v1\n')

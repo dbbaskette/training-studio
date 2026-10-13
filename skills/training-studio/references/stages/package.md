@@ -16,8 +16,8 @@ If `ready` is false, resolve what you can, tell the user what remains, and do no
 
 1. **Title, audience, purpose, size and levels**, from intake and the blueprints.
 2. **Objectives**, in plain language. With levels, a section per level.
-3. **What is here.** A table of every artifact: what it is, its file as a link, and its status.
-4. **Copies.** Each Google Doc that `google_docs` reports `current`, with its link from `training.py google status --offline`, and each export that is `current`, with its path. List none that is not `current`. If Yoodli is on and the brief's export is missing or unavailable, say the Yoodli handoff is incomplete and what the user can do instead.
+3. **What is here.** A table of every artifact: what it is, its file as a link, and its status. Link its gate review in `reviews/` where there is one.
+4. **Copies.** Each Google Doc that `google_docs` reports `current`, with its link from `training.py google status --offline`, and each export that is `current`, with its path. List none that is not `current`. If Yoodli is on and the brief has no `current` copy to upload, say the Yoodli handoff is incomplete and what the user can do instead.
 5. **Coverage**, one row per objective, with the basis of each column in its heading:
    - "Document (declared)", from the `document.coverage` check.
    - "Deck (reviewed)", from the recorded review.

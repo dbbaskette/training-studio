@@ -67,11 +67,14 @@ valkey-training/
   research-report.md       the approved research report
   blueprint.md
   document.md              and document.docx, if you asked for Word copies
-  product-brief.md         or competitive-brief.md; its .docx with Word copies or Yoodli
+  product-brief.md         or competitive-brief.md; its .docx with Word copies, or for Yoodli
+                           when you keep no Google Docs
   deck-handoff.md          the note given to harness-slides
   deck.pptx                or deck-link.md for Google Slides
   scenario.md              your scenario; more go under scenarios/
   yoodli/main.md           optional: the Yoodli scenario built from scenario.md
+  reviews/                 what you were shown at each gate, and what you decided
+  work/                    the assistant's working files; nothing here is a deliverable
   sources/                 the documents you selected
   .training-studio/        the session record and every earlier version
   .harness-research/       owned by harness-research
