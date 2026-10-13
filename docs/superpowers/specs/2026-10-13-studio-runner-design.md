@@ -47,10 +47,10 @@ Things a runner has to work around, all found by reading code, not by running it
 - **harness-slides:** a failed critique or an incomplete outline returns exit code 0, so results must be read from the JSON. The default path keeps no record of which stage a deck is at.
 - **Shared, and already drifting:** the two harness skills carry copies of the same guidance sync that now differ by about 90 lines, and installers that follow one design with different code.
 
-What the vendors offer, from their documentation:
+What the vendors offer. The options named here were confirmed in the help text of the installed command lines on 2026-10-13 (Claude Code 2.1.287, Codex 0.162.1); how they behave is from documentation.
 
-- **Claude.** The Agent SDK (Python and TypeScript) starts a run with a working directory, a tool list, a permission mode, hooks, a turn limit, a spending estimate and a JSON schema for the result. Its sandbox wraps shell commands only; file tools are limited by permission rules instead. It loads the user's settings and skills unless told not to.
-- **Codex.** `codex exec` runs non-interactively with a working directory, a sandbox mode, JSON events and a schema for the final answer. Network access is off by default inside its workspace sandbox. `--ignore-user-config` exists.
+- **Claude.** `claude -p` runs once and exits. It takes appended instructions, a tool list, a permission mode, a settings file, a choice of which settings to load, a spending limit, a JSON schema for the result and a list of MCP servers to use and no others. Its sandbox wraps shell commands only; file tools are limited by permission rules instead.
+- **Codex.** `codex exec` does the same job, with a working directory, a sandbox mode, JSON events, a schema for the final answer, images as input and `--ignore-user-config`. Network access is off by default inside its workspace sandbox.
 - **Both** accept tools supplied by another program through MCP.
 - **A common protocol** (the Agent Client Protocol) reaches both through adapters. The Codex adapter rests on a component OpenAI calls experimental. It is not the base to build on now.
 
@@ -138,13 +138,16 @@ Both implement one interface: start a job with instructions, a folder, a policy,
 
 | | Claude | Codex |
 | --- | --- | --- |
-| How it is started | Agent SDK, or `claude -p` | `codex exec --json` |
-| Folder | `cwd` | `--cd` |
-| Writes limited to the folder | Shell sandbox, plus permission rules on the file tools | Workspace sandbox |
-| Network | Sandbox allow-list for shell; permission rules for fetching | Off unless enabled for the run |
-| Ignores the person's own setup | `settingSources` set to none; an organisation's managed policy still applies | `--ignore-user-config`, and no instruction files in the folder |
-| Result | JSON schema | `--output-schema` |
-| Worker tools | MCP server | MCP server |
+| How it is started | `claude -p --output-format stream-json` | `codex exec --json` |
+| Folder | The folder it is started in | `--cd` |
+| Instructions | `--append-system-prompt` and the prompt | The prompt |
+| Writes limited to the folder | Shell sandbox, plus permission rules on the file tools, both from `--settings` | `--sandbox workspace-write` |
+| Network | Sandbox allow-list for shell; permission rules for fetching | Off unless enabled for the run with `-c` |
+| Ignores the person's own setup | `--setting-sources` and `--strict-mcp-config`; an organisation's managed policy still applies | `--ignore-user-config`, and no instruction files in the folder |
+| Result | `--json-schema` | `--output-schema` |
+| Worker tools | `--mcp-config` | An MCP server given with `-c` |
+| Limits | `--max-budget-usd`; the runner enforces the time limit | The runner enforces the time limit |
+| Sign-in | The person's own Claude Code sign-in | The person's own Codex sign-in |
 
 The adapters are deliberately thin. If a control exists on one side only, the design does not rely on it.
 
@@ -216,7 +219,7 @@ The desk is read-only today, answers on the local machine only, and requires a t
 ### 5.11 Where the code lives
 
 - **A new repository** for the runner, the core, the adapters, the page and the pipeline definitions.
-- **Python**, standard library where possible, because the core is already Python. Whether the Claude adapter needs the SDK package or can start `claude -p` directly is decided by the first milestone.
+- **Python, standard library only**, because the core is already Python and both agents are started as command lines. No vendor SDK is needed.
 - **The two harness skills stay where they are** and are called at pinned versions. Merging them into the new repository is a later choice, not a precondition.
 - **Training Studio's helper** shrinks to a front end over the shared core.
 
@@ -248,11 +251,10 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 
 ## 8. Risks and open questions
 
-- **Cost and terms.** Anthropic's documentation gives an API key as the route for programs built on its SDK, and says products may not offer its consumer login without approval. Whether a team's internal runner may use each person's own subscription is not settled there. This needs an answer from Anthropic, and the equivalent check for OpenAI, before milestone 2. It decides what a run costs.
 - **Research quality without a browser.** Covered by milestone 0.
-- **Judging slides from images.** Both agents must read rendered slides in an unattended run. Read in documentation, not tried.
+- **Judging slides from images.** Both agents must read rendered slides in an unattended run. Codex takes images as input and Claude reads image files; neither has been tried here.
 - **Vendor churn.** Codex's flags and documentation have moved several times this year. Thin adapters limit the damage; they do not remove it.
-- **Passing worker tools to Codex while ignoring user configuration.** Believed possible through command-line overrides. Not verified; part of milestone 0.
+- **Passing worker tools to Codex while ignoring user configuration.** The override option exists. Whether the two combine as needed is not verified; part of milestone 0.
 - **Two ways to run a training.** The skills and the runner must agree on the core. One shared core, with tests, is the mitigation.
 - **Size.** This is a product, not a script. My estimate, not a measurement: milestones 2 and 4 are each about as large as everything built for Training Studio so far.
 - **What is given up.** Improvements that arrive in the chat harnesses stop being free; the runner has to adopt them.
@@ -260,8 +262,11 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 ## 9. What is needed to proceed
 
 1. **A choice:** A only, B as laid out, or C.
-2. **If B, confirmation of four assumptions:**
+2. **If B, confirmation of three assumptions:**
    - It runs locally for each person; it is not hosted.
-   - Paying through API keys is acceptable if subscriptions turn out not to be allowed.
    - It is a new repository, in Python.
    - Milestone 0 comes first, and its result can end the project.
+
+### Decided
+
+- **Sign-in and cost (2026-10-13, by the owner).** The runner starts `claude -p` and `codex exec` under each person's own sign-in. It automates work that person already does by hand in those tools, one run at a time; it is not a service offered to others. No API key or vendor SDK is involved.
