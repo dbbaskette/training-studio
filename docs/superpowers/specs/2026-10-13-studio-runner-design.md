@@ -1,7 +1,7 @@
 # Studio Runner: design for a decision
 
 Date: 2026-10-13
-Status: accepted on 2026-10-13. The owner chose the runner (approach B in section 4). Nothing is built yet; milestone 0 is next.
+Status: accepted on 2026-10-13. The owner chose the runner (approach B in section 4). Milestone 0 was run the same day: it passed on Claude with changes, folded in below, and could not be run on Codex. Nothing else is built yet.
 
 ## 1. The decision
 
@@ -139,16 +139,19 @@ Both implement one interface: start a job with instructions, a folder, a policy,
 
 | | Claude | Codex |
 | --- | --- | --- |
-| How it is started | `claude -p --output-format stream-json` | `codex exec --json` |
+| How it is started | `claude -p --restricted --output-format stream-json` | `codex exec --json` |
 | Folder | The folder it is started in | `--cd` |
 | Instructions | `--append-system-prompt` and the prompt | The prompt |
-| Writes limited to the folder | Shell sandbox, plus permission rules on the file tools, both from `--settings` | `--sandbox workspace-write` |
-| Network | Sandbox allow-list for shell; permission rules for fetching | Off unless enabled for the run with `-c` |
-| Ignores the person's own setup | `--setting-sources` and `--strict-mcp-config`; an organisation's managed policy still applies | `--ignore-user-config`, and no instruction files in the folder |
+| Files limited to the folder | `--restricted` confines the file tools, for reading and writing. No shell is given | `--sandbox workspace-write`, which limits writing only |
+| Network | None: no shell and no fetching tool. Research gets a search tool | Off unless enabled for the run with `-c` |
+| Ignores the person's own setup | `--restricted` and `--strict-mcp-config`; an organisation's managed policy still applies | `--ignore-user-config` and `--ignore-rules`, and no instruction files in the folder |
+| Nothing can ask a question | `--permission-prompts none` | Approval policy `never` |
 | Result | `--json-schema` | `--output-schema` |
 | Worker tools | `--mcp-config` | An MCP server given with `-c` |
 | Limits | `--max-budget-usd`; the runner enforces the time limit | The runner enforces the time limit |
 | Sign-in | The person's own Claude Code sign-in | The person's own Codex sign-in |
+
+The Claude column was tested in milestone 0 and held. The Codex column is from documentation and help text; none of it has been run.
 
 The adapters are deliberately thin. If a control exists on one side only, the design does not rely on it.
 
@@ -159,15 +162,17 @@ A run has one policy, and each step picks a profile from it.
 | Profile | Files | Shell | Network |
 | --- | --- | --- | --- |
 | `write` (drafting an artifact) | Staging folder | No | None |
-| `research` (one question) | Staging folder | Yes | Public web, minus a deny list |
-| `build` (compiling a deck) | Staging folder | Yes | Named hosts only |
+| `research` (one question) | Staging folder | No | A search tool; pages only through the runner |
+| `review` (judging rendered slides) | Staging folder | No | None |
+
+No profile has a shell. Milestone 0 showed that drafting, research and review need only file tools and the runner's tools, and that everything needing a command, such as compiling a deck, is a step the runner runs itself. Staging folders are kept out of any shared temporary folder, and each worker is given a temporary folder of its own.
 
 Two things narrow the difference between vendors:
 
-- **Sources are saved through the runner.** A worker that finds a page calls `save_source`; the runner fetches it, stores the snapshot and its hash, and returns the text. Both vendors then quote from the same bytes.
+- **Sources are saved through the runner.** A worker that finds a page calls `save_source`; the runner fetches it, stores the snapshot and its hash, and returns the text. Both vendors then quote from the same bytes. The worker hands back exact quotes and the runner works out where each sits.
 - **Guidance is handed over, not discovered.** A teammate's local skills and instruction files cannot change what a worker is told.
 
-What still differs: how each agent searches, and whether it can drive a real browser. The first live run needed a browser to read pages that refused automated requests. Section 7 tests this before anything else is built.
+What still differs: how each agent searches. In milestone 0 the runner fetched, with ordinary browser headers, a page that had refused an automated request in the first live run, so a real browser was not needed there. Pages that only render in a browser have not been tried.
 
 ### 5.7 The pipelines
 
@@ -186,7 +191,7 @@ What still differs: how each agent searches, and whether it can drive a real bro
 | Yoodli | Count and limit checks | Translate each scenario | 8 |
 | Package | Readiness; write the index from the record | | none |
 
-**Research.** `plan` is a code step. Then one worker per question, several at a time, each with the `research` profile and only the evidence rules. The runner calls `record` for each finding, one at a time. After the last, `status` is read and the runner applies its own rule for "enough": a question answered with no evidence is not counted as done.
+**Research.** `plan` is a code step. Then one worker per question, several at a time, each with the `research` profile, the evidence rules, and a short statement of what the training is about; without that, milestone 0's worker answered from general sources and missed the product angle. The runner calls `record` for each finding, one at a time. After the last, `status` is read and the runner applies its own rule for "enough": a question answered with no evidence is not counted as done.
 
 **Slides.** A worker writes the outline; the runner checks it and renders the draft; a gate approves it. Workers compose sections in parallel; the runner compiles and renders previews. A separate worker answers the review questions about the rendered slides, and the runner records its answers. A gate shows the slides themselves. The runner then renders the deck and imports it.
 
@@ -220,7 +225,7 @@ home  ->  new training  ->  the run  ->  a gate  ->  the next thing that needs y
 - **New training.** Three short steps: the topic and who it is for; its shape, with a sensible default for every choice; the sources and the agent. Before it starts, it says how many times it will ask for you.
 - **The run.** The row of stages, what is happening now in a sentence, the files made so far, and what it has cost. Detail about what a worker did is there to open, not in the way.
 - **A gate.** The document, the review, the decision. After deciding, the page goes to the next thing that needs you, or back to home if nothing does.
-- **Status.** Everything at once, for when more than one training is running: every run and its stage, how long it has been there, the workers running now, anything that failed with the reason, cost, and whether the computer is ready (Claude Code and Codex signed in, Node and the two harness skills present, Google access working).
+- **Status.** Everything at once, for when more than one training is running: every run and its stage, how long it has been there, the workers running now, anything that failed with the reason, cost, and whether the computer is ready (Claude Code and Codex signed in and reachable from the network it is on now, Node and the two harness skills present, Google access working).
 - **Settings.** The workspace, the agent to use by default, limits, notifications.
 
 **States that are designed, not left over**
@@ -320,10 +325,13 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 
 ## 8. Risks and open questions
 
-- **Research quality without a browser.** Covered by milestone 0.
+- **Codex is untested.** Milestone 0 could not reach it from the network it ran on. Its sandbox limits writing, not reading, and its shell cannot be removed, so the "no shell" rule cannot hold there as it does on Claude. Whether Codex can be confined well enough is open until its half of the spike is run.
+- **An agent can be unreachable on a given network.** A run started on one agent stays on it, so a person on a network that blocks that agent cannot continue the run from there.
+- **The account's email address reaches every worker** on Claude. It was the one piece of the person's setup that could not be kept out.
+- **Pages that need a browser.** Not met in milestone 0; not ruled out.
 - **Judging slides from images.** Both agents must read rendered slides in an unattended run. Codex takes images as input and Claude reads image files; neither has been tried here.
 - **Vendor churn.** Codex's flags and documentation have moved several times this year. Thin adapters limit the damage; they do not remove it.
-- **Passing worker tools to Codex while ignoring user configuration.** The override option exists. Whether the two combine as needed is not verified; part of milestone 0.
+- **Passing worker tools to Codex while ignoring user configuration.** The override option exists. Whether the two combine as needed is not verified; it is part of the Codex half of milestone 0.
 - **Two people on one training.** Git merges folders well and a single session record badly. The one-driver rule avoids the conflict; it does not resolve one if someone works around it.
 - **Large files.** Decks and saved sources grow a repository. Sources are kept out by default; decks are committed, and that may need revisiting.
 - **Two ways to run a training.** The skills and the runner must agree on the core. One shared core, with tests, is the mitigation.
@@ -343,4 +351,4 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 - Today's team hub folds into the workspace: a published revision is a tag, and shared scenarios and audiences are folders in it.
 - Nothing is pushed without the person saying so, unless a workspace is set to push after each gate.
 - The runner itself is a new repository, in Python, created at milestone 2. Milestones 0 and 1 do not need it.
-- Milestone 0 comes first, and its result can end the project.
+- Milestones 1 and 2 are built on Claude, behind the adapter interface. Codex joins when its half of milestone 0 has been run and has passed.
