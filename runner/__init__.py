@@ -1,5 +1,11 @@
-"""The Studio Runner's foundations: confined workers, their tools, state in git, research.
+"""The Studio Runner: a program that takes a training from a form to approved blueprints.
 
+    studio         the command line: `studio serve` and `studio status`
+    page           the runner's server: the desk's page, with the runner behind it
+    setup          this computer's set-up: the workspace, the agent and the limits
+    engine         walks each training's pipeline, hands jobs to workers, stops at gates
+    pipeline       the training and research pipelines, and where a training is in them
+    settings       what this computer remembers: the default agent and the limits
     agents         start Claude or Codex as a worker for one job, or script one for tests
     worker_tools   the only tools a worker has, and the server that offers them to an agent
     gitstate       the workspace: one folder inside a git repository, committed and shared

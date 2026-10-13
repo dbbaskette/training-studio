@@ -8,6 +8,7 @@ import ssl
 import stat
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -527,6 +528,30 @@ class RunTests(AgentCase):
         self.assertTrue(outcome.events.read_text().startswith('warming up\n'))
 
 
+class StopTests(AgentCase):
+    def test_a_worker_that_is_stopped_ends_at_once_and_says_so(self):
+        program = self.program('cat > /dev/null\necho \'{"type": "system", "subtype": '
+                               '"init"}\'\nsleep 60\n')
+        for adapter in (Claude(program), Codex(program)):
+            with self.subTest(adapter.name):
+                stop = threading.Event()
+                timer = threading.Timer(0.3, stop.set)
+                timer.start()
+                self.addCleanup(timer.cancel)
+                started = time.monotonic()
+                outcome = adapter.run(self.make(limits=Limits(seconds=60)), stop=stop)
+                self.assertLess(time.monotonic() - started, 20)
+                self.assertEqual((outcome.finished, outcome.reason, outcome.detail),
+                                 (False, 'stopped', 'It was stopped before it finished.'))
+                self.assertIn(outcome.reason, agents.REASONS)
+
+    def test_a_scripted_worker_takes_the_same_arguments(self):
+        worker_tools.prepare(self.job)
+        job = self.make(tools=tuple(worker_tools.command(self.job)))
+        outcome = Scripted(lambda tools, job: 'Done.').run(job, None, threading.Event())
+        self.assertEqual((outcome.finished, outcome.text), (True, 'Done.'))
+
+
 class SuperviseTests(JobCase):
     def run_python(self, code: str, stdin: str = '', seconds: float = 30):
         printed = []
@@ -557,6 +582,26 @@ class SuperviseTests(JobCase):
         self.assertLess(time.monotonic() - started, 20)
         self.assertEqual((late, printed), (True, [b'started\n']))
         self.assertLess(code, 0)
+
+    def test_a_command_is_ended_when_it_is_told_to_stop(self):
+        stop = threading.Event()
+        timer = threading.Timer(0.3, stop.set)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        printed, started = [], time.monotonic()
+        code, late = agents.supervise(
+            [sys.executable, '-c', 'import time\nprint("started", flush=True)\ntime.sleep(60)'],
+            self.base, dict(os.environ), '', 60, self.base / 'errors.txt', printed.append,
+            stop)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual((late, printed), (False, [b'started\n']))
+        self.assertLess(code, 0)
+
+    def test_a_stop_that_never_comes_changes_nothing(self):
+        found = agents.supervise([sys.executable, '-c', 'print("done")'], self.base,
+                                 dict(os.environ), '', 30, self.base / 'errors.txt',
+                                 lambda line: None, threading.Event())
+        self.assertEqual(found, (0, False))
 
     def test_a_caller_that_fails_does_not_leave_the_command_running(self):
         def broken(line):

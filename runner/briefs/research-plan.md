@@ -28,6 +28,7 @@ Weight the mix to the purpose: more objections for field enablement, more prereq
 - If the topic names a set, such as "all the X" or "every Y", ask the question that establishes its members. Never assume the list.
 - Do not build what you believe about the subject into a question's wording. The research decides what is true.
 - Ask at most 30 questions. If the topic needs more, it is too large for one training: ask the questions the core needs, and say in your notes how you would split the rest.
+- Fit the number to the time the training has. Each question is researched on its own, which costs the person time and money, and a short training can use only a few answers. One lesson of 30 minutes or less rarely needs more than 10 questions. Say in your notes which questions you left out for this reason.
 
 ## The format
 

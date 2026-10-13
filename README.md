@@ -162,6 +162,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 - [Google Docs](docs/google-docs.md): sending the learner guide or the brief to a Google Doc for review, and bringing the edits back.
 - [The page](docs/desk.md): what needs you, every training and this computer's readiness in your browser, and approval that only you can give.
 - [Team hub](docs/team-hub.md): sharing finished trainings with your team, and reusing their scenarios, audiences and research.
+- [The runner](docs/runner.md): early. A program that takes a training from a form to an approved blueprint on its own and stops for each of your decisions.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
 

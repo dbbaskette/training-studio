@@ -1770,13 +1770,8 @@ class MarkdownTests(unittest.TestCase):
         self.assertEqual(text_of(tree['children'][2]), 'Example: an app.')
 
 
-@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
-class PageScriptTests(PageCase):
-    """app.js, run for real against the server's own answers, in a document with no parser.
-
-    Each step presses a control the way Enter or Space would. A script that wrote markup,
-    left a control without a name, or put a click on something that is not a control fails.
-    """
+class ScriptedPage:
+    """Runs app.js in the harness, and checks what every screen it shows must hold."""
 
     def captured(self, method: str, target: str, sent=None) -> dict:
         body = None if sent is None else json.dumps(sent).encode()
@@ -1807,6 +1802,15 @@ class PageScriptTests(PageCase):
                 self.assertLessEqual(len(shot['filled']), 1, 'one filled button on a screen')
                 self.assertNotRegex(shot['text'].replace(MARKUP_TITLE, ''), FORBIDDEN_WORDS)
         return result
+
+
+@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
+class PageScriptTests(ScriptedPage, PageCase):
+    """app.js, run for real against the server's own answers, in a document with no parser.
+
+    Each step presses a control the way Enter or Space would. A script that wrote markup,
+    left a control without a name, or put a click on something that is not a control fails.
+    """
 
     def a_gate_with_history(self) -> None:
         """The learner guide at its gate on the page, changed since it was last approved."""
@@ -2095,6 +2099,847 @@ class PageScriptTests(PageCase):
         result = self.run_page({'GET /api/trainings': [refused]}, [{'snapshot': 'refused'}])
         self.assertIn('This link does not match the page that is running.',
                       result['snapshots']['refused']['notice'])
+
+
+def ok(body) -> dict:
+    return {'status': 200, 'body': body}
+
+
+# The runner's answers, written out field for field from the appendix of the milestone 2
+# specification ("What the page asks the runner"). Its server is built apart from the page.
+RUNNER = ok({'runner': True, 'version': '0.9.0'})
+LIMITS = {'step_seconds': 900, 'training_dollars': 20, 'parallel': 2}
+NOT_SET_UP = {'configured': False, 'workspace': None,
+              'agent': {'default': 'claude', 'model': None}, 'limits': LIMITS}
+WORKSPACE = {'name': 'Field enablement', 'repository': 'git@example.com:team/tools.git',
+             'path': '/Users/pat/Library/Training Studio/workspace', 'folder': 'trainings',
+             'branch': 'main', 'share_when': 'each-decision', 'shared': True, 'notice': None}
+SET_UP = {'configured': True, 'workspace': WORKSPACE,
+          'agent': {'default': 'claude', 'model': None}, 'limits': LIMITS}
+AGENTS_FOUND = {'agents': [
+    {'agent': 'claude', 'installed': True, 'signed_in': None, 'reachable': True,
+     'version': '2.1.0', 'problem': None},
+    {'agent': 'codex', 'installed': True, 'signed_in': False, 'reachable': None,
+     'version': '0.48.0',
+     'problem': 'Codex is not signed in. Run codex login in a terminal, then look again.'}]}
+RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'steps', 'workers', 'spent', 'question',
+              'problem'}
+STEP_FIELDS = {'id', 'label', 'kind', 'status', 'attempts', 'seconds', 'dollars', 'error'}
+
+
+def a_step(name: str, label: str, kind: str, status: str, **more) -> dict:
+    step = {'id': name, 'label': label, 'kind': kind, 'status': status,
+            'attempts': 0 if status == 'to-do' else 1, 'seconds': None, 'dollars': None,
+            'error': None, **more}
+    assert set(step) == STEP_FIELDS, step
+    return step
+
+
+def a_run(state: str, sentence: str, **more) -> dict:
+    run = {'state': state, 'sentence': sentence, 'agent': 'claude', 'model': None,
+           'steps': [], 'workers': [], 'spent': {'dollars': None, 'tokens': None},
+           'question': None, 'problem': None, **more}
+    assert set(run) == RUN_FIELDS, run
+    return ok(run)
+
+
+def steps(*statuses: str) -> list:
+    """The steps of a training up to its blueprint, each where `statuses` puts it."""
+    named = (('intake', 'Your answers', 'code'),
+             ('research-plan', 'Draft the research questions', 'agent'),
+             ('gate:research-plan', 'Your review of the research questions', 'gate'),
+             ('research', 'Do the research', 'agent'),
+             ('gate:research', 'Your review of the research', 'gate'),
+             ('blueprint', 'Draft the blueprint', 'agent'),
+             ('gate:blueprint', 'Your review of the blueprint', 'gate'))
+    return [a_step(name, label, kind, status)
+            for (name, label, kind), status in zip(named, statuses + ('to-do',) * 7)]
+
+
+@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
+class RunnerScreenTests(ScriptedPage, PageCase):
+    """What the runner adds to the page: set-up, a new training, a run, and running work in
+    every list. Each screen is driven through its own controls."""
+
+    def answers(self, setup=SET_UP, **more) -> dict:
+        return {'GET /api/capabilities': [RUNNER], 'GET /api/setup': [ok(setup)],
+                'GET /api/trainings': [self.read('trainings')],
+                'GET /api/computer': [self.read('computer')],
+                'GET /api/agents': [ok(AGENTS_FOUND)], **more}
+
+    def posts(self, result: dict) -> list:
+        """Every change the page asked for, each sent as milestone 1 says a change is."""
+        made = [request for request in result['requests'] if request['method'] == 'POST']
+        for post in made:
+            self.assertEqual(post['headers'], {desk.TOKEN_HEADER: 'the-test-key',
+                                               'Content-Type': 'application/json'})
+        return [(post['address'], post['body']) for post in made]
+
+    def asked(self, result: dict, endpoint: str) -> list:
+        return [request['address'] for request in result['requests']
+                if request['address'].split('?')[0] == f'/api/{endpoint}']
+
+    def started(self, *init) -> None:
+        """A training as the runner leaves it once the form is in: its start approved."""
+        self.cli('init', '--title', 'Rolling restarts', *init)
+        self.make('intake', 'intake.md', '# Intake\n\n## Topic\nRolling restarts\n')
+        self.cli('checkpoint', '--approval', 'page', '--stage', 'research-plan',
+                 '--next', 'Draft the research questions')
+
+    def at_the_questions_gate(self) -> None:
+        self.write('.training-studio/research-plan.json', json.dumps(helpers.PLAN))
+        self.cli('save', 'research-plan', '--built')
+        self.cli('checkpoint', '--gate', 'research-plan', '--stage', 'research-plan',
+                 '--question', 'Are these the right questions?')
+
+    def listed(self, state: str | None, sentence: str = '', needs: bool = False) -> dict:
+        """The list as the runner gives it: every item has `run`, and this training's is
+        `state`. `needs` is what the runner does when a run has a question or a problem."""
+        found = self.read('trainings')
+        for item in found['body']['trainings']:
+            item['run'] = None
+            if item['path'] == str(self.root) and state:
+                item['run'] = {'state': state, 'sentence': sentence}
+                if needs and item['state'] != 'needs-you':
+                    item['state'] = 'needs-you'
+                    found['body']['needs'] += 1
+        return found
+
+    def detail(self, state: str, sentence: str) -> dict:
+        found = self.read('training', path=str(self.root))
+        found['body']['run'] = {'state': state, 'sentence': sentence}
+        return found
+
+    def test_set_up_comes_first_and_each_answer_is_checked_as_it_is_given(self):
+        first, second = 'git@example.com:team/enablement.git', 'git@example.com:team/tools.git'
+        passed = [{'what': 'The repository can be reached', 'ok': True, 'fix': None},
+                  {'what': 'You can write to it', 'ok': True, 'fix': None},
+                  {'what': 'Git knows who you are', 'ok': True, 'fix': None}]
+        refused = {'ok': False, 'checks': [passed[0], {
+            'what': 'You can write to it', 'ok': False,
+            'fix': 'Ask its owner for write access, then check again.'}, passed[2]],
+            'found': {'name': 'enablement', 'folder': 'trainings', 'branch': 'main',
+                      'existing': False}}
+        found = {'ok': True, 'checks': passed,
+                 'found': {'name': 'Field enablement', 'folder': 'tools/trainings',
+                           'branch': 'trainings', 'existing': True}}
+        saved = {'configured': True, 'agent': {'default': 'codex', 'model': 'gpt-5'},
+                 'limits': {'step_seconds': 600, 'training_dollars': 15, 'parallel': 1},
+                 'workspace': {**WORKSPACE, 'folder': 'tools/trainings', 'branch': 'trainings',
+                               'share_when': 'when-asked', 'shared': False}}
+        answers = self.answers(**{'GET /api/setup': [ok(NOT_SET_UP), ok(saved)],
+                                  'POST /api/setup/check': [ok(refused), ok(found)],
+                                  'POST /api/setup': [ok(saved)]})
+        address, parallel = 'The repository’s address', 'How many trainings may run at once'
+        result = self.run_page(answers, [
+            {'snapshot': 'first'},
+            {'click': 'Save and go on'}, {'snapshot': 'empty'},
+            {'fill': address, 'value': first}, {'snapshot': 'failed'},
+            {'click': 'Save and go on'}, {'snapshot': 'not yet'},
+            {'fill': address, 'value': second}, {'snapshot': 'found'},
+            {'click': 'Only when I ask'}, {'click': 'Codex'},
+            {'fill': 'Its model', 'value': ' gpt-5 '},
+            {'fill': 'The longest a step may take', 'value': '10'},
+            {'fill': 'The most a training may spend', 'value': '15'},
+            {'fill': parallel, 'value': '0'},
+            {'click': 'Save and go on'}, {'snapshot': 'limit'},
+            {'fill': parallel, 'value': '1'},
+            {'click': 'Save and go on'}, {'snapshot': 'saved'},
+        ])
+        shots = result['snapshots']
+
+        # Until the workspace is set, set-up is the only screen and there is no way off it.
+        start = shots['first']
+        self.assertEqual((start['heading'], start['title'], start['sidebar']),
+                         ('Set up Training Studio', 'Set-up · Training Studio', False))
+        self.assertEqual(start['filled'], ['Save and go on'])
+        for absent in ('Home', 'Trainings', 'Status', 'Settings', 'Back', 'New training'):
+            self.assertNotIn(absent, start['buttons'])
+        for shown in ('Welcome.', 'nothing is changed until you save',
+                      'Then you can start your first training.',
+                      'It is checked as soon as you give the address.',
+                      'After each decision: your team sees the drafts',
+                      'Only when I ask: everything stays on this computer',
+                      'Claude Code', 'Installed: 2.1.0', 'Signed in: cannot be asked', 'Codex',
+                      'Needs attention', 'Signed in: no',
+                      'Codex is not signed in. Run codex login in a terminal'):
+            self.assertIn(shown, start['text'])
+        self.assertEqual(start['pressed'], ['A team repository', 'After each decision',
+                                            'Claude Code'])
+        self.assertEqual(start['fields'], {
+            address: '', 'The folder inside it': '', 'The branch': '',
+            'A name for this workspace': '', 'Its model (optional)': '',
+            'The longest a step may take, in minutes': '15',
+            'The most a training may spend, in dollars': '20', parallel: '2'})
+        self.assertEqual(self.asked(result, 'capabilities'), ['/api/capabilities'])
+
+        # Nothing to save yet: refused beside the box, and nothing is sent.
+        empty = shots['empty']
+        self.assertEqual((empty['invalid'], empty['focus'], empty['posts']),
+                         ([address], 'setup-repository', 0))
+        self.assertIn('Give the repository’s address first.', empty['text'])
+        self.assertIn('Nothing was saved.', empty['text'])
+
+        # A check that fails says which, in plain words, with how to put it right.
+        failed = shots['failed']
+        for shown in ('The repository can be reached: yes', 'You can write to it: no',
+                      'Ask its owner for write access, then check again.',
+                      '1 thing needs putting right before this can be saved.'):
+            self.assertIn(shown, failed['text'])
+        self.assertEqual((failed['fields']['The folder inside it'], failed['fields']['The branch'],
+                          failed['fields']['A name for this workspace'], failed['locked']),
+                         ('trainings', 'main', 'enablement', []))
+        self.assertNotIn('already set up', failed['text'])
+        self.assertIn('needs putting right first', shots['not yet']['text'])
+        self.assertEqual(shots['not yet']['posts'], 1)
+
+        # The team's own hub.json is found: the page says so and takes its folder and branch.
+        here = shots['found']
+        self.assertIn('Training Studio is already set up in this repository, as “Field '
+                      'enablement”.', here['text'])
+        self.assertIn('This is ready to use.', here['text'])
+        self.assertEqual((here['fields']['The folder inside it'], here['fields']['The branch'],
+                          here['fields']['A name for this workspace']),
+                         ('tools/trainings', 'trainings', 'Field enablement'))
+        self.assertEqual(here['locked'], ['The folder inside it', 'The branch',
+                                          'A name for this workspace'])
+
+        # A limit that cannot be used is refused beside its box.
+        self.assertEqual(shots['limit']['invalid'], [parallel])
+        self.assertIn('Give a whole number, 1 or more.', shots['limit']['text'])
+
+        nothing = {'path': None, 'folder': None, 'branch': None}
+        self.assertEqual(self.posts(result), [
+            ('/api/setup/check', {'repository': first, **nothing}),
+            ('/api/setup/check', {'repository': second, **nothing}),
+            ('/api/setup', {'repository': second, 'folder': 'tools/trainings',
+                            'branch': 'trainings', 'name': 'Field enablement',
+                            'share_when': 'when-asked', 'agent': 'codex', 'model': 'gpt-5',
+                            'limits': {'step_seconds': 600, 'training_dollars': 15,
+                                       'parallel': 1}})])
+
+        # Then "Start your first training", and the rest of the page is there.
+        done = shots['saved']
+        self.assertEqual((done['heading'], done['sidebar'], done['filled']),
+                         ('Home', True, ['New training']))
+        self.assertIn('Start your first training', done['text'])
+        self.assertIn('You are set up. Now start your first training.', done['toasts'])
+        self.assertIn('Trainings', done['buttons'])
+
+    def test_set_up_is_reached_from_settings_and_the_work_is_shared_when_asked(self):
+        notice = 'The repository could not be reached when you last decided.'
+        behind = {**SET_UP, 'workspace': {**WORKSPACE, 'shared': False, 'notice': notice}}
+        dearer = {**SET_UP, 'limits': {**LIMITS, 'training_dollars': 30}}
+        check = {'ok': True, 'found': {'name': 'Field enablement', 'folder': 'trainings',
+                                       'branch': 'main', 'existing': True},
+                 'checks': [{'what': 'The repository can be reached', 'ok': True, 'fix': None}]}
+        answers = self.answers(behind, **{
+            'POST /api/share': [ok({'shared': True, 'notice': None})],
+            'POST /api/setup/check': [ok(check)], 'POST /api/setup': [ok(dearer)]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Settings'}, {'snapshot': 'settings'},
+            {'click': 'Share now'}, {'snapshot': 'shared'},
+            {'click': 'Change the set-up'}, {'snapshot': 'set-up'},
+            {'fill': 'The most a training may spend', 'value': '30'},
+            {'click': 'Save'}, {'snapshot': 'saved'},
+        ])
+        shots = result['snapshots']
+        said = f'Not shared with your team yet. {notice} The work is kept on this computer'
+        self.assertIn(said, shots['home']['text'])
+        self.assertIn('Share now', shots['home']['buttons'])
+
+        settings = shots['settings']
+        for shown in ('Workspace', 'Field enablement', 'git@example.com:team/tools.git',
+                      '/Users/pat/Library/Training Studio/workspace', 'trainings', 'main',
+                      'after each decision: your team sees the drafts', said,
+                      'Claude Code, with the model it chooses itself',
+                      'A step may take up to 15 minutes.',
+                      'A training stops and asks you once it has spent $20.00.',
+                      'Up to 2 trainings run at once.'):
+            self.assertIn(shown, settings['text'])
+        self.assertEqual(settings['heading'], 'Settings')
+
+        shared = shots['shared']
+        self.assertIn('Shared: your team can see everything decided so far.', shared['text'])
+        self.assertNotIn('Share now', shared['buttons'])
+        self.assertIn('Shared. Your team can see it now.', shared['toasts'])
+        self.assertEqual(shared['focus'], 'title')
+
+        again = shots['set-up']
+        self.assertEqual((again['heading'], again['current'], again['sidebar']),
+                         ('Set-up', ['Settings'], True))
+        self.assertEqual((again['filled'], again['buttons'].count('Back')), (['Save'], 1))
+        self.assertEqual(again['fields']['The repository’s address'],
+                         'git@example.com:team/tools.git')
+        self.assertEqual(again['pressed'], ['A team repository', 'After each decision',
+                                            'Claude Code'])
+        self.assertIn('Training Studio is already set up in this repository', again['text'])
+
+        self.assertEqual(self.posts(result), [
+            ('/api/share', {}),
+            ('/api/setup/check', {'repository': 'git@example.com:team/tools.git', 'path': None,
+                                  'folder': 'trainings', 'branch': 'main'}),
+            ('/api/setup', {'repository': 'git@example.com:team/tools.git',
+                            'folder': 'trainings', 'branch': 'main',
+                            'name': 'Field enablement', 'share_when': 'each-decision',
+                            'agent': 'claude', 'model': None,
+                            'limits': {'step_seconds': 900, 'training_dollars': 30,
+                                       'parallel': 2}})])
+        saved = shots['saved']
+        self.assertEqual((saved['heading'], saved['current']), ('Settings', ['Settings']))
+        self.assertIn('The set-up is saved.', saved['toasts'])
+        self.assertIn('once it has spent $30.00', saved['text'])
+
+    def test_a_folder_on_this_computer_is_set_up_without_anyone_to_share_with(self):
+        check = {'ok': True, 'found': {'name': 'try-out', 'folder': 'trainings',
+                                       'branch': 'main', 'existing': False},
+                 'checks': [{'what': 'The folder can be written to', 'ok': True, 'fix': None}]}
+        local = {**SET_UP, 'workspace': {**WORKSPACE, 'repository': None, 'name': 'try-out',
+                                         'path': '/Users/pat/try-out', 'shared': False}}
+        answers = self.answers(NOT_SET_UP, **{
+            'GET /api/setup': [ok(NOT_SET_UP), ok(local)],
+            'POST /api/setup/check': [ok(check)], 'POST /api/setup': [ok(local)]})
+        result = self.run_page(answers, [
+            {'click': 'A folder on this computer'}, {'snapshot': 'local'},
+            {'fill': 'The folder', 'value': '/Users/pat/try-out'},
+            {'fill': 'The folder inside it', 'value': 'courses'}, {'snapshot': 'checked'},
+            {'click': 'Save and go on'}, {'snapshot': 'saved'},
+        ])
+        shots = result['snapshots']
+        self.assertEqual(shots['local']['pressed'], ['A folder on this computer',
+                                                     'Claude Code'])
+        self.assertEqual(shots['local']['focus'], 'A folder on this computer')
+        self.assertNotIn('When your team sees the work', shots['local']['text'])
+        self.assertIn('It is checked as soon as you say which folder.', shots['local']['text'])
+        self.assertEqual(shots['checked']['fields']['The folder inside it'], 'courses')
+        place = {'repository': None, 'path': '/Users/pat/try-out', 'branch': None}
+        self.assertEqual(self.posts(result), [
+            ('/api/setup/check', {**place, 'folder': None}),
+            ('/api/setup/check', {**place, 'folder': 'courses'}),
+            ('/api/setup', {'path': '/Users/pat/try-out', 'folder': 'courses', 'branch': 'main',
+                            'name': 'try-out', 'share_when': 'when-asked', 'agent': 'claude',
+                            'model': None, 'limits': LIMITS})])
+        self.assertIn('Your trainings are kept in a folder on this computer, and are not '
+                      'shared with anyone.', shots['saved']['text'])
+        self.assertNotIn('Share now', shots['saved']['buttons'])
+
+    def test_a_name_that_cannot_be_used_is_refused_beside_its_box_before_it_is_sent(self):
+        address, name = 'git@example.com:team/enablement.git', 'A name for this workspace'
+        check = {'ok': True, 'found': {'name': 'enablement', 'folder': 'trainings',
+                                       'branch': 'main', 'existing': False},
+                 'checks': [{'what': 'The repository can be reached', 'ok': True,
+                             'fix': None}]}
+        saved = {**SET_UP, 'workspace': {**WORKSPACE, 'name': 'field-training'}}
+        answers = self.answers(NOT_SET_UP, **{
+            'GET /api/setup': [ok(NOT_SET_UP), ok(saved)],
+            'POST /api/setup/check': [ok(check)], 'POST /api/setup': [ok(saved)]})
+        result = self.run_page(answers, [
+            {'fill': 'The repository’s address', 'value': address}, {'snapshot': 'checked'},
+            {'fill': name, 'value': 'Field training'},
+            {'click': 'Save and go on'}, {'snapshot': 'refused'},
+            {'fill': name, 'value': 'field-training'}, {'snapshot': 'put right'},
+            {'click': 'Save and go on'}, {'snapshot': 'saved'},
+        ])
+        shots = result['snapshots']
+        # A box that is being put right no longer says it is wrong.
+        self.assertEqual(shots['put right']['invalid'], [])
+        self.assertNotIn('with no spaces, starting', shots['put right']['text'])
+
+        # The rule is said before anyone breaks it.
+        self.assertIn('a short name with no spaces, such as field-training',
+                      shots['checked']['text'])
+        refused = shots['refused']
+        self.assertEqual((refused['invalid'], refused['focus']), ([name], 'setup-name'))
+        self.assertIn('with no spaces', refused['text'])
+        self.assertIn('Nothing was saved.', refused['text'])
+        self.assertEqual([address for address, _ in self.posts(result)],
+                         ['/api/setup/check', '/api/setup'])
+        self.assertEqual(self.posts(result)[1][1]['name'], 'field-training')
+        self.assertEqual(shots['saved']['heading'], 'Home')
+
+    def test_a_new_training_takes_three_steps_and_lands_on_its_run(self):
+        self.started('--levels', '101,301')
+        sentence = 'Drafting the research questions.'
+        working = a_run('working', sentence, steps=steps('done', 'working'),
+                        workers=[{'id': 'w1', 'label': 'The research questions',
+                                  'started_at': '2030-01-02T03:04:05Z',
+                                  'lines': ['Read your answers', 'Drafting question 4']}])
+        answers = self.answers(**{
+            'GET /api/trainings': [ok({'trainings': [], 'needs': 0}),
+                                   self.listed('working', sentence)],
+            'POST /api/trainings': [ok({'path': str(self.root), 'id': 'rolling-restarts',
+                                        'gates': 4})],
+            'GET /api/run': [working], 'GET /api/training': [self.detail('working', sentence)]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'New training'}, {'snapshot': 'one'},
+            {'click': 'Continue'}, {'snapshot': 'missing'},
+            {'fill': 'A short title', 'value': 'Rolling restarts'},
+            {'fill': 'What should it teach?', 'value': 'How a rolling restart works.'},
+            {'fill': 'Who is it for?', 'value': 'Platform engineers new to it.'},
+            {'click': 'Technical upskilling'},
+            {'click': 'Continue'}, {'snapshot': 'two'},
+            {'click': '301'}, {'click': 'A comparison'}, {'click': 'Google Slides'},
+            {'fill': 'A brand for the deck', 'value': 'Example Co'}, {'click': 'Google Docs'},
+            {'fill': 'How long it should take', 'value': '30 minutes'},
+            {'click': 'Continue'}, {'snapshot': 'three'},
+            {'click': 'Back a step'}, {'snapshot': 'kept'},
+            {'click': 'Continue'}, {'click': 'Start the training'}, {'snapshot': 'run'},
+        ])
+        shots = result['snapshots']
+        self.assertEqual(shots['home']['filled'], ['New training'])
+        self.assertIn('Start your first training', shots['home']['text'])
+
+        one = shots['one']
+        self.assertEqual((one['heading'], one['title'], one['filled'], one['current']),
+                         ('The topic and who it is for', 'New training · Training Studio',
+                          ['Continue'], ['Trainings']))
+        self.assertIn('New training · Step 1 of 3', one['text'])
+        self.assertEqual(one['pressed'], ['Field enablement'])
+        missing = shots['missing']
+        self.assertEqual(missing['invalid'], ['A short title', 'What should it teach?',
+                                              'Who is it for?'])
+        self.assertEqual((missing['focus'], missing['posts'], missing['heading']),
+                         ('new-title', 0, 'The topic and who it is for'))
+        self.assertIn('Give it a title first.', missing['text'])
+
+        # Every choice about its shape has an answer already.
+        two = shots['two']
+        self.assertEqual((two['heading'], two['focus']), ('Its shape', 'title'))
+        self.assertIn('New training · Step 2 of 3', two['text'])
+        self.assertEqual((two['chosen'], two['pressed']),
+                         (['101'], ['One product or technology', 'PowerPoint']))
+        self.assertEqual(two['fields'], {'How long it should take (optional)': '',
+                                         'A brand for the deck (optional)': ''})
+
+        # Before it starts: how many times it will ask, and what it may spend.
+        three = shots['three']
+        self.assertEqual((three['heading'], three['filled']),
+                         ('The sources, the agent and the limits', ['Start the training']))
+        for shown in ('It researches the public web', 'not offered yet', 'Claude Code',
+                      'A step may take up to 15 minutes.',
+                      'It stops and asks for your decision 4 times: at the research questions, '
+                      'at the research, and at the blueprint of each of the 2 levels.',
+                      'In between, you can close it.'):
+            self.assertIn(shown, three['text'])
+        self.assertEqual((three['pressed'], three['posts']), (['Claude Code'], 0))
+        self.assertEqual(self.asked(result, 'agents'), ['/api/agents'] * 2)
+
+        # Going back a step loses nothing.
+        kept = shots['kept']
+        self.assertEqual((kept['chosen'], kept['pressed']),
+                         (['101', '301', 'Google Docs'], ['A comparison', 'Google Slides']))
+        self.assertEqual(kept['fields'], {'How long it should take (optional)': '30 minutes',
+                                          'A brand for the deck (optional)': 'Example Co'})
+
+        self.assertEqual(self.posts(result), [('/api/trainings', {
+            'title': 'Rolling restarts', 'topic': 'How a rolling restart works.',
+            'audience': 'Platform engineers new to it.', 'purpose': 'Technical upskilling',
+            'levels': ['101', '301'], 'brief_kind': 'competitive', 'time_limit': '30 minutes',
+            'source_scope': 'public-web', 'deck_target': 'google', 'brand': 'Example Co',
+            'copies': ['google'], 'yoodli': False, 'agent': 'claude', 'model': None})])
+
+        run = shots['run']
+        self.assertEqual((run['heading'], run['title']),
+                         ('Rolling restarts', 'Rolling restarts · Training Studio'))
+        self.assertIn(sentence, run['text'])
+        self.assertIn('In all, it stops and asks for your decision 4 times.', run['text'])
+        self.assertIn('Started. It is working on its own now.', run['toasts'])
+        # Nothing reported yet is not the same as an agent that never says.
+        self.assertIn('Nothing has been reported yet.', run['text'])
+        self.assertIn('It stops and asks you at $20.00.', run['text'])
+        self.assertNotIn('not what they cost', run['text'])
+        # Read once on arriving, and once more with the list that now holds it.
+        self.assertEqual(self.asked(result, 'run'),
+                         [f'/api/run?{urlencode({"path": self.root})}'] * 2)
+
+    def test_a_run_is_watched_from_working_to_a_gate_to_a_failure_to_done(self):
+        self.started()
+        going = 'Drafting the research questions.'
+        asking = 'Waiting for your decision on the research questions.'
+        broke, later = 'The research stopped after three tries.', 'Doing the research again.'
+        over = ('The blueprint is approved. The later stages are not automated yet: carry on '
+                'with your assistant.')
+        working = a_run('working', going, steps=steps('done', 'working'), workers=[
+            {'id': 'w1', 'label': 'The research questions', 'started_at': '2030-01-02T03:04:05Z',
+             'lines': ['Read your answers', 'Listed what to ask', 'Drafting question 4']}],
+            spent={'dollars': 0.4, 'tokens': 18200})
+        waiting = a_run('waiting', asking, steps=steps('done', 'done', 'waiting'),
+                        spent={'dollars': 0.62, 'tokens': 30100})
+        failed = a_run('failed', broke, spent={'dollars': 1.9, 'tokens': 81000}, steps=[
+            *steps('done', 'done', 'done')[:3],
+            a_step('research', 'Do the research', 'agent', 'failed', attempts=3, seconds=754,
+                   dollars=1.28, error='The agent could not be reached.'),
+            *steps()[4:]], problem={
+                'what': 'The research was tried three times and the agent could not be reached.',
+                'kept': 'Your answers and the approved research questions.',
+                'action': 'retry', 'label': 'Try the research again'})
+        again = a_run('working', later, steps=steps('done', 'done', 'done', 'working'),
+                      spent={'dollars': 1.9, 'tokens': 81000})
+        done = a_run('done', over, steps=steps(*['done'] * 7),
+                     spent={'dollars': 3.25, 'tokens': 140000})
+
+        lists = [self.listed('working', going)]
+        details = [self.detail('working', going)]
+        self.at_the_questions_gate()
+        lists.append(self.listed('waiting', asking))
+        details.append(self.detail('waiting', asking))
+        # The questions are approved on the page, as the person would, and the run goes on.
+        self.decide('approve', 'research-plan', seen=self.gate('research-plan')['sha256'])
+        lists += [self.listed('failed', broke, needs=True), self.listed('working', later),
+                  self.listed('done', over)]
+        details += [self.detail('failed', broke), self.detail('working', later),
+                    self.detail('done', over)]
+        answers = self.answers(**{
+            'GET /api/trainings': lists, 'GET /api/training': details,
+            # The list is read first, then what a run that needs its person asks, then the run.
+            'GET /api/run': [working, waiting, waiting, failed, failed, again, done],
+            'POST /api/run': [again]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'working'},
+            {'click': 'What it did just before'},
+            {'poll': True}, {'snapshot': 'waiting'},
+            {'poll': True}, {'snapshot': 'failed'},
+            {'click': 'Try the research again'}, {'snapshot': 'again'},
+            {'poll': True}, {'snapshot': 'done'},
+        ], notifications='granted')
+        shots = result['snapshots']
+
+        # Home says what the run is doing now, and the row shimmers because the run says so.
+        home = shots['home']
+        self.assertIn(going, home['text'])
+        self.assertEqual((home['working'], home['filled']), (1, ['New training']))
+
+        run = shots['working']
+        self.assertEqual((run['heading'], run['current'], run['filled']),
+                         ('Rolling restarts', ['Trainings'], []))
+        for shown in ('Runs on this page', 'Working on its own', going,
+                      'Nothing is needed from you right now.',
+                      'Next it asks for your decision on the research questions.',
+                      'Steps', 'Your answers', 'Draft the research questions', 'Working',
+                      'To do', 'Your decision', 'Working now', 'Drafting question 4',
+                      'Made so far', 'What it has cost', '$0.40', 'So far.',
+                      'It stops and asks you at $20.00.', 'Drafted by Claude Code.'):
+            self.assertIn(shown, run['text'])
+        self.assertRegex(run['text'], r'18[,.  ]?200 tokens used\.')
+        self.assertLess(run['text'].index('Draft the research questions'),
+                        run['text'].index('Working now'))
+        # What a worker did before is there to open, and not in the way.
+        self.assertNotIn('Listed what to ask', run['text'].split('What it did just before')[0])
+        self.assertEqual(run['buttons'][4:8], ['Back', 'Pause', 'Stop',
+                                               'What it did just before'])
+        self.assertEqual((run['working'], run['pace']), (1, 2000))
+        self.assertEqual(set(run['beads']) - {'done', 'current', 'none'}, set())
+
+        # At a gate, the one filled button opens it.
+        gate = shots['waiting']
+        self.assertEqual((gate['filled'], gate['title'], gate['working'], gate['pace']),
+                         (['Review the research plan'],
+                          '(1) Rolling restarts · Training Studio', 0, 5000))
+        for shown in ('Waiting for you', asking,
+                      'The research plan is waiting for your review.',
+                      'Training Studio asks: Are these the right questions?', '$0.62'):
+            self.assertIn(shown, gate['text'])
+        self.assertNotIn('Pause', gate['buttons'])
+        self.assertNotIn('Working now', gate['text'])
+        self.assertIn('Review the research plan', gate['buttons'])
+        said = f'Rolling restarts: The research plan is waiting for your review.'
+        self.assertEqual(result['notifications'][0],
+                         {'title': 'Training Studio needs you', 'body': said})
+
+        # A failure says what happened, what was kept, and offers the one action.
+        down = shots['failed']
+        for shown in ('Stopped: something went wrong', broke, 'It has stopped, and needs you',
+                      'What happened: The research was tried three times and the agent could '
+                      'not be reached.',
+                      'What was kept: Your answers and the approved research questions.',
+                      'Failed', '3 tries · 13 minutes · $1.28',
+                      'The agent could not be reached.'):
+            self.assertIn(shown, down['text'])
+        self.assertEqual(down['filled'], ['Try the research again'])
+        for absent in ('Pause', 'Stop', 'Resume'):
+            self.assertNotIn(absent, down['buttons'])
+        self.assertIn('late', down['beads'])
+
+        self.assertEqual(self.posts(result), [('/api/run', {'path': str(self.root),
+                                                            'action': 'retry'})])
+        retried = shots['again']
+        self.assertIn(later, retried['text'])
+        self.assertIn('Trying again.', retried['toasts'])
+        self.assertNotIn('What happened', retried['text'])
+        self.assertEqual((retried['filled'], retried['focus']), ([], 'title'))
+
+        end = shots['done']
+        for shown in ('Finished here', over, '$3.25', 'The research plan'):
+            self.assertIn(shown, end['text'])
+        self.assertEqual((end['filled'], end['working']), ([], 0))
+        for absent in ('Pause', 'Stop', 'Resume'):
+            self.assertNotIn(absent, end['buttons'])
+        self.assertIn('Open the research plan', end['buttons'])
+
+    def test_a_decision_at_a_gate_offers_the_way_back_to_the_run(self):
+        self.started()
+        self.at_the_questions_gate()
+        asking, going = 'Waiting for your decision on the research questions.', 'Researching.'
+        gate = {'path': str(self.root), 'artifact': 'research-plan'}
+        lists, gates = [self.listed('waiting', asking)], [self.read('gate', **gate)]
+        decided = self.captured('POST', '/api/decide', {
+            **gate, 'decision': 'approve', 'seen': gates[0]['body']['sha256']})
+        answers = self.answers(**{
+            'GET /api/trainings': [*lists, self.listed('working', going)],
+            'GET /api/gate': [*gates, self.read('gate', **gate)],
+            'GET /api/training': [self.detail('working', going)],
+            'POST /api/decide': [decided],
+            'GET /api/run': [a_run('waiting', asking, steps=steps('done', 'done', 'waiting')),
+                             a_run('working', going,
+                                   steps=steps('done', 'done', 'done', 'working'))]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Review the research plan'}, {'snapshot': 'gate'},
+            {'click': 'Ask for changes'}, {'snapshot': 'asking'}, {'click': 'Cancel'},
+            {'click': 'Approve'}, {'click': 'Approve'}, {'snapshot': 'decided'},
+            {'click': 'Watch it carry on'}, {'snapshot': 'run'},
+        ])
+        shots = result['snapshots']
+        # The runner drives this training, so nobody is told an assistant makes the change.
+        self.assertIn('Training Studio makes the change and brings it back here.',
+                      shots['asking']['sheet'])
+        self.assertNotIn('assistant', shots['asking']['sheet'])
+        # A gate comes before a new training: it is the one filled button on home.
+        self.assertEqual(shots['home']['filled'], ['Review the research plan'])
+        self.assertIn('New training', shots['home']['buttons'])
+        self.assertIn('Training Studio asks: Are these the right questions?',
+                      shots['gate']['text'])
+        self.assertEqual(shots['gate']['buttons'][5], 'Rolling restarts')
+        self.assertIn('Approved.', shots['decided']['sheet'])
+        self.assertIn('Watch it carry on', shots['decided']['buttons'])
+        self.assertEqual(len(shots['decided']['filled']), 1)
+        self.assertEqual(self.posts(result), [('/api/decide', {
+            **gate, 'decision': 'approve', 'seen': gates[0]['body']['sha256']})])
+        run = shots['run']
+        self.assertEqual((run['heading'], run['filled']), ('Rolling restarts', []))
+        self.assertIn(going, run['text'])
+        self.assertIn('Pause', run['buttons'])
+
+    def test_a_waiting_run_says_what_waits_once_and_sends_nobody_to_an_assistant(self):
+        self.started()
+        self.at_the_questions_gate()
+        waiting = 'The research plan is waiting for your review.'
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('waiting', waiting)],
+            'GET /api/training': [self.detail('waiting', waiting)],
+            'GET /api/run': [a_run('waiting', waiting, steps=steps('done', 'done', 'waiting'))]})
+        result = self.run_page(answers, [
+            {'click': 'Trainings'}, {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
+            {'click': 'Everything about this training'}, {'snapshot': 'detail'},
+        ])
+        shots = result['snapshots']
+        # The run and the training say the same sentence, so it is shown once.
+        self.assertEqual(shots['run']['text'].count(waiting), 1)
+        self.assertIn('Training Studio asks: Are these the right questions?',
+                      shots['run']['text'])
+        # One driver for a training: while the page runs it, nobody is sent to an assistant.
+        self.assertIn('Watch the run', shots['detail']['buttons'])
+        self.assertNotIn('Carry on with your assistant', shots['detail']['text'])
+        self.assertNotIn('Start your assistant in this folder', shots['detail']['text'])
+
+    def test_a_run_is_paused_resumed_and_stopped_and_a_refusal_changes_nothing(self):
+        self.started()
+        going, held = 'Doing the research.', 'Paused at the research.'
+        ended = 'Stopped at the research.'
+        working = a_run('working', going, steps=steps('done', 'done', 'done', 'working'))
+        paused = a_run('paused', held, steps=steps('done', 'done', 'done', 'to-do'),
+                       agent='codex', spent={'dollars': None, 'tokens': 5200})
+        stopped = a_run('stopped', ended, steps=steps('done', 'done', 'done', 'to-do'))
+        refusal = {'status': 409, 'body': {'error': 'It is in the middle of saving a step.'}}
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('working', going)],
+            'GET /api/training': [self.detail('working', going)],
+            'GET /api/run': [working, paused, working, working, stopped],
+            'POST /api/run': [paused, working, refusal, stopped]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'},
+            {'click': 'Pause'}, {'snapshot': 'paused'},
+            {'click': 'Resume'}, {'snapshot': 'resumed'},
+            {'click': 'Stop'}, {'snapshot': 'refused'},
+            {'click': 'Stop'}, {'snapshot': 'stopped'},
+        ])
+        shots = result['snapshots']
+        self.assertEqual(self.posts(result), [
+            ('/api/run', {'path': str(self.root), 'action': action})
+            for action in ('pause', 'resume', 'stop', 'stop')])
+        paused_shot = shots['paused']
+        # The control that was pressed is gone; the focus is on the one that undoes it.
+        self.assertEqual((paused_shot['filled'], paused_shot['focus']), (['Resume'], 'Resume'))
+        for shown in ('Paused', held, 'Nothing more is started until you resume it. '
+                      'Everything made so far is kept.'):
+            self.assertIn(shown, paused_shot['text'])
+        self.assertIn('Stop', paused_shot['buttons'])
+        self.assertNotIn('Pause', paused_shot['buttons'])
+        # An agent that counts tokens and not dollars: the money limit cannot stop it.
+        for shown in ('Codex says how many tokens it uses, not what they cost.',
+                      'So the limit of $20.00 cannot stop it: watch the steps instead.'):
+            self.assertIn(shown, paused_shot['text'])
+        self.assertNotIn('It stops and asks you at', paused_shot['text'])
+        self.assertIn('Carrying on.', shots['resumed']['toasts'])
+        self.assertIn('Pause', shots['resumed']['buttons'])
+        self.assertEqual((shots['resumed']['focus'], shots['refused']['focus']),
+                         ('Pause', 'Stop'))
+        # What was refused is said where it happened, and nothing has changed.
+        self.assertIn('It is in the middle of saving a step. Nothing was changed.',
+                      shots['refused']['text'])
+        self.assertIn('Working on its own', shots['refused']['text'])
+        end = shots['stopped']
+        self.assertEqual((end['filled'], end['focus']), (['Resume'], 'Resume'))
+        for shown in ('Stopped', ended, 'Everything made so far is kept. Resume, and it '
+                      'carries on from where it stopped.'):
+            self.assertIn(shown, end['text'])
+        self.assertNotIn('Nothing was changed.', end['text'])
+        self.assertNotIn('Stop', end['buttons'])
+
+    def test_a_question_from_a_worker_is_answered_on_home_or_on_the_run(self):
+        self.started()
+        other = self.another('second')
+        asking, going = 'Waiting for your answer.', 'Doing the research.'
+        question = {'id': 'q-7', 'from': 'The worker on question 3',
+                    'text': 'Two versions differ here.\nWhich one do your learners use?'}
+        blocked = a_run('waiting', asking, steps=steps('done', 'done', 'done', 'waiting'),
+                        question=question)
+        carried = a_run('working', going, steps=steps('done', 'done', 'done', 'working'))
+        needing = self.listed('waiting', asking, needs=True)
+        moved = self.listed('waiting', asking, needs=True)
+        moved['body']['trainings'][-1]['sentence'] = 'Something else changed.'
+        answers = self.answers(**{
+            'GET /api/trainings': [needing, moved, self.listed('working', going)],
+            'GET /api/training': [self.detail('waiting', asking)],
+            'GET /api/run': [blocked, blocked, carried], 'POST /api/answer': [carried]})
+        box = 'Your answer for Rolling restarts'
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Send answer for Rolling restarts'}, {'snapshot': 'empty'},
+            {'fill': box, 'value': 'The newer one', 'stay': True},
+            {'poll': True}, {'snapshot': 'typing'},
+            {'fill': box, 'value': '  The newer one, 2.4.  '},
+            {'click': 'Send answer for Rolling restarts'}, {'snapshot': 'sent'},
+        ])
+        shots = result['snapshots']
+        home = shots['home']
+        self.assertEqual((home['title'], home['badge']),
+                         ('(1) Training Studio', '1 thing needs you'))
+        self.assertLess(home['text'].index('Needs you'), home['text'].index('In progress'))
+        for shown in ('The worker on question 3 asks:', 'Two versions differ here.',
+                      'Which one do your learners use?', 'Your answer'):
+            self.assertIn(shown, home['text'])
+        self.assertEqual((home['fields'], home['filled']), ({box: ''}, ['Open Rolling restarts']))
+        self.assertEqual((shots['empty']['invalid'], shots['empty']['posts']), ([box], 0))
+        self.assertIn('Write your answer first.', shots['empty']['text'])
+        # The list changed while an answer was being written, and the box was left alone.
+        typing = shots['typing']
+        self.assertEqual((typing['fields'], typing['focus']), ({box: 'The newer one'},
+                                                               'answer-0'))
+        self.assertNotIn('Something else changed.', typing['text'])
+        self.assertEqual(self.posts(result), [('/api/answer', {
+            'path': str(self.root), 'id': 'q-7', 'answer': 'The newer one, 2.4.'})])
+        sent = shots['sent']
+        self.assertIn('Your answer is sent. It carries on from here.', sent['toasts'])
+        self.assertEqual((sent['fields'], sent['badge']), ({}, ''))
+        self.assertIn(going, sent['text'])
+        self.assertTrue(str(other))
+
+        # The same question on the run itself, where sending is the one filled button.
+        answers = self.answers(**{
+            'GET /api/trainings': [needing, self.listed('working', going)],
+            'GET /api/training': [self.detail('waiting', asking)],
+            'GET /api/run': [blocked, blocked, blocked, carried],
+            'POST /api/answer': [carried]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
+            {'fill': box, 'value': 'The newer', 'stay': True},
+            {'poll': True}, {'snapshot': 'typing'},
+            {'fill': box, 'value': 'The newer one.'},
+            {'click': 'Send answer'}, {'snapshot': 'sent'},
+        ])
+        shots = result['snapshots']
+        run = shots['run']
+        self.assertEqual((run['filled'], run['heading']),
+                         (['Send answer for Rolling restarts'], 'Rolling restarts'))
+        self.assertLess(run['text'].index('Needs you'), run['text'].index('Steps'))
+        self.assertIn('The worker on question 3 asks:', run['text'])
+        self.assertEqual((shots['typing']['fields'], shots['typing']['focus']),
+                         ({box: 'The newer'}, 'answer-run'))
+        self.assertEqual(self.posts(result), [('/api/answer', {
+            'path': str(self.root), 'id': 'q-7', 'answer': 'The newer one.'})])
+        self.assertEqual((shots['sent']['fields'], shots['sent']['filled']), ({}, []))
+        self.assertIn(going, shots['sent']['text'])
+
+    def test_every_list_shows_running_work_and_guesses_only_where_no_run_is(self):
+        self.started()
+        by_hand, held = self.another('by hand'), self.another('held')
+        found = self.read('trainings')
+        runs = {str(self.root): {'state': 'working', 'sentence': 'Doing the research.'},
+                str(held): {'state': 'paused', 'sentence': 'Paused at the research.'},
+                str(by_hand): None}
+        for item in found['body']['trainings']:
+            item['run'] = runs[item['path']]
+            # Long ago for the one that is working, just now for the two that are not.
+            item['touched_at'] = ('2020-01-01T00:00:00Z' if item['path'] == str(self.root)
+                                  else item['touched_at'])
+        answers = self.answers(**{'GET /api/trainings': [found]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'click': 'Trainings'}, {'snapshot': 'trainings'},
+            {'click': 'Status'}, {'snapshot': 'status'},
+            {'click': 'Settings'}, {'snapshot': 'settings'},
+        ])
+        shots = result['snapshots']
+        # Two rows shimmer: the run that says it is working, and the one with no run that
+        # changed a moment ago. The paused run changed a moment ago too, and is still.
+        for name in ('home', 'trainings'):
+            with self.subTest(screen=name):
+                self.assertEqual(shots[name]['working'], 2)
+                for shown in ('Doing the research.', 'Paused', 'Paused at the research.'):
+                    self.assertIn(shown, shots[name]['text'])
+        self.assertEqual(shots['trainings']['filled'], ['New training'])
+        for shown in ('Working on its own', 'Doing the research.', 'Paused',
+                      'Paused at the research.', 'In progress'):
+            self.assertIn(shown, shots['status']['text'])
+        # Where a training is decided is offered only for one that no run drives.
+        settings = shots['settings']
+        self.assertEqual(settings['pressed'], ['In the conversation'])
+        self.assertIn('By Hand', settings['text'].split('Where each training is decided')[1])
+        self.assertNotIn('Held', settings['text'].split('Where each training is decided')[1])
+        self.assertEqual(self.asked(result, 'run'), [])
+
+    def test_the_plain_desk_shows_none_of_it(self):
+        self.at_the_blueprint_gate()
+        answers = {'GET /api/trainings': [self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')],
+                   'GET /api/training': [self.read('training', path=str(self.root))]}
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'poll': True},
+            {'click': 'Trainings'}, {'snapshot': 'trainings'},
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'training'},
+            {'click': 'Settings'}, {'snapshot': 'settings'},
+        ])
+        # It is asked once, answered 404, and nothing the runner serves is asked for again.
+        self.assertEqual(self.asked(result, 'capabilities'), ['/api/capabilities'])
+        for endpoint in ('setup', 'agents', 'run', 'share'):
+            self.assertEqual(self.asked(result, endpoint), [])
+        shots = result['snapshots']
+        for name, shot in shots.items():
+            with self.subTest(screen=name):
+                self.assertTrue(shot['sidebar'])
+                for absent in ('New training', 'Share now', 'Change the set-up',
+                               'Watch the run'):
+                    self.assertNotIn(absent, shot['buttons'])
+                for absent in ('Workspace', 'shared', 'Set-up'):
+                    self.assertNotIn(absent, shot['text'])
+        self.assertEqual(shots['home']['filled'], ['Review the blueprint'])
+        self.assertEqual(shots['training']['heading'], 'Rolling restarts')
+        self.assertIn('How this training is decided', shots['training']['text'])
+        self.assertIn('Nothing you read or decide here is sent anywhere else.',
+                      shots['settings']['text'])
 
 
 MARKUP_TITLE = '<img src=x onerror=alert(1)>'

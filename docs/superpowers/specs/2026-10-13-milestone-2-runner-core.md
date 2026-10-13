@@ -130,6 +130,41 @@ The runner is started by a person: `studio serve` prints the link in a terminal,
 - One step runs on Codex.
 - A walk-through by someone who has not seen it is still to do; it needs a person.
 
+## What the first real run showed
+
+Run on 2026-10-13, through the page in a browser, against a stand-in team repository that already held another tool's `hub.json` and files.
+
+- **Claude Code, from the form to an approved blueprint.** One level, eight research questions. The worker first drafted 24 questions; "Ask for changes" on the page cut them to the eight that were named, and the review note says why that version was made. Research answered 8 of 8 with quoted passages, through the real harness-research. About five minutes of agent time, and $2.31 as Claude Code reported it.
+- **Codex, from the form to the research.** The questions were drafted, rebuilt on request from the page and approved, and research answered 9 of 9 in about six minutes. Codex reports tokens and not dollars.
+- **The workspace.** Every step, request and decision is a commit. After each decision the work was pushed; the other tool's files were not touched, and everything Training Studio wrote is under its own folder. Stopping the runner and starting it again picked the trainings up where they were.
+
+Put right because of it:
+
+- A workspace name with a space was refused only after saving, at the foot of the form. The set-up screen now says the rule beside the box and refuses there, before anything is sent.
+- A training the runner drives no longer speaks of "your assistant" where the runner does the work, and no longer offers the folder to start an assistant in while it runs.
+- What a run has cost: "nothing reported yet" is no longer worded as "this agent does not say". For an agent that reports tokens only, the page says the money limit cannot stop it.
+- The last thing the runner does for a training, moving it on once every blueprint is approved, is shared at once. No decision follows it, so nothing else would have shared it.
+- The brief for the research questions now tells the worker to fit their number to the training's length. A 15-minute lesson went from 16 questions to 9.
+
+## Deviations
+
+Recorded when it was built. Each is something the text above does not say, or says differently.
+
+- **A research question that fails three times does not stop the training.** It is named as not researched at gate 2. Research with no answer at all does stop it. Sections 2 and 5 disagreed; this follows section 5.
+- **An agent that cannot be used stops the step at once,** without the two further tries, and is not tried again until the person asks.
+- **A step may spend whatever the training has left.** There is no separate limit for one step. Research works on three questions at a time.
+- **Skip is not offered at gates 1 to 3,** because the core does not let those stages be left out.
+- **With levels, every blueprint is drafted before the first is put to the person.** Gate 3 is then decided once for each level.
+- **One runner serves on a computer at a time,** which a file holding its process number enforces.
+- **Moving a training's decisions back to the conversation is refused while a run drives it.**
+- **A run's question or problem makes the training one that needs the person** in every list, in the shape milestone 1 gave a waiting gate.
+- **The set-up check has a fourth item,** "The folder for trainings can be used". Saving set-up with no repository or folder changes only the agent, the limits and when to share.
+- **A decision can wait behind a share to a slow repository,** because both write in the workspace's copy. Sharing itself never holds a run up.
+- **What a run does after a decision is shared at the next decision,** not as it happens, except for the last step, as above.
+- **No harness-research version is pinned for a training.**
+
+Still to do, and not claimed: the walk-through by someone who has not seen it; a repository on a hosting service, where the write check is a dry-run push that has only been tried on local repositories; pages that need a browser to render.
+
 ## Appendix: what the page asks the runner
 
 The engine and the screens are built separately, so this is the contract between them. The server owns it: the screens are written to it exactly, and the server implements it exactly. Everything in milestone 1's API stays as it is.

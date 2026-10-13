@@ -545,6 +545,58 @@ class CommitTests(WorkspaceCase):
         self.assertEqual(git(workspace.repo, 'rev-list', '--count', 'HEAD'), '1')
 
 
+class DiscardTests(WorkspaceCase):
+    """Putting one training back as its last commit had it."""
+
+    def test_what_a_step_left_half_made_is_put_back_and_the_rest_is_left(self):
+        workspace = self.join()
+        self.write(workspace, 'rolling-restarts/intake.md', 'As committed.\n')
+        self.write(workspace, 'rolling-restarts/301/blueprint.md', 'As committed.\n')
+        self.write(workspace, 'health-checks/intake.md', 'As committed.\n')
+        gitstate.commit(workspace, 'Keep two trainings')
+        self.write(workspace, 'rolling-restarts/intake.md', 'Half written.\n')
+        (workspace.root / 'rolling-restarts' / '301' / 'blueprint.md').unlink()
+        self.write(workspace, 'rolling-restarts/document.md', 'Never committed.\n')
+        self.write(workspace, 'rolling-restarts/reviews/blueprint.md', 'Never committed.\n')
+        git(workspace.repo, 'add', 'trainings/rolling-restarts/document.md')
+        self.write(workspace, 'rolling-restarts/sources/page.txt', 'A saved page.\n')
+        self.write(workspace, 'health-checks/intake.md', 'Someone is editing this.\n')
+        (workspace.repo / 'README.md').write_text('# Another tool\n')
+        lost = gitstate.discard(workspace, 'rolling-restarts')
+        self.assertEqual(lost, [f'trainings/rolling-restarts/{name}' for name in (
+            '301/blueprint.md', 'document.md', 'intake.md', 'reviews/blueprint.md')])
+        root = workspace.training('rolling-restarts')
+        self.assertEqual(((root / 'intake.md').read_text(),
+                          (root / '301' / 'blueprint.md').read_text()),
+                         ('As committed.\n', 'As committed.\n'))
+        self.assertFalse((root / 'document.md').exists())
+        self.assertFalse((root / 'reviews').exists())
+        self.assertEqual((root / 'sources' / 'page.txt').read_text(), 'A saved page.\n',
+                         'ignored files are left')
+        self.assertEqual(gitstate.changed(workspace), ['trainings/health-checks/intake.md'])
+        self.assertEqual((workspace.repo / 'README.md').read_text(), '# Another tool\n')
+        self.assertEqual(gitstate.discard(workspace, 'rolling-restarts'), [])
+
+    def test_a_training_that_was_never_committed_is_removed_whole(self):
+        workspace = self.join()
+        self.write(workspace, 'rolling-restarts/intake.md')
+        self.write(workspace, 'rolling-restarts/.training-studio/session.json', '{}\n')
+        git(workspace.repo, 'add', '-A', '--', 'trainings/rolling-restarts')
+        self.assertEqual(len(gitstate.discard(workspace, workspace.training(
+            'rolling-restarts'))), 2)
+        self.assertFalse(workspace.training('rolling-restarts').exists())
+        self.assertEqual(git(workspace.repo, 'status', '--porcelain'), '')
+
+    def test_nothing_outside_the_folder_can_be_discarded(self):
+        workspace = self.join()
+        (workspace.repo / 'README.md').write_text('# Another tool\n')
+        for path in ('../README.md', workspace.repo / 'README.md'):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                    WorkspaceError, 'outside trainings/'):
+                gitstate.discard(workspace, path)
+        self.assertTrue((workspace.repo / 'README.md').exists())
+
+
 class SyncTests(WorkspaceCase):
     def two_people(self):
         """Alex and Blake share a workspace; each has a clone of their own."""

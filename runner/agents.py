@@ -11,8 +11,8 @@ What a caller needs to know
     handed_back = worker_tools.collect(folder)
 
 - One interface, three adapters: `Claude`, `Codex`, and `Scripted` for tests. Each has
-  `run(job, activity=None) -> Outcome` and `ready() -> Readiness`. AGENTS maps the names a
-  run record uses to the two real ones.
+  `run(job, activity=None, stop=None) -> Outcome` and `ready() -> Readiness`. AGENTS maps
+  the names a run record uses to the two real ones.
 - A worker has no built-in tools: no shell, no file tools, no fetching. It has the worker
   tools the job's `tools` command serves and, under the `research` profile only, the agent's
   own web search. What it hands back is in the job's folder, never in its final text.
@@ -22,8 +22,10 @@ What a caller needs to know
   in `folder/stderr.txt`. A folder under a shared temporary folder is refused, because an
   agent's own sandbox lets it write there: use `staging()`.
 - `run` never raises for something the agent did. It returns an Outcome whose `reason` is
-  `timeout`, `limit`, `failed` or `unavailable`, with a sentence in `detail`. It raises
-  WorkspaceError only for a job that is wrong before it starts.
+  `timeout`, `limit`, `failed`, `unavailable` or `stopped`, with a sentence in `detail`. It
+  raises WorkspaceError only for a job that is wrong before it starts.
+- `stop` is a threading.Event. Setting it ends the worker and everything it started within
+  a moment, and the outcome's reason is `stopped`.
 - `activity` is called with one short plain line each time the worker does something.
 - `ready()` says whether the agent is installed, signed in and reachable from this network.
   It never starts an agent. Being signed in is not enough: a network can block one agent.
@@ -59,7 +61,7 @@ from workspace import WorkspaceError
 from runner import worker_tools
 
 PROFILES = ('write', 'research')
-REASONS = ('timeout', 'limit', 'failed', 'unavailable')
+REASONS = ('timeout', 'limit', 'failed', 'unavailable', 'stopped')
 SERVER = 'runner'           # the name the worker tools are served under
 CLAUDE_SEARCH = 'WebSearch'
 GUIDANCE_LIMIT = 60_000     # characters; an operating system limits one argument's length
@@ -345,12 +347,13 @@ class CodexEvents:
 # --- running a command under a time limit ----------------------------------------------
 
 def supervise(command: list[str], cwd: Path, env: dict, stdin: str, seconds: float,
-              errors: Path, each) -> tuple[int, bool]:
+              errors: Path, each, stop: threading.Event | None = None) -> tuple[int, bool]:
     """Run a command to its end or to its time limit, passing each line it prints to
     `each` as bytes. Returns its exit code and whether it was stopped for taking too long.
 
     The command gets a process group of its own, and the whole group is killed when time
-    runs out or the caller fails, so nothing it started is left running.
+    runs out, when `stop` is set or when the caller fails, so nothing it started is left
+    running.
     """
     with open(errors, 'wb') as complaints:
         process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
@@ -376,11 +379,19 @@ def supervise(command: list[str], cwd: Path, env: dict, stdin: str, seconds: flo
             except OSError:
                 pass  # it stopped reading; how it ended says why
 
+    def watch() -> None:
+        while process.poll() is None:
+            if stop.wait(0.2):
+                kill()
+                return
+
     timer = threading.Timer(seconds, out_of_time)
     timer.daemon = True
     writer = threading.Thread(target=feed, daemon=True)
     timer.start()
     writer.start()
+    if stop is not None:
+        threading.Thread(target=watch, daemon=True).start()
     try:
         for line in process.stdout:
             each(line)
@@ -465,7 +476,7 @@ class _Agent:
         """The worker's environment: this one, with a temporary folder of its own."""
         return {**os.environ, 'TMPDIR': str(Path(job.folder).resolve() / 'tmp')}
 
-    def run(self, job: Job, activity=None) -> Outcome:
+    def run(self, job: Job, activity=None, stop: threading.Event | None = None) -> Outcome:
         folder = check(job)
         if shutil.which(self.program) is None:
             return Outcome(False, 'unavailable', f'{self.title} is not installed on this '
@@ -492,11 +503,14 @@ class _Agent:
             try:
                 code, late = supervise(self.command(job), folder / 'stand',
                                        self.environment(job), self.said_to(job),
-                                       job.limits.seconds, folder / 'stderr.txt', each)
+                                       job.limits.seconds, folder / 'stderr.txt', each, stop)
             except OSError as failure:
                 return Outcome(False, 'unavailable', f'{self.title} could not be started '
                                f'({failure}).', events=events)
         seconds = round(time.monotonic() - started, 1)
+        if stop is not None and stop.is_set():
+            return Outcome(False, 'stopped', 'It was stopped before it finished.',
+                           reader.text, reader.cost, reader.tokens, seconds, events)
         if late:
             return Outcome(False, 'timeout', f'It did not finish in {job.limits.seconds} '
                            'seconds, so it was stopped.', reader.text, reader.cost,
@@ -657,7 +671,7 @@ class Scripted:
     def __init__(self, script):
         self.script = script
 
-    def run(self, job: Job, activity=None) -> Outcome:
+    def run(self, job: Job, activity=None, stop: threading.Event | None = None) -> Outcome:
         if job.profile not in PROFILES:
             raise WorkspaceError('A job\'s profile is one of: ' + ', '.join(PROFILES) + '.')
         started = time.monotonic()

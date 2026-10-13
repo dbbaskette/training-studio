@@ -57,7 +57,7 @@ Each training is decided in one of two places. Change it in Settings, or on the 
 
 To start a training this way, ask for it at the beginning: "I want to approve each stage on the page."
 
-Be clear about what this does. It stops an assistant that follows its instructions, or that slips, from approving for you. It does not make forgery impossible: an assistant with a shell that set out to rewrite the training's record could still do so. The guidance forbids that, and the planned runner is what will make it impossible.
+Be clear about what this does. It stops an assistant that follows its instructions, or that slips, from approving for you. It does not make forgery impossible: an assistant with a shell that set out to rewrite the training's record could still do so. The guidance forbids that. [The runner](runner.md) closes the gap for the stages it drives: its agents have no shell and cannot reach the training's files at all.
 
 ## Trainings, Status and Settings
 
