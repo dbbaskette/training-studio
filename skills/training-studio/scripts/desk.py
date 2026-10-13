@@ -595,12 +595,22 @@ def uses_google() -> bool:
 
 # --- the server -----------------------------------------------------------------
 
-def allowed(target: str) -> str:
+def allowed(target: str, reads=READS, writes=WRITES) -> str:
     """The methods an address answers, for the `Allow` header of a refusal."""
     path = target.partition('?')[0]
-    methods = [method for method, paths in (('GET', (*PAGE, *READS)), ('POST', WRITES))
+    methods = [method for method, paths in (('GET', (*PAGE, *reads)), ('POST', writes))
                if path in paths]
     return ', '.join(methods) or 'GET'
+
+
+def text(sent: dict, name: str, needed: bool = True) -> str | None:
+    """One field of a change, which must be text of a sensible length."""
+    value = sent.get(name)
+    if value is None and not needed:
+        return None
+    if not isinstance(value, str) or (needed and not value) or len(value) > NOTE_LIMIT:
+        raise Refusal(HTTPStatus.BAD_REQUEST, f'Give {name} as text.')
+    return value
 
 
 class Server(ThreadingHTTPServer):
@@ -646,7 +656,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(self.rfile.read(int(length)))
 
     def refuse_method(self):
-        allow = allowed(self.path)
+        allow = self.server.desk.page.allowed(self.path)
         self.close_connection = True
         self.reply(*as_json(HTTPStatus.METHOD_NOT_ALLOWED,
                             {'error': 'The page reads with GET and sends a decision with POST. '
@@ -682,7 +692,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Page:
-    """What the page may ask for and what it is refused. It holds the key; it has no socket."""
+    """What the page may ask for and what it is refused. It holds the key; it has no socket.
+
+    A program that serves the same page with more behind it, as the runner does, makes a
+    subclass: it adds addresses to `reads` and `writes`, answers them in `read` and `write`,
+    and may add to what `trainings`, `detail`, `decide` and `move_approval` return. Every
+    rule about who may ask stays here, in `answer` and `change`.
+    """
+    reads, writes = READS, WRITES
 
     def __init__(self, port: int):
         self.token = secrets.token_urlsafe(32)
@@ -714,16 +731,16 @@ class Page:
             return self.change(url, hosts[0].strip().lower(), headers, body)
         if method != 'GET':
             raise Refusal(HTTPStatus.METHOD_NOT_ALLOWED, 'Nothing else is answered.',
-                          allowed(url.path))
+                          self.allowed(url.path))
         if url.path in PAGE:
             name, kind = PAGE[url.path]
             return HTTPStatus.OK, kind, (PAGE_DIR / name).read_bytes()
         if url.path == '/favicon.ico':
             return HTTPStatus.NO_CONTENT, None, b''
-        if url.path not in READS:
-            if url.path in WRITES:
+        if url.path not in self.reads:
+            if url.path in self.writes:
                 raise Refusal(HTTPStatus.METHOD_NOT_ALLOWED,
-                              'This is sent with POST, from the page.', allowed(url.path))
+                              'This is sent with POST, from the page.', self.allowed(url.path))
             raise Refusal(HTTPStatus.NOT_FOUND, 'Nothing is served here.')
         self.check_token(headers)
         query = parse_qs(url.query, keep_blank_values=True)
@@ -734,16 +751,36 @@ class Page:
                 raise Refusal(HTTPStatus.BAD_REQUEST, f'Give one {name}.')
             return values[0]
 
-        if url.path == '/api/trainings':
-            listed = trainings()
+        return self.read(url.path, one)
+
+    def allowed(self, target: str) -> str:
+        return allowed(target, self.reads, self.writes)
+
+    def trainings(self) -> list[dict]:
+        return trainings()
+
+    def detail(self, path: str) -> dict:
+        return detail(path)
+
+    def decide(self, path: str, target: str, decision: str, note: str | None,
+               seen: str | None) -> dict:
+        return decide(path, target, decision, note, seen)
+
+    def move_approval(self, path: str, mode: str) -> dict:
+        return move_approval(path, mode)
+
+    def read(self, path: str, one) -> tuple[int, str, bytes]:
+        """Answer one GET that passed every rule. `one(name)` is a query value."""
+        if path == '/api/trainings':
+            listed = self.trainings()
             return as_json(HTTPStatus.OK, {
                 'trainings': listed,
                 'needs': sum(item.get('state') == 'needs-you' for item in listed)})
-        if url.path == '/api/training':
-            return as_json(HTTPStatus.OK, detail(one('path')))
-        if url.path == '/api/file':
+        if path == '/api/training':
+            return as_json(HTTPStatus.OK, self.detail(one('path')))
+        if path == '/api/file':
             return as_json(HTTPStatus.OK, preview(one('path'), one('artifact')))
-        if url.path == '/api/gate':
+        if path == '/api/gate':
             return as_json(HTTPStatus.OK, gate(one('path'), one('artifact')))
         return as_json(HTTPStatus.OK, {'computer': self.computer(look=False)})
 
@@ -755,9 +792,9 @@ class Page:
 
     def change(self, url, host: str, headers, body: bytes | None) -> tuple[int, str, bytes]:
         """Answer one POST: a decision, a move of approval, or a look at this computer."""
-        if url.path not in WRITES:
+        if url.path not in self.writes:
             raise Refusal(HTTPStatus.METHOD_NOT_ALLOWED, 'This is read with GET.',
-                          allowed(url.path))
+                          self.allowed(url.path))
         self.check_token(headers)
         origins = headers.get_all('Origin') or []
         if len(origins) != 1 or origins[0].strip().lower() != f'http://{host}':
@@ -775,31 +812,31 @@ class Page:
             sent = None
         if not isinstance(sent, dict):
             raise Refusal(HTTPStatus.BAD_REQUEST, 'Send the change as one JSON object.')
+        return self.write(url.path, sent)
 
-        def one(name: str, needed: bool = True) -> str | None:
-            value = sent.get(name)
-            if value is None and not needed:
-                return None
-            if not isinstance(value, str) or (needed and not value) or len(value) > NOTE_LIMIT:
-                raise Refusal(HTTPStatus.BAD_REQUEST, f'Give {name} as text.')
-            return value
-
-        if url.path == '/api/decide':
-            return as_json(HTTPStatus.OK, decide(one('path'), one('artifact'), one('decision'),
-                                                 one('note', False), one('seen', False)))
-        if url.path == '/api/approval':
-            return as_json(HTTPStatus.OK, move_approval(one('path'), one('mode')))
+    def write(self, path: str, sent: dict) -> tuple[int, str, bytes]:
+        """Answer one POST that passed every rule. `sent` is its JSON object."""
+        if path == '/api/decide':
+            return as_json(HTTPStatus.OK, self.decide(
+                text(sent, 'path'), text(sent, 'artifact'), text(sent, 'decision'),
+                text(sent, 'note', False), text(sent, 'seen', False)))
+        if path == '/api/approval':
+            return as_json(HTTPStatus.OK, self.move_approval(text(sent, 'path'),
+                                                             text(sent, 'mode')))
         return as_json(HTTPStatus.OK, {'computer': self.computer(look=True)})
 
 
 class Desk:
-    """The page's server. `start` serves on a thread, `serve` blocks, `stop` ends either."""
+    """The page's server. `start` serves on a thread, `serve` blocks, `stop` ends either.
 
-    def __init__(self, port: int = 0):
+    `page` makes what answers: Page here, or a subclass of it given the port.
+    """
+
+    def __init__(self, port: int = 0, page=Page):
         self.server = Server((HOST, port), Handler)
         self.server.desk = self
         self.port = self.server.server_address[1]
-        self.page = Page(self.port)
+        self.page = page(self.port)
         self.token, self.hosts, self.answer = self.page.token, self.page.hosts, self.page.answer
         self._thread: threading.Thread | None = None
 

@@ -325,6 +325,15 @@ class StandInTests(helpers.TrainingCase):
         lock.unlink()
         self.assertEqual(self.research.status(self.root)['status'], 'in-progress')
 
+    def test_a_lock_left_by_a_save_that_died_can_be_removed_by_one_who_knows(self):
+        self.planned()
+        self.assertFalse(research.unlock(self.root))
+        self.write(str(research.LOCK), '12345')
+        with self.assertRaises(research.Refused):
+            self.research.status(self.root)
+        self.assertTrue(research.unlock(self.root))
+        self.assertEqual(self.research.status(self.root)['status'], 'in-progress')
+
     def test_a_plan_the_command_would_not_take_is_refused_in_its_words(self):
         item = PLAN['items'][0]
         for changes, line in (

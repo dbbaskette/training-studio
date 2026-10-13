@@ -10,6 +10,7 @@ What a caller needs to know
     workspace.training('rolling-restarts')       # where one training lives: root/<id>/
     gitstate.commit(workspace, 'Approve the blueprint', ['rolling-restarts'])
     gitstate.commit(workspace, 'Keep the research plan')   # everything under the folder
+    gitstate.discard(workspace, 'rolling-restarts')        # back to its last commit
     if workspace.share == 'decision':
         report = gitstate.sync(workspace)        # fetch, replay, push; never forced
 
@@ -28,6 +29,9 @@ What a caller needs to know
 - Kept out of every commit by the ignore file: `work/`, `sources/`, the guidance caches
   the two harness skills keep, and lock files.
 - Nothing is recorded without a git identity; the refusal says how to set one.
+- `discard` is for work a step left half-made: it puts one path under the folder back as
+  its last commit had it and removes what was never committed there. Ignored files, such
+  as saved sources, are left.
 - `sync` never forces a push. When the same file changed on both sides it stops, puts
   things back as they were and reports. When the remote cannot be reached or refuses, the
   commits stay here and the report says the work is not shared yet. Do not call it while a
@@ -413,6 +417,39 @@ def changed(workspace: Workspace) -> list[str]:
     if done.returncode != 0:
         raise hub.GitError(hub.reason(done))
     return sorted(entry[3:] for entry in hub.names(done.stdout))
+
+
+def discard(workspace: Workspace, path) -> list[str]:
+    """Put one path under the folder back as it was at the last commit, and remove what was
+    never committed there. Returns what was lost, from the repository's root.
+
+    Ignored files are left as they are, and so is everything outside the path. The branch
+    is never moved: only the files under the path are touched.
+    """
+    scope, repo = inside(workspace, path), workspace.repo
+
+    def differing() -> list[str]:
+        return [name for name in changed(workspace)
+                if name == scope or name.startswith(f'{scope}/')]
+
+    lost = differing()
+    if not lost:
+        return []
+    known = hub.passes(repo, 'rev-parse', '--verify', '--quiet', 'HEAD') and (
+        hub.git(repo, 'ls-tree', '--name-only', 'HEAD', '--', scope)
+        or hub.git(repo, 'ls-files', '--', scope))
+    if known:
+        hub.git(repo, 'restore', '--source=HEAD', '--staged', '--worktree', '--', scope)
+    for name in differing():  # what is left was never committed or staged
+        (repo / name).unlink(missing_ok=True)
+    top = repo / scope
+    for folder in sorted((found for found in top.rglob('*') if found.is_dir()),
+                         reverse=True) if top.is_dir() else ():
+        if not folder.is_symlink() and not any(folder.iterdir()):
+            folder.rmdir()
+    if top.is_dir() and not top.is_symlink() and not any(top.iterdir()):
+        top.rmdir()
+    return lost
 
 
 # --- sharing -----------------------------------------------------------------------------

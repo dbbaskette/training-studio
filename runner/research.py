@@ -14,7 +14,8 @@ What a caller needs to know
   Whether that is enough is the caller's rule, not the command's.
 - When the command says no, Refused is raised: a WorkspaceError that carries the one line
   it printed in `line`. `busy` is true when another save held its lock; record findings one
-  at a time. A lock left by a process that died is not cleared here.
+  at a time. A lock left by a process that died is cleared only by `unlock`, which is for a
+  caller that knows nothing else can be saving: the engine, when the runner starts.
 - `finding` is what worker_tools keeps for an accepted finding. Its `file` paths are read
   from the training's folder, so copy a job's sources into the training first.
 - The runtime is the folder named by HARNESS_RESEARCH_RUNTIME when that is set, else the
@@ -39,6 +40,7 @@ from workspace import WorkspaceError
 
 VARIABLE = 'HARNESS_RESEARCH_RUNTIME'
 SCRIPT = Path('scripts') / 'harness-research.mjs'
+LOCK = Path('.harness-research') / 'research.lock'
 TIMEOUT = 120
 BUSY = 'Research storage is busy'
 VERDICTS = ('supported', 'contradicted', 'insufficient', 'unavailable')
@@ -86,6 +88,15 @@ def find_runtime() -> Path:
                              'harness-research. Point it at the installed skill, or unset it.')
     raise WorkspaceError('The harness-research skill is not installed on this computer, so '
                          'research cannot run. Install it, then try again.')
+
+
+def unlock(project: Path) -> bool:
+    """Remove the lock a save left behind when its process died. True when there was one.
+    Only for a caller that knows no save is in progress."""
+    lock = Path(project) / LOCK
+    found = lock.is_file()
+    lock.unlink(missing_ok=True)
+    return found
 
 
 def run_command(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
@@ -209,7 +220,7 @@ class StandIn:
         if action not in ('plan', 'record', 'status') or not options.get('--project'):
             raise _Said('Choose plan, record, status or migrate and supply --project.')
         project = Path(options['--project']).resolve()
-        lock = project / '.harness-research' / 'research.lock'
+        lock = project / LOCK
         if lock.exists():
             raise _Said(f'{BUSY}; retry after the current save.')
         if action == 'status':
