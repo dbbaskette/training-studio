@@ -303,7 +303,8 @@ function markdown() {
   global.document = document;
   const renderer = require(path.join(PAGE, 'markdown.js'));
   const text = fs.readFileSync(0, 'utf8');
-  console.log(JSON.stringify(tree(renderer.render(text))));
+  // A third word, "files", draws it as a document that lists its training's own files.
+  console.log(JSON.stringify(tree(renderer.render(text, { files: process.argv[3] === 'files' }))));
 }
 
 // --- the page itself ---------------------------------------------------------------

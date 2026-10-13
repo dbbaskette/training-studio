@@ -246,6 +246,11 @@ function when(stamp) {
   return node;
 }
 
+// A limit, in the round numbers a limit is set in: 8,000,000 bytes is 8 MB.
+function megabytes(bytes) {
+  return String(Math.round(bytes / 100000) / 10) + ' MB';
+}
+
 function size(bytes) {
   if (bytes < 1024) return count(bytes, 'byte', 'bytes');
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -1042,9 +1047,9 @@ function invitation() {
   if (view.runner) {
     return add(node,
       make('h2', 'invite-title', 'Start your first training'),
-      make('p', '', 'Say what it is about and who it is for. Training Studio drafts the '
-        + 'research questions, does the research and drafts the blueprint on its own, and '
-        + 'stops each time it needs your decision.'),
+      make('p', '', 'Say what it is about and who it is for. Training Studio does the '
+        + 'research and writes the blueprint, the learner guide, the brief and the practice '
+        + 'scenarios on its own, and stops each time it needs your decision.'),
       add(make('div', 'bar'), newButton('filled')),
       make('p', 'quiet', 'It takes three short steps, and this page tells you each time it '
         + 'needs you.'));
@@ -1337,7 +1342,7 @@ function documentBody(shown, found) {
     add(node, make('p', 'quiet', shown.file.split('/').pop() + ', ' + size(shown.size)
       + '. The deck itself is where this points:'));
   }
-  add(node, window.TrainingStudioMarkdown.render(shown.text));
+  add(node, window.TrainingStudioMarkdown.render(shown.text, { files: Boolean(found.files) }));
   if (shown.truncated) {
     add(node, make('p', 'quiet', 'This is the start of a long file of ' + size(shown.size)
       + '. Open the file for the rest.'));
@@ -1497,7 +1502,9 @@ function lookNote(found) {
   if (found.review) {
     const notes = make('details', 'review-notes');
     notes.dataset.key = 'review';
-    notes.open = true;
+    // Open, except where two documents are read side by side below: there a long note
+    // would push both off the first screen, so it waits to be opened.
+    notes.open = !found.beside;
     add(notes, make('summary', '', 'The latest review note'),
       window.TrainingStudioMarkdown.render(found.review));
     add(node, notes);
@@ -3059,8 +3066,8 @@ function unfit(file, held, room) {
     return file.name + ' was not added: only ' + series(types) + ' files are taken.';
   }
   if (given(limits.bytes) && file.size > limits.bytes) {
-    return file.name + ' was not added: it is ' + size(file.size) + ', and a document can '
-      + 'be at most ' + size(limits.bytes) + '.';
+    return file.name + ' was not added: it is ' + megabytes(file.size) + ', and a document '
+      + 'can be at most ' + megabytes(limits.bytes) + '.';
   }
   if (room < 1) {
     return file.name + ' was not added: there is room for ' + limits.files
@@ -3225,7 +3232,7 @@ function documentsCard(run, lead) {
   if (held.waiting) {
     const types = typesOf(held);
     const takes = [types.length ? 'It takes ' + series(types) + ' files' : 'It takes files',
-      given(limits.bytes) ? ', each up to ' + size(limits.bytes) : '',
+      given(limits.bytes) ? ', each up to ' + megabytes(limits.bytes) : '',
       given(limits.files) ? ', and ' + limits.files + ' in all' : ''].join('');
     const status = make('p', 'quiet');
     status.id = 'documents-status';
@@ -3519,7 +3526,7 @@ async function drawIndex(fresh) {
     place({ title: 'The index', name: 'The index · ' + (found.title || 'Untitled'), back: true,
       above: [button(found.title || 'Untitled', 'link', home, 'training')] },
     [add(make('div', 'reading index'), documentBody(asDocument(read),
-      { label: 'The index', path }))], true);
+      { label: 'The index', path, files: true }))], true);
   } catch (failure) {
     if (turn !== view.turn) return;
     if (failure.kind === 'stopped') notify(failure.message);

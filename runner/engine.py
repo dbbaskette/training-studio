@@ -107,8 +107,6 @@ KEPT = 'Everything kept before this step is still here. Nothing from the tries t
        'was kept.'
 AWAY = ("This training's decisions are made in the conversation now, so the runner is "
         'leaving it alone. Move them back to the page to have the runner carry on.')
-PRIVATE = ('Your documents stay on this computer. Passages quoted from them appear in the '
-           'research report, which is shared.')
 NO_PDF = 'This computer cannot read a PDF: save it as text or as a Word file first.'
 NOT_HERE = ('The documents this training was researched from are on another computer. '
             'Research cannot be run again here until they are added again.')
@@ -1238,7 +1236,7 @@ class Engine:
             return None
         added = self.documents.listed(root)
         types, waiting = list(self.documents.accepts()), found.next.kind == 'documents'
-        note = [PRIVATE]
+        note = []  # the page itself says where documents are kept
         if '.pdf' in self.documents.TYPES and '.pdf' not in types:
             note.append(NO_PDF)
         if given.get('count') and not any(entry.get('readable') for entry in added):

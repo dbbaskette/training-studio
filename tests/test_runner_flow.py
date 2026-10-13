@@ -949,9 +949,9 @@ class DocumentTests(FlowCase):
             'waiting': True, 'added': [],
             'types': ['.txt', '.md', '.html', '.htm', '.docx'],
             'limits': {'bytes': 8_000_000, 'files': 40},
-            'note': 'Your documents stay on this computer. Passages quoted from them appear '
-                    'in the research report, which is shared. This computer cannot read a '
-                    'PDF: save it as text or as a Word file first.'})
+            # Where documents are kept is the page's to say; this is only what it cannot know.
+            'note': 'This computer cannot read a PDF: save it as text or as a Word file '
+                    'first.'})
         step = view['steps'][1]
         self.assertEqual((step['id'], step['kind'], step['status'], step['label']),
                          ('documents', 'gate', 'waiting', 'Add your documents'))

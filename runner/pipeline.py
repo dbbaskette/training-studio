@@ -1202,6 +1202,26 @@ def _yoodli_note(root: Path, session: dict, artifact: str, draft: dict, copies) 
     return lines
 
 
+def _practice_note(text: str, session: dict) -> list[str]:
+    """What approving a blueprint commits the person to: each practice scenario it plans
+    comes back for a decision, and again once it is laid out for Yoodli."""
+    stages = wanted(session)
+    if 'scenario' not in stages:
+        return []
+    planned = [entry['id'] for entry in checks.parse_blueprint(text)['practice']]
+    if not planned:
+        return ['It plans no practice scenario. A training that wants practice is not ready '
+                'without one: ask for changes if it should have some.']
+    count, twice = len(planned), 'yoodli' in stages
+    named = ', '.join(planned)
+    asks = count * (2 if twice else 1)
+    return [f"It plans {count} practice scenario{'' if count == 1 else 's'}: {named}. Each "
+            'comes to you for review' + (', and again once it is laid out for Yoodli' if twice
+                                         else '')
+            + f": {asks} more decision{'' if asks == 1 else 's'} for this blueprint. To have "
+            'fewer, ask for changes here.']
+
+
 def keep_draft(root: Path, step: Step, handed: dict, request: dict | None,
                found: Survey | None = None) -> None:
     """Save a draft the checks let through, with a review for the gate: what was checked,
@@ -1215,6 +1235,8 @@ def keep_draft(root: Path, step: Step, handed: dict, request: dict | None,
     lines += [f'Worth a look: {warning}' for warning in draft['warnings']]
     if kind == 'document':
         lines.append(DECLARED)
+    elif kind == 'blueprint':
+        lines += _practice_note(draft['text'], session)
     elif kind == 'scenario':
         lines += _scenario_note(draft['text'], 'laid' if found is not None
                                 and step.artifact in found.own else 'runner')

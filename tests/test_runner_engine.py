@@ -326,8 +326,12 @@ class WorkerTests(StudioCase):
         self.assertIn('> 3 of 4 questions have an answer the sources support.\n> 1 more state '
                       'a claim that the sources contradict.\n> Every question was researched '
                       'and settled.', (root / 'reviews' / 'research.md').read_text())
-        self.assertIn('> Checked for you: 4 checks passed.',
-                      (root / 'reviews' / 'blueprint.md').read_text())
+        blueprint = (root / 'reviews' / 'blueprint.md').read_text()
+        self.assertIn('> Checked for you: 4 checks passed.', blueprint)
+        # Approving a blueprint commits the person to a decision on each scenario it plans.
+        self.assertIn('> It plans 1 practice scenario: main. Each comes to you for review: 1 '
+                      'more decision for this blueprint. To have fewer, ask for changes here.',
+                      blueprint)
 
 
 class RetryTests(StudioCase):

@@ -1674,9 +1674,9 @@ def first(tree, tag: str):
 class MarkdownTests(unittest.TestCase):
     """markdown.js, run for real against a document that has no HTML parser."""
 
-    def render(self, text: str) -> dict:
-        done = subprocess.run([NODE, str(HARNESS), 'markdown'], input=text, text=True,
-                              capture_output=True, timeout=60)
+    def render(self, text: str, files: bool = False) -> dict:
+        done = subprocess.run([NODE, str(HARNESS), 'markdown', *(['files'] if files else [])],
+                              input=text, text=True, capture_output=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)
 
@@ -1713,6 +1713,23 @@ class MarkdownTests(unittest.TestCase):
                      '[a link](javascript:alert(3))', '[another](data:text/html,x)',
                      '[relative](/api/trainings)', '<javascript:alert(4)>'):
             self.assertIn(kept, shown)
+
+    def test_an_index_names_its_trainings_files_plainly_and_never_links_them(self):
+        text = ('[intake.md](intake.md) and [its review](reviews/research-plan.md), but '
+                '[up](../secret.md), [root](/api/trainings), [odd](javascript:alert(1)) and '
+                '[the docs](https://example.com/docs).\n')
+        tree = self.render(text, files=True)
+        shown = text_of(tree)
+        for kept in ('intake.md and its review (reviews/research-plan.md)',
+                     '[up](../secret.md)', '[root](/api/trainings)',
+                     '[odd](javascript:alert(1))'):
+            self.assertIn(kept, shown)
+        self.assertNotIn('[intake.md]', shown)
+        # Only the web address became a link.
+        links = [child for child in first(tree, 'p')['children'] if isinstance(child, dict)]
+        self.assertEqual([link['href'] for link in links], ['https://example.com/docs'])
+        # Any other document shows such a link exactly as it was written.
+        self.assertIn('[intake.md](intake.md)', text_of(self.render(text)))
 
     def test_a_link_goes_only_to_a_web_address_and_never_hands_the_page_over(self):
         tree = self.render('See [the docs](https://example.com/docs "Title"), '
@@ -3066,7 +3083,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         for shown in ('Waiting for you', waits, 'Add your documents',
                       'Nothing is researched until you have added them and chosen “That is '
                       'all of them”.', KEPT_HERE,
-                      'It takes .txt, .md, .html, .htm and .docx files, each up to 7.6 MB, and '
+                      'It takes .txt, .md, .html, .htm and .docx files, each up to 8 MB, and '
                       '40 in all. You can choose several at once.', NO_PDF,
                       'Nothing is added yet.'):
             self.assertIn(shown, empty['text'])
@@ -3078,8 +3095,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         refused = shots['refused']
         for shown in ('plan.rtf was not added: only .txt, .md, .html, .htm and .docx files '
                       'are taken.',
-                      'big.docx was not added: it is 8.6 MB, and a document can be at most '
-                      '7.6 MB.', 'Nothing was sent.'):
+                      'big.docx was not added: it is 9 MB, and a document can be at most '
+                      '8 MB.', 'Nothing was sent.'):
             self.assertIn(shown, refused['text'])
         self.assertEqual((refused['invalid'], refused['focus'], refused['posts']),
                          ([pick], 'documents-file', 0))
@@ -3160,7 +3177,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         first, full = result['snapshots']['room for one'], result['snapshots']['full']
         self.assertIn('Waiting for you', first['text'])
         self.assertNotIn('Nothing is needed from you right now.', first['text'])
-        self.assertIn('each up to 7.6 MB, and 2 in all.', first['text'])
+        self.assertIn('each up to 8 MB, and 2 in all.', first['text'])
         self.assertEqual(first['filled'], ['That is all of them'])
         self.assertIn('three.txt was not added: there is room for 2 documents and no more.',
                       full['text'])

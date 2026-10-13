@@ -125,6 +125,40 @@ No test starts a real agent, the real harness-research or Google.
 - A real training from supplied documents only runs through research on either agent.
 - Not claimed without a person: a real push to Google Docs, and a paste into Yoodli.
 
+## What the first real runs showed
+
+Run on 2026-10-13, through the page in a browser, against a stand-in team repository that already held another tool's files.
+
+- **A whole training on Claude Code, with no conversation.** No deck, Yoodli on, research from the public web. Eleven decisions on the page: the questions, the research, the blueprint, the guide, the brief, three practice scenarios and their three Yoodli layouts. Twenty-six steps, none failed; about 14 minutes of agent time; $6.11 as Claude Code reported it. It finished ready, with its limitations listed: the deck left out, and no Word copies because `pandoc` is not on that computer. The index was written and shared. The other tool's files were untouched.
+- **Research from supplied documents only, on Codex.** A Markdown file and a Word file added through the page's own file picker. Eight of eight questions answered, every quote from one of the two documents, the plan's scope `supplied-only` with no search words. The documents stayed under `sources/supplied/` on that computer; nothing of them is in the shared repository except the passages the report quotes.
+
+Put right because of it:
+
+- The index listed the training's own files as raw Markdown links. On the page they are now named plainly. They are still never links: only a web address becomes one.
+- The documents card said where documents are kept twice, once in the page's words and once in the runner's. The runner's note now carries only what the page cannot know.
+- A size limit was worded "7.6 MB" on the page and "8 MB" by the runner. Limits are now in the round megabytes they are set in.
+- A 20-minute lesson's blueprint planned three practice scenarios, which meant six more decisions that nothing had announced. The blueprint's gate now says how many it plans and how many decisions that is, and that asking for changes is how to have fewer.
+
+Not run for real: a push to Google Docs, a Word copy made by `pandoc`, a PDF among the supplied documents, a training with levels, and a paste into Yoodli.
+
+## Deviations
+
+Recorded when it was built. Each is something the text above does not say, or says differently.
+
+- **Anything out of date is made again by itself,** from the blueprint down, and comes back to its gate. Milestone 2 put an out-of-date blueprint to the person first. A research plan put out of date by a change to the answers is still put to the person.
+- **A redo that hands back the same text stays approved,** so no gate follows it.
+- **Within a level every scenario is drafted before the first is put to the person,** and likewise the Yoodli layouts.
+- **Only scenarios the practice plan names are drafted.** A blueprint that plans none leaves a training that wants practice not ready; its gate says so.
+- **"That is all of them" is kept on each computer,** beside the documents. After it, the documents cannot be changed.
+- **The documents keep one more file than the specification says:** their list, with the order they were added in and why one could not be read.
+- **A copy of something not yet approved is not shown.** A copy that has fallen behind its document is.
+- **Readiness is the core's, unchanged.** With Yoodli on and Google Docs as the only copy, a brief with no Google Doc is blocking, because Yoodli needs a file to upload. A Word copy that could not be made is a limitation. The finished training says which, and offers to try the copies again.
+- **A training whose decisions were moved to a conversation is left alone,** except that its index is written. A deck approved there is picked up the next time the run is woken.
+- **A runner that is started again discards half-made work only for a step that was in hand,** which a file kept out of git marks. "Finished" is no longer final, so the earlier rule would have removed a person's own edits.
+- **New kinds of step:** adding documents and the deck notice are shown as decisions; a person's own scenario is taken in by a step of the runner's own.
+- **What is blocking is given as sentences.** Nothing yet names the screen to go to for each.
+- **Milestone 2's trainings carry on.** One left at "the later stages are not automated yet" continues by itself when the runner next starts.
+
 ## Appendix: what the page asks the runner
 
 Additions to milestone 2's contract. Everything there stands.

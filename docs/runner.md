@@ -1,8 +1,8 @@
 # The runner
 
-The runner is a program that takes a training from a short form to an approved blueprint on its own, and stops each time it needs your decision. You work on [the page](desk.md) in your browser. There is no conversation with an assistant: the runner starts an AI agent for each piece of work, checks what comes back, keeps it, and waits for you at each gate.
+The runner is a program that takes a training from a short form to its finished files on its own, and stops each time it needs your decision. You work on [the page](desk.md) in your browser. There is no conversation with an assistant: the runner starts an AI agent for each piece of work, checks what comes back, keeps it, and waits for you at each gate.
 
-It is early. Today it runs a training as far as the blueprint. The learner guide, the brief, the deck and the practice scenarios are still made in a conversation with your assistant, as the [README](../README.md) describes.
+It is early. Today it makes everything except the slide deck: the research, the blueprint, the learner guide, the brief, the practice scenarios and, if you want them, their layout for Yoodli. A training that wants a deck is taken through everything else; the deck is then made in a conversation with your assistant, as the [README](../README.md) describes, or left out.
 
 ## What you need
 
@@ -42,10 +42,31 @@ Nothing is changed until you save. You can change any of it later in Settings.
 | Drafts the research questions | You approve them, or ask for changes |
 | Researches each question, several at a time, and writes the report | You approve the research, or ask for more |
 | Drafts the blueprint, one for each level | You approve each blueprint |
+| Writes the learner guide | You approve it |
+| Writes the brief | You approve it |
+| Drafts each practice scenario the blueprint plans | You approve each one |
+| Lays each scenario out for Yoodli, when you asked for that | You approve each one |
+| Makes the copies you asked for and writes the index | Nothing: it says it is finished, and what is not ready |
 
 At each stop the page shows the document, what was checked for you, and the agent's own notes on its draft, labelled as its judgment. Ask for changes in your own words and the runner makes them and brings the new version back.
 
+With levels, every blueprint is drafted first. Then each level is finished in turn, lowest first.
+
+**The deck.** Choose "No deck" when you start and the deck is left out. Otherwise, when everything else is approved, the run says the deck is all that is left. Make it with your assistant, or press "Leave the deck out"; the index is written once the deck is settled either way.
+
+**A scenario of your own.** A scenario file you wrote in the training's folder is used as it is and never rewritten. It comes to you at its gate with what the format check found. Ask for changes there and your own wording is laid out under the headings; nothing is invented.
+
+**Copies.** A Google Doc is made with the Google access this computer already has, and a Word file with `pandoc` when it is installed. A copy that cannot be made never stops the run: the run shows which, and why, and offers to try again.
+
 You can close the page while it works. Home, and the browser if you turned notifications on, say when something needs you.
+
+## Your own documents
+
+The last step of "New training" asks where the research looks: the public web, your documents only, or both.
+
+When documents are wanted, the run waits for them before anything else. Add text, Markdown, HTML or Word files, and PDFs when this computer has `pdftotext`. Each is shown with its size and whether it could be read. Press "That is all of them" and the run begins.
+
+Your documents stay on this computer. Passages quoted from them appear in the research report, which is shared with your team. With documents only, the agents doing the research cannot search the web or open a page.
 
 ## Watching a run
 
@@ -69,7 +90,7 @@ A training that has spent what it may stops and asks before it spends more. Clau
 
 - An agent the runner starts is still your own Claude Code or Codex. It knows what that agent normally knows about your account, such as the address you are signed in with, and Codex also reads your own instructions file and the names of your skills. None of that gives it a way to reach your files.
 - A research question that fails three times does not stop the training. It is named as not researched when the research comes to you, and you decide whether that matters.
-- Research uses the public web. Documents of your own are not offered in the runner yet.
+- Bringing edits back from a Google Doc, and publishing to a team hub, are not in the runner yet.
 - A training made in a conversation is not picked up by the runner, and a training the runner drives should not also be driven from a conversation while it runs.
 - `python3 runner/studio.py status` prints what is set up and where every run is, as JSON.
 
