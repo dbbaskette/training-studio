@@ -12,7 +12,7 @@ A program that takes a training from a filled-in form to approved blueprints wit
 
 In: the engine, the worker tools, both agent adapters, the workspace repository, the training pipeline up to and including the blueprint gate, the research pipeline, and the page's additions: starting a training, watching a run, answering a worker's question.
 
-Out: everything after the blueprint, slides, sharing a workspace between people, an installer.
+Out: everything after the blueprint, slides, two people driving trainings in one workspace, an installer.
 
 ## Where it lives
 
@@ -22,10 +22,16 @@ Python 3.11 or newer, standard library only.
 
 ## 1. The workspace
 
-- `studio workspace init <folder>` makes the folder a git repository if it is not one, with `trainings/`, a README and an ignore file. It is remembered as this computer's workspace.
-- A training is `trainings/<id>/`, created through the core's own `init`, in `page` approval mode.
-- Ignored: `work/`, `sources/`, the two harness skills' guidance caches, lock files.
-- The runner commits after every kept step and every decision, with a message that says what happened. It never pushes in this milestone.
+Trainings are stored in a repository the team already shares, which other tools and people also write to. The runner owns one folder in it and nothing else.
+
+- **A workspace is a repository, a folder inside it and a branch.** The folder is `trainings` unless the person chooses another. A training is `<folder>/<id>/`, created through the core's own `init`, in `page` approval mode.
+- **The runner keeps a clone of its own** under the per-user data folder. It never works in a clone a person or another tool is using.
+- **It never touches anything outside its folder.** It reads, writes, stages and commits only paths under it. Files at the repository's root that belong to another tool are left alone.
+- **Set-up** creates the folder if it is missing, with a README, an ignore file and a small marker file inside it. Ignored: `work/`, `sources/`, the two harness skills' guidance caches, lock files.
+- **It commits** after every kept step and every decision, with a message that says what happened.
+- **Sharing** is fetch, replay local commits on top of the remote's, push. It never force-pushes. A person chooses when: after each decision, which is the default, or only when they ask. If the remote cannot be reached or refuses, the work stays committed locally and the page says it is not shared yet.
+- **A local folder with no remote** also works, for trying the runner out and for tests.
+- The address, folder, branch and sharing choice are this computer's settings. They are not written into the repository.
 - It refuses to start without a git identity, with the sentence that fixes it.
 
 ## 2. The engine
@@ -94,6 +100,11 @@ If `harness-research` is not installed, the training stops before research and s
 
 Built on milestone 1's page, and offered only when the runner serves it.
 
+- **Set-up**, shown first on a computer where nothing is configured, and reachable afterwards as settings. Until the workspace is set, nothing else is offered.
+  - The team's repository, by address, or a local folder; the folder inside it; the branch; when to share.
+  - The agent to use by default, and its model.
+  - Limits: time for a step, spend for a training, how many trainings run at once.
+  - Each answer is checked as it is given, in plain words: the repository can be reached and written to, git knows who the person is, the agent is installed, signed in and reachable, the two harness skills are present. A failing check says how to put it right.
 - **New training:** three short steps. The topic and who it is for; the shape, with a default for every choice; sources, the agent and the limits. Before it starts it says how many times it will ask for a decision.
 - **A run:** the row of stages; what is happening now in a sentence; a short live list of what each worker is doing; what has been made; cost so far; pause, resume and stop.
 - **Home and status** show running work as it happens.
@@ -106,7 +117,7 @@ The runner is started by a person: `studio serve` prints the link in a terminal,
 
 - The engine, from start to gate 3, with the scripted adapter and a stand-in for `harness-research`: the happy path, a refused draft that is fixed, a step that fails three times, a revise request, a skip, a worker's question, a restart in the middle of research, and a limit reached.
 - The worker tools: every refusal, the quote placement, and the fetch rules without touching the network.
-- The workspace: what is committed, what is ignored, and the commit after each step and decision.
+- The workspace: what is committed, what is ignored, the commit after each step and decision, that nothing outside the folder is ever staged, and sharing against a local bare repository including a refused push and an unreachable remote.
 - The adapters: the exact command and environment each builds. Tests never start a real agent.
 - Server tests for the new endpoints, with the same safety rules as milestone 1.
 

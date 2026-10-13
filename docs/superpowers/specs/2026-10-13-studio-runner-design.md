@@ -111,7 +111,7 @@ With that rule, gate enforcement does not depend on a model following instructio
 - **Agent adapters.** One for Claude, one for Codex, behind the same small interface.
 - **Worker tools.** A handful of tools the runner serves to the worker over MCP, the same for both vendors.
 - **The page.** The training desk, grown from read-only into the place gates are decided.
-- **Team workspace.** One git repository per team. Every training is stored in it, one folder each, and with them all of the runner's state. Section 5.9.
+- **Team workspace.** A folder in a git repository the team already shares. Every training is stored in it, one folder each, and with them all of the runner's state. Section 5.9.
 
 ### 5.3 One agent step, start to finish
 
@@ -232,7 +232,7 @@ home  ->  new training  ->  the run  ->  a gate  ->  the next thing that needs y
 
 | State | What the page shows |
 | --- | --- |
-| First time | A short checklist of what this computer needs, each item with how to fix it, then "Start your first training" |
+| First time | The set-up screen: the team's repository and the folder in it, when to share, the agent to use, and the limits, each checked as it is given. Then "Start your first training" |
 | Nothing yet | An invitation to start, not an empty table |
 | Working | What it is doing in a sentence, and what it will ask of you next |
 | Waiting for you | The decision, first on the home screen |
@@ -257,7 +257,7 @@ The desk is read-only today, answers on the local machine only, and requires a t
 
 All state is files, and the files are in a git repository. There is no database and no server.
 
-- **The team workspace is one git repository, and every training is stored in it,** one folder each. The session record, the artifacts, the reviews and the run log all sit in the training's folder, as they do today. Each person works in their own clone.
+- **The team workspace is one folder in a repository the team already shares, and every training is stored in it,** one folder each. The repository may hold other tools' work too; the runner reads and writes only its own folder. The session record, the artifacts, the reviews and the run log all sit in the training's folder, as they do today. The runner keeps a clone of its own on each person's computer.
 - **The runner commits at every point worth returning to:** a step whose result was kept, a gate decision, a change of settings. Each commit says what happened in its message.
 - **A gate decision is a commit by the person who made it.** Who approved what, and when, is then in the history under their own git identity, with the review file in the same commit.
 - **The comparison at a gate is a git diff** between the version last approved and the one in front of the person.
@@ -284,7 +284,7 @@ Staleness already works and is unchanged: an edited file makes what was built fr
 
 - One installer for the runner, which brings the pipelines with it.
 - Each person needs Claude Code or Codex installed and signed in, plus Node for the two harness skills.
-- **Trainings are stored in the team workspace.** Each person clones it and works there. The runner commits locally as it works. It pushes when the person says so, or after each gate decision if the workspace is set that way; pushing is never silent by default.
+- **Trainings are stored in the team workspace.** The runner keeps its own clone on each person's computer and commits there as it works. It shares after each decision, unless the person chose to share only when they ask; the set-up screen says which.
 - **Work in progress becomes visible to the team once it is pushed:** drafts, intake answers and gate reviews, not only finished work. Until then it is on one computer. Sources stay out unless the workspace opts in.
 - **Different trainings never collide,** because each is its own folder. The runner replays local commits on top of the remote's, as the team hub does today, and never force-pushes.
 - **One person drives a training at a time.** Taking a training over is a small commit that names the driver. If two people take the same one, the second push is refused and the runner says who has it. Handing over is the same commit in reverse.
@@ -346,10 +346,11 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 
 - **Local, with state in git (2026-10-13, by the owner).** It runs on each person's computer and is not hosted. A git repository manages state, with a commit at every step and gate.
 - **Trainings are stored in the team workspace (2026-10-13, by the owner).** One repository per team holds every training.
+- **The workspace is a folder in a repository the team already uses for other work (2026-10-13, by the owner),** not a repository of its own, and a set-up screen configures it when the runner is first started.
 
 ### Assumed until the owner says otherwise
 
 - Today's team hub folds into the workspace: a published revision is a tag, and shared scenarios and audiences are folders in it.
-- Nothing is pushed without the person saying so, unless a workspace is set to push after each gate.
+- Work is shared after each decision unless the person chooses to share only when they ask. The set-up screen says so.
 - The runner is written in Python, standard library only.
 - Milestones 1 and 2 are built on Claude first, behind the adapter interface, with the Codex adapter following in milestone 2 using the mode milestone 0 arrived at.
