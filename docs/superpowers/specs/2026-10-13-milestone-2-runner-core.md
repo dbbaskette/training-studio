@@ -129,3 +129,37 @@ The runner is started by a person: `studio serve` prints the link in a terminal,
 - A real training on a small topic runs on Claude from the form to approved blueprints, with decisions made on the page, and the workspace's history shows a commit for each step and decision.
 - One step runs on Codex.
 - A walk-through by someone who has not seen it is still to do; it needs a person.
+
+## Appendix: what the page asks the runner
+
+The engine and the screens are built separately, so this is the contract between them. The server owns it: the screens are written to it exactly, and the server implements it exactly. Everything in milestone 1's API stays as it is.
+
+Every call needs the key. Every `POST` also needs the page's own `Origin` and a JSON body, as in milestone 1. A refusal is `{"error": "<a sentence for a person>"}` with a 4xx status.
+
+**Is the runner here?**
+
+- `GET /api/capabilities` → `{"runner": true, "version": "<x.y.z>"}`. The plain desk answers 404, and the page then hides everything below.
+
+**Set-up**
+
+- `GET /api/setup` → `{"configured": bool, "workspace": W or null, "agent": {"default": "claude" | "codex", "model": str or null}, "limits": {"step_seconds": int, "training_dollars": number, "parallel": int}}`, where `W` is `{"name", "repository" (str or null), "path", "folder", "branch", "share_when": "each-decision" | "when-asked", "shared": bool, "notice": str or null}`.
+- `POST /api/setup/check` with `{"repository": str or null, "path": str or null, "folder": str or null, "branch": str or null}` → `{"ok": bool, "found": {"name", "folder", "branch", "existing": bool}, "checks": [{"what": str, "ok": bool, "fix": str or null}]}`. It changes nothing. `existing` says a Training Studio `hub.json` was found and read. The checks cover: the repository can be reached, it can be written to, git knows who the person is.
+- `POST /api/setup` with `{"repository" or "path", "folder", "branch", "name", "share_when", "agent", "model", "limits"}` → the same shape as `GET /api/setup`. It sets the workspace up, writes `hub.json` if it is missing, and saves this computer's settings.
+- `GET /api/agents` → `{"agents": [{"agent", "installed", "signed_in" (bool or null), "reachable" (bool or null), "version", "problem" (str or null)}]}`, looked at when asked and cached briefly.
+
+**Starting a training**
+
+- `POST /api/trainings` with `{"title", "topic", "audience", "purpose", "levels": [str], "brief_kind": "product" | "competitive", "time_limit": str or null, "source_scope": "public-web" | "supplied-only" | "both", "deck_target": "pptx" | "google" | null, "brand": str or null, "copies": [str], "yoodli": bool, "agent": "claude" | "codex" or null, "model": str or null}` → `{"path": str, "id": str, "gates": int}`. `gates` is how many times it will ask for a decision. The run starts at once.
+
+**A run**
+
+- `GET /api/run?path=…` → `{"state": "working" | "waiting" | "paused" | "stopped" | "failed" | "done", "sentence": str, "agent": str, "model": str or null, "steps": [{"id", "label", "kind": "code" | "agent" | "gate", "status": "done" | "working" | "waiting" | "failed" | "to-do", "attempts": int, "seconds": number or null, "dollars": number or null, "error": str or null}], "workers": [{"id", "label", "started_at", "lines": [str]}], "spent": {"dollars": number or null, "tokens": int or null}, "question": {"id", "text", "from": str} or null, "problem": {"what": str, "kept": str, "action": "retry" | "resume" | null, "label": str or null} or null}`.
+  - `sentence` says what is happening now in plain words. `lines` are the last few things a worker did.
+  - `problem` is set when a step failed for good or a limit was reached.
+- `POST /api/run` with `{"path", "action": "pause" | "resume" | "stop" | "retry"}` → the same shape as `GET /api/run`.
+- `POST /api/answer` with `{"path", "id", "answer"}` → the same shape as `GET /api/run`.
+- `POST /api/share` with `{}` → `{"shared": bool, "notice": str or null}`.
+
+**Milestone 1's lists gain a little.** Each item of `GET /api/trainings`, and `GET /api/training`, carries `"run": {"state", "sentence"}` or `null` for a training no run is driving. A training whose run has a question or a problem counts as needing the user.
+
+A decision made through `POST /api/decide` wakes that training's run.
