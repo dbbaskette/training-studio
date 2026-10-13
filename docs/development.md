@@ -143,6 +143,9 @@ runner/
   worker_tools.py           the only tools a worker has, and the checks on what it hands back
   gitstate.py               the workspace: one folder in a git repository
   research.py               the harness-research command line, called from Python
+  documents.py              the documents a person supplies for research
+  copies.py                 the Google Docs and Word files a training asked for
+  index.py                  readiness, and README.md written from the record
   briefs/                   what a worker is told for each kind of job
 ```
 

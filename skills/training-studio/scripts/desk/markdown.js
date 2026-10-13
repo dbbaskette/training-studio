@@ -13,6 +13,9 @@
   const DIVIDER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
   const ESCAPED = /\\([\\`*_{}[\]()#+\-.!|<>~])/g;
   const SAFE_LINK = /^https?:\/\/[^\s]+$/i;
+  // A file of the training's own, named from its folder: no scheme, no leading slash, no "..".
+  const OWN_FILE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9._@\/-]+$/;
+  let ownFiles = false; // set while a document that names its training's files is drawn
   const HIDDEN = 0xe000; // escaped characters wait here, in the private-use range
 
   function element(tag, className) {
@@ -121,8 +124,13 @@
   function link(parent, label, address) {
     const target = reveal(address, '');
     if (!SAFE_LINK.test(target)) {
-      // Not a web address: shown as it was written, and not made into a link.
-      words(parent, label === null ? address : '[' + label + '](' + address + ')');
+      // Not a web address, so never a link. In a document that lists its training's own
+      // files, a file is named plainly; anywhere else it is shown as it was written.
+      if (ownFiles && label !== null && OWN_FILE.test(address)) {
+        words(parent, label === address ? address : label + ' (' + address + ')');
+      } else {
+        words(parent, label === null ? address : '[' + label + '](' + address + ')');
+      }
       return;
     }
     const node = element('a');
@@ -333,10 +341,16 @@
     flush();
   }
 
-  // The document as a tree of elements. `text` is never read as markup.
-  function render(text) {
+  // The document as a tree of elements. `text` is never read as markup. `about.files` says
+  // the document lists files of its own training, as an index does.
+  function render(text, about) {
     const node = element('div', 'md');
-    blocks(node, withoutComments(String(text).replace(/\r\n?/g, '\n')), 0);
+    ownFiles = Boolean(about && about.files);
+    try {
+      blocks(node, withoutComments(String(text).replace(/\r\n?/g, '\n')), 0);
+    } finally {
+      ownFiles = false;
+    }
     return node;
   }
 

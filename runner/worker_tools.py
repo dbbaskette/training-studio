@@ -18,9 +18,17 @@ checked here before anything is kept. Each job has a folder that only the runner
     collect(folder)        what was handed back, for the engine to keep
 
 - `artifacts` maps each draft the job hands back to {'kind': ...}. The kind chooses the
-  validator (VALIDATORS). A 'blueprint' also takes 'level' and 'findings' (finding ID to
-  verdict). A 'research-plan' takes 'scope' and 'sources': the worker supplies the topic and
-  the questions, and the runner fills in the rest, so what is kept is the whole plan.
+  validator (VALIDATORS), and each validator is the core's own check. A 'blueprint' also
+  takes 'level' and 'findings' (finding ID to verdict). A 'research-plan' takes 'scope' and
+  'sources': the worker supplies the topic and the questions, and the runner fills in the
+  rest, so what is kept is the whole plan. A 'document' takes 'blueprint', its blueprint's
+  text. A 'brief' takes 'brief_kind' and 'findings'. A 'scenario' takes 'label', its name
+  in the core without a level, and 'mode', the mode the practice plan gives it. A 'yoodli'
+  takes 'label', 'profile' (the Yoodli profile, parsed), 'scenario' (its scenario's text)
+  and 'objectives' (the blueprint's objective IDs); the length each field states is put in
+  for the worker, so nobody counts characters by eye.
+- A check that cannot run for want of one of these is recorded as unavailable, for the gate.
+  It is not held against the worker.
 - `finding` is the ID of the one research question the job answers. An accepted finding is in
   the shape `harness-research record` takes, with each quote's place worked out here.
 - `sources` are documents offered before the job starts: {'title', 'origin', 'text', 'file',
@@ -65,7 +73,7 @@ if not __package__:  # started as the server, by its path
 import runner  # noqa: F401,E402  puts the core on the import path
 import checks  # noqa: E402
 import home  # noqa: E402
-from workspace import WorkspaceError  # noqa: E402
+from workspace import BRIEF_KINDS, WorkspaceError  # noqa: E402
 
 SCHEMA = 1
 PART = 20_000           # characters of an input in one read
@@ -359,16 +367,97 @@ def _question(item, scope, problems: list[str]):
             'claim': None}
 
 
+def held(outcomes: list[dict]) -> list[str]:
+    """What the checks hold against a draft: the problems of each one that failed. A check
+    that could not run holds nothing against it."""
+    return [problem for outcome in outcomes if outcome['status'] == 'failed'
+            for problem in outcome['problems']]
+
+
+def as_kept(text: str) -> str:
+    """A draft as it is kept: ending in one line end."""
+    return text.rstrip('\n') + '\n'
+
+
 def check_blueprint(text: str, spec: dict) -> tuple[list[str], list[dict], list[str], str]:
     """A blueprint, against the core's own lint. A check that could not run is recorded
     for the gate, not held against the worker."""
     report = checks.lint_blueprint(text, spec.get('findings'), spec.get('level'))
-    problems = [problem for outcome in report['checks'] if outcome['status'] == 'failed'
-                for problem in outcome['problems']]
-    return problems, report['checks'], report['warnings'], text.rstrip('\n') + '\n'
+    return held(report['checks']), report['checks'], report['warnings'], as_kept(text)
 
 
-VALIDATORS = {'research-plan': check_plan, 'blueprint': check_blueprint}
+def check_document(text: str, spec: dict) -> tuple[list[str], list[dict], list[str], str]:
+    """A learner guide, against the core's coverage check and the blueprint it teaches.
+    Without the blueprint the check cannot run, which is recorded for the gate."""
+    if isinstance(spec.get('blueprint'), str):
+        outcome = checks.document_coverage(checks.parse_blueprint(spec['blueprint']), text)
+    else:
+        outcome = checks.result('document.coverage', [], unavailable=(
+            'The blueprint was not given, so coverage could not be checked.'))
+    return held([outcome]), [outcome], [], as_kept(text)
+
+
+def check_brief(text: str, spec: dict) -> tuple[list[str], list[dict], list[str], str]:
+    """A brief, against the core's own check of its sections and the findings they name.
+    Without the findings the second cannot run, which is recorded for the gate."""
+    outcomes = checks.check_brief(text, spec.get('brief_kind') or BRIEF_KINDS[0],
+                                  spec.get('findings'))
+    return held(outcomes), outcomes, [], as_kept(text)
+
+
+def check_scenario(text: str, spec: dict) -> tuple[list[str], list[dict], list[str], str]:
+    """A practice scenario, against the core's own check of its shape. A mode other than
+    the practice plan's is noted for the reviewer: the scenario file decides."""
+    outcome = checks.check_scenario(text, spec.get('label') or 'scenario:main')
+    stated, planned = checks.parse_scenario(text)['mode'], spec.get('mode')
+    warnings = [] if not planned or stated == planned else [
+        f'The practice plan lists this scenario as {planned}; the file says {stated}. The '
+        'scenario file decides.']
+    return held([outcome]), [outcome], warnings, as_kept(text)
+
+
+def counted(text: str) -> str:
+    """A Yoodli scenario with the real length of each field put where the file states one,
+    as in "666 of 10,000 characters". The limit beside it is left as the worker wrote it."""
+    fields, _ = checks.fenced_fields(text)
+    lines, path, inside = [], [], False
+    for line in text.splitlines():
+        if line.startswith('```'):
+            inside = not inside
+        elif not inside:
+            head = checks.HEADING.match(line)
+            if head:
+                path = path[:len(head.group(1)) - 2] + [head.group(2)]
+            elif tuple(path) in fields:
+                size = f'{len(fields[tuple(path)]):,}'
+                line = checks.STATED_COUNT.sub(
+                    lambda stated: size + stated.group(0)[len(stated.group(1)):], line, count=1)
+        lines.append(line)
+    return '\n'.join(lines) + '\n'
+
+
+def check_yoodli(text: str, spec: dict) -> tuple[list[str], list[dict], list[str], str]:
+    """A Yoodli scenario, against the core's own check with the Yoodli profile: its fields,
+    its goals, each count against its limit, and that every success criterion has a goal.
+    What cannot be checked for want of the profile, the scenario or the objectives is
+    recorded for the gate."""
+    label, profile = spec.get('label') or 'yoodli:main', spec.get('profile')
+    if not isinstance(profile, dict) or not isinstance(profile.get('limits'), dict):
+        outcomes = [checks.result(f'{label}.{part}', [], unavailable=(
+            'The Yoodli profile was not given, so this could not be checked.'))
+            for part in ('fields', 'limits', 'mapping')]
+        return [], outcomes, [], as_kept(text)
+    text = counted(text)
+    scenario = (checks.parse_scenario(spec['scenario'])
+                if isinstance(spec.get('scenario'), str) else None)
+    objectives = set(spec['objectives']) if isinstance(spec.get('objectives'), list) else None
+    outcomes = checks.check_yoodli(text, profile, scenario, objectives, label)
+    return held(outcomes), outcomes, [], as_kept(text)
+
+
+VALIDATORS = {'research-plan': check_plan, 'blueprint': check_blueprint,
+              'document': check_document, 'brief': check_brief, 'scenario': check_scenario,
+              'yoodli': check_yoodli}
 EXTENSIONS = {'research-plan': '.json'}
 
 
@@ -388,6 +477,9 @@ def prepare(folder: Path, inputs: dict[str, str] | None = None,
                                  + ', '.join(VALIDATORS) + '.')
         if spec.get('scope') not in (None, *SCOPES):
             raise WorkspaceError(f"{name}: the scope is one of {', '.join(SCOPES)}.")
+        if spec.get('brief_kind') not in (None, *BRIEF_KINDS):
+            raise WorkspaceError(f"{name}: the kind of brief is one of "
+                                 f"{', '.join(BRIEF_KINDS)}.")
     if finding is not None and not QUESTION_ID.match(finding):
         raise WorkspaceError(f'"{finding}" is not a research question ID.')
     listed = []

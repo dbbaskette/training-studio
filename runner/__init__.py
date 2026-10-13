@@ -1,4 +1,5 @@
-"""The Studio Runner: a program that takes a training from a form to approved blueprints.
+"""The Studio Runner: a program that takes a training from a form to its index, stopping
+at every gate for a decision on the page. The slide deck is the one thing it does not make.
 
     studio         the command line: `studio serve` and `studio status`
     page           the runner's server: the desk's page, with the runner behind it
@@ -11,6 +12,9 @@
     gitstate       the workspace: one folder inside a git repository, committed and shared
     research       the harness-research command line, called from Python
     briefs         what a worker is told for each kind of job
+    documents      the documents a person supplies for a training's research
+    copies         the Google Docs and Word files a training asked for
+    index          readiness, and README.md written from a training's record
 
 Each module's own docstring says what a caller needs to know. Refusals meant for a person
 are raised as the core's WorkspaceError, with a sentence to show as it is.

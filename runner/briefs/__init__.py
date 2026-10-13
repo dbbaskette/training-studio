@@ -6,6 +6,11 @@ What a caller needs to know
     briefs.guidance('research-question')        researching one question
     briefs.guidance('blueprint')                drafting a blueprint for a plain training
     briefs.guidance('blueprint', level='301')   drafting one level's blueprint
+    briefs.guidance('document', level='301')    writing a learner guide, here one level's
+    briefs.guidance('brief', kind='product')    writing a brief of one kind
+    briefs.guidance('scenario')                 drafting a practice scenario
+    briefs.guidance('yoodli')                   laying a scenario out in Yoodli's fields
+    briefs.mode('roleplay')                     the core's own reference for one mode
 
 - A brief says how to do a kind of job. It is the same for every training, so it goes to
   an agent as guidance. What one job is about goes in the task: the topic, the audience
@@ -13,20 +18,30 @@ What a caller needs to know
   the inputs, and on a second attempt what went wrong or what the person asked for.
 - A brief names only the worker tools. It never names a helper command or a file,
   because a worker has neither. Each one ends with how to hand back and when to stop.
-- The blueprint brief ends with the core's own example blueprint, so the format is
-  written down in one place.
+- A brief for a draft ends with the core's own example of it, so the format is written
+  down in one place. A brief's example is of its own kind.
+- A blueprint, a guide and a brief can be written for a level, and then say what a level
+  asks of them.
+- A scenario's mode is not part of its brief. The mode's reference is the core's own, and
+  goes to the worker as one of the job's inputs.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
+import checks
 import workspace
 from workspace import WorkspaceError
 
 HERE = Path(__file__).resolve().parent
-JOBS = ('research-plan', 'research-question', 'blueprint')
-EXAMPLE = Path('assets') / 'examples' / 'blueprint.md'
+JOBS = ('research-plan', 'research-question', 'blueprint', 'document', 'brief', 'scenario',
+        'yoodli')
+EXAMPLES = Path('assets') / 'examples'
+EXAMPLE = {'blueprint': 'blueprint.md', 'document': 'document.md', 'brief': '{kind}-brief.md',
+           'scenario': 'scenario.md', 'yoodli': 'yoodli.md'}
+LEVELLED = {'blueprint': 'blueprint-level', 'document': 'level', 'brief': 'level'}
+MODES = Path('references') / 'modes'
 EXAMPLE_NOTE = ('## The example\n\nThis shows the shape to follow. Its subject is not '
                 'yours: take nothing from it but the shape.\n\n```markdown\n{example}```\n')
 
@@ -35,17 +50,28 @@ def read(name: str) -> str:
     return (HERE / f'{name}.md').read_text(encoding='utf-8')
 
 
-def guidance(job: str, level: str | None = None) -> str:
+def mode(name: str) -> str:
+    """The core's reference for one practice mode, whole."""
+    if name not in checks.MODES:
+        raise WorkspaceError('A practice mode is one of: ' + ', '.join(checks.MODES) + '.')
+    return (workspace.GUIDANCE_DIR / MODES / f'{name}.md').read_text(encoding='utf-8')
+
+
+def guidance(job: str, level: str | None = None, kind: str | None = None) -> str:
     """The guidance for one kind of job, whole."""
     if job not in JOBS:
         raise WorkspaceError('There is a brief for: ' + ', '.join(JOBS) + '.')
-    if level is not None and (job != 'blueprint' or level not in workspace.LEVELS):
-        raise WorkspaceError('Only a blueprint is written for a level, and the level is one '
-                             'of: ' + ', '.join(workspace.LEVELS) + '.')
+    if level is not None and (job not in LEVELLED or level not in workspace.LEVELS):
+        raise WorkspaceError('Only a blueprint, a guide and a brief are written for a level, '
+                             'and the level is one of: ' + ', '.join(workspace.LEVELS) + '.')
+    if (kind is not None) != (job == 'brief') or kind not in (None, *workspace.BRIEF_KINDS):
+        raise WorkspaceError('A brief, and nothing else, is written as one of these kinds: '
+                             + ', '.join(workspace.BRIEF_KINDS) + '.')
     text = read(job)
-    if job != 'blueprint':
-        return text
     if level is not None:
-        text += '\n' + read('blueprint-level').replace('{level}', level)
-    example = (workspace.GUIDANCE_DIR / EXAMPLE).read_text(encoding='utf-8')
+        text += '\n' + read(LEVELLED[job]).replace('{level}', level)
+    if job not in EXAMPLE:
+        return text
+    name = EXAMPLE[job].replace('{kind}', kind or '')
+    example = (workspace.GUIDANCE_DIR / EXAMPLES / name).read_text(encoding='utf-8')
     return text + '\n' + EXAMPLE_NOTE.replace('{example}', example.rstrip('\n') + '\n')

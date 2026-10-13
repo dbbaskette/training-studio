@@ -650,7 +650,8 @@ class Handler(BaseHTTPRequestHandler):
         """Read the body, up to the limit, and hand it over. A body that is too long, or
         whose length is not stated, is never read: the request is refused and the line closed."""
         length = self.headers.get('Content-Length', '')
-        if not length.isdigit() or int(length) > BODY_LIMIT:
+        limit = self.server.desk.page.body_limit(self.path, self.headers)
+        if not length.isdigit() or int(length) > limit:
             self.close_connection = True
             return self.respond(None)
         self.respond(self.rfile.read(int(length)))
@@ -756,6 +757,11 @@ class Page:
     def allowed(self, target: str) -> str:
         return allowed(target, self.reads, self.writes)
 
+    def body_limit(self, target: str, headers) -> int:
+        """The most bytes a POST to this address may carry. A subclass may let one address
+        of its own carry more; nothing else about a request depends on this."""
+        return BODY_LIMIT
+
     def trainings(self) -> list[dict]:
         return trainings()
 
@@ -804,8 +810,9 @@ class Page:
         if headers.get_content_type() != 'application/json':
             raise Refusal(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, 'Send the change as JSON.')
         if body is None:
+            limit = self.body_limit(url.path, headers)
             raise Refusal(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                          f'A change is at most {BODY_LIMIT:,} bytes, with its length stated.')
+                          f'A change is at most {limit:,} bytes, with its length stated.')
         try:
             sent = json.loads(body.decode('utf-8'))
         except (ValueError, UnicodeDecodeError):

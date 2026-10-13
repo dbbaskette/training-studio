@@ -1,5 +1,6 @@
 """The engine, from the form to gate 3, with scripted workers and the stand-in for
-harness-research. No agent is started and nothing touches the network.
+harness-research. No agent is started and nothing touches the network. What comes after
+the blueprints is in test_runner_flow.py.
 
 Most classes drive the engine in the test's own thread, so each step has finished when a
 call returns. LiveTests lets it run on threads of its own, as the runner does.
@@ -25,7 +26,8 @@ from workspace import WorkspaceError
 AVOIDED = re.compile(r'\b(artifacts?|stale|lineage)\b', re.IGNORECASE)
 SLOW = 'It did not finish in 900 seconds, so it was stopped.'
 STEPS = ['intake', 'research-plan', 'gate:research-plan', 'research-start', 'research',
-         'research-report', 'gate:research', 'blueprint', 'gate:blueprint']
+         'research-report', 'gate:research', 'blueprint', 'gate:blueprint', 'document',
+         'gate:document', 'brief', 'gate:brief', 'package']
 
 
 class Crash(BaseException):
@@ -83,17 +85,17 @@ class FormToGateThreeTests(StudioCase):
                          ('waiting', 'blueprint'))
         self.assertEqual(len(self.workers.jobs), 6)
 
-        self.decide(root, 'blueprint')
+        said = self.decide(root, 'blueprint')
+        self.assertEqual(said['said'], 'Approved. The learner guide is waiting for your review.')
         view, status = self.view(root), workspace.status(root)
-        self.assertEqual((view['state'], view['sentence']), (
-            'done', 'The blueprint is approved. The later stages are not automated yet. This '
-            'training can be continued in a chat with your assistant.'))
-        self.assertEqual({step['status'] for step in view['steps']}, {'done'})
-        self.assertEqual((status['stage'], status['next_step'], status['gate']),
-                         ('document', pipeline.LATER, None))
+        self.assertEqual((view['state'], status['stage'], status['gate']),
+                         ('waiting', 'document', 'document'))
         self.assertEqual({status['artifacts'][name] for name in
                           ('intake', 'research-plan', 'research', 'blueprint')}, {'approved'})
-        self.assertEqual(len(self.workers.jobs), 6)
+        self.assertEqual([step['id'] for step in view['steps']],
+                         STEPS[:-1] + ['scenario:main', 'gate:scenario:main', 'package'],
+                         'the blueprint has named a practice scenario')
+        self.assertEqual(len(self.workers.jobs), 7)
 
     def test_every_kept_step_and_every_decision_is_a_commit_that_says_what_happened(self):
         (self.space.repo / 'README.md').write_text('# Another tool keeps this\n')
@@ -101,8 +103,7 @@ class FormToGateThreeTests(StudioCase):
         self.git('add', 'notes.txt')
         self.engine = self.make(at_once=1)
         root = self.start()
-        self.to_gate(root, 'blueprint')
-        self.decide(root, 'blueprint')
+        self.to_end(root)
         self.assertEqual(self.log(), ['Set up the Training Studio workspace in trainings/'] + [
             f'Rolling restarts: {what}' for what in (
                 'start the training from the form',
@@ -120,7 +121,16 @@ class FormToGateThreeTests(StudioCase):
                 'keep the blueprint',
                 'ask for a review of the blueprint',
                 'The blueprint was approved on the page.',
-                'every blueprint is approved; the later stages are not automated yet')])
+                'keep the learner guide',
+                'ask for a review of the learner guide',
+                'The learner guide was approved on the page.',
+                'keep the brief',
+                'ask for a review of the brief',
+                'The brief was approved on the page.',
+                'keep the practice scenario',
+                'ask for a review of the practice scenario',
+                'The practice scenario was approved on the page.',
+                'write the index; the training is finished')])
         self.assertEqual(self.git('status', '--porcelain'), 'A  notes.txt\n?? README.md'.strip())
         changed = self.git('log', '--format=', '--name-only').split()
         self.assertTrue(changed)
@@ -133,8 +143,8 @@ class FormToGateThreeTests(StudioCase):
     def test_with_levels_every_blueprint_is_drafted_and_each_is_reviewed_in_turn(self):
         made = self.engine.start(pipeline.check_form({**FORM, 'levels': ['301', '101']}))
         root = Path(made['path'])
-        self.assertEqual(made, {'path': str(root), 'id': 'rolling-restarts', 'gates': 4})
-        self.assertEqual([step['id'] for step in self.view(root)['steps']][-4:],
+        self.assertEqual(made, {'path': str(root), 'id': 'rolling-restarts', 'gates': 8})
+        self.assertEqual([step['id'] for step in self.view(root)['steps']][7:11],
                          ['blueprint@101', 'blueprint@301', 'gate:blueprint@101',
                           'gate:blueprint@301'])
         self.to_gate(root, 'blueprint@101')
@@ -149,7 +159,7 @@ class FormToGateThreeTests(StudioCase):
                          ('waiting', 'blueprint@301'))
         self.decide(root, 'blueprint@301')
         self.assertEqual((self.state(root), self.view(root)['sentence']), (
-            'done', f'Every blueprint is approved. {pipeline.LATER}'))
+            'waiting', 'The level 101 learner guide is waiting for your review.'))
         self.assertIn('Level: 301', (root / '301' / 'blueprint.md').read_text())
 
     def test_the_run_record_holds_what_the_files_cannot_say_and_is_committed(self):
@@ -316,8 +326,12 @@ class WorkerTests(StudioCase):
         self.assertIn('> 3 of 4 questions have an answer the sources support.\n> 1 more state '
                       'a claim that the sources contradict.\n> Every question was researched '
                       'and settled.', (root / 'reviews' / 'research.md').read_text())
-        self.assertIn('> Checked for you: 4 checks passed.',
-                      (root / 'reviews' / 'blueprint.md').read_text())
+        blueprint = (root / 'reviews' / 'blueprint.md').read_text()
+        self.assertIn('> Checked for you: 4 checks passed.', blueprint)
+        # Approving a blueprint commits the person to a decision on each scenario it plans.
+        self.assertIn('> It plans 1 practice scenario: main. Each comes to you for review: 1 '
+                      'more decision for this blueprint. To have fewer, ask for changes here.',
+                      blueprint)
 
 
 class RetryTests(StudioCase):
@@ -473,7 +487,7 @@ class RequestTests(StudioCase):
         self.assertIn('Ask about rollback, briefly.', self.workers.jobs[-1][1].task)
 
     def test_leaving_a_stage_out_is_committed_and_the_run_carries_on_where_it_was(self):
-        root = self.start()
+        root = self.start(deck_target='pptx')
         said = self.decide(root, 'deck', 'skip', 'No slides for this one.')
         self.assertIn('This stage is left out.', said['said'])
         status = workspace.status(root)
@@ -503,9 +517,16 @@ class RequestTests(StudioCase):
         self.decide(root, 'research')
         status = workspace.status(root)
         self.assertEqual((status['gate'], status['artifacts']['blueprint'], self.state(root)),
-                         ('blueprint', 'stale', 'waiting'))
-        self.decide(root, 'blueprint', 'rebuild')
-        self.assertEqual(workspace.status(root)['artifacts']['blueprint'], 'draft')
+                         ('blueprint', 'draft', 'waiting'))
+        again = self.workers.of('blueprint')
+        self.assertEqual(len(again), 2, 'the blueprint is drafted again from the new research')
+        self.assertIn('What the blueprint was made from has changed since the earlier draft, '
+                      'and the person approved the change, so it is being made again.',
+                      again[1].task)
+        self.assertIn('The earlier draft:\n\n# Blueprint: Rolling restarts', again[1].task)
+        self.assertIn('> This version was made because what the earlier one was made from '
+                      'changed, and you approved the change.',
+                      (root / 'reviews' / 'blueprint.md').read_text())
         self.assertIn('## rollback', pipeline.findings_text(root))
 
 
@@ -812,8 +833,7 @@ class HaltTests(StudioCase):
                      'nothing to stop.')
         self.refused(failed, 'resume', 'not paused or stopped')
 
-        self.to_gate(root, 'blueprint')
-        self.decide(root, 'blueprint')
+        self.to_end(root)
         self.assertEqual(self.state(root), 'done')
         for action in ACTIONS:
             with self.subTest(action):
@@ -925,12 +945,46 @@ class RestartTests(StudioCase):
 
     def test_a_run_that_is_done_is_left_alone(self):
         root = self.start()
-        self.to_gate(root, 'blueprint')
-        self.decide(root, 'blueprint')
-        (root / 'document.md').write_text('# A guide being written in a chat\n')
+        self.to_end(root)
+        (root / 'notes.md').write_text('# Notes someone keeps beside the training\n')
+        jobs = len(self.workers.jobs)
         self.restart()
-        self.assertTrue((root / 'document.md').exists())
-        self.assertEqual(self.state(root), 'done')
+        self.assertTrue((root / 'notes.md').exists())
+        self.assertEqual((self.state(root), len(self.workers.jobs)), ('done', jobs))
+
+    def test_what_a_person_changed_while_no_step_was_in_hand_is_never_discarded(self):
+        root = self.start()
+        self.to_end(root)
+        guide = root / 'document.md'
+        guide.write_text(guide.read_text() + '\nA line its person added by hand.\n')
+        self.assertFalse((root / self.engines.IN_HAND).exists())
+        self.restart()
+        self.assertIn('A line its person added by hand.', guide.read_text())
+        self.assertEqual((self.state(root), workspace.status(root)['gate']),
+                         ('waiting', 'document'), 'their change is put to them')
+
+    def test_only_a_step_the_runner_ended_in_the_middle_of_is_discarded(self):
+        seen = []
+
+        def dies(tools, job):
+            seen.append((root / self.engines.IN_HAND).read_text())
+            raise Crash()
+
+        root = self.start()
+        self.to_gate(root, 'blueprint')
+        self.workers.then('document', dies)
+        with self.assertRaises(Crash):
+            self.decide(root, 'blueprint')
+        self.assertEqual(seen, ['document\n'])
+        (root / 'document.md').write_text('# Half made\n')
+        self.assertEqual(self.git('status', '--porcelain', '--', str(root)),
+                         '?? trainings/rolling-restarts/document.md',
+                         'the note that a step is in hand is never shared')
+        self.restart()
+        self.assertFalse((root / self.engines.IN_HAND).exists())
+        self.assertEqual((workspace.status(root)['gate'], len(self.workers.of('document'))),
+                         ('document', 2))
+        self.assertNotIn('Half made', (root / 'document.md').read_text())
 
 
 class SharingTests(StudioCase):
@@ -965,11 +1019,10 @@ class SharingTests(StudioCase):
 
     def test_the_last_thing_the_runner_does_is_shared_without_another_decision(self):
         root = self.start()
-        for artifact in ('research-plan', 'research', 'blueprint'):
-            self.decide(root, artifact)
+        self.to_end(root)
         self.assertEqual(self.state(root), 'done')
-        self.assertEqual(self.shared()[0], 'Rolling restarts: every blueprint is approved; '
-                         'the later stages are not automated yet')
+        self.assertEqual(self.shared()[0],
+                         'Rolling restarts: write the index; the training is finished')
         self.assertEqual(self.engine.shared(), {'shared': True, 'notice': None})
 
     def test_a_repository_that_cannot_be_reached_never_holds_a_run_up(self):
