@@ -1,7 +1,7 @@
 # Studio Runner: design for a decision
 
 Date: 2026-10-13
-Status: proposal. Nothing here is built. It exists so its owner can decide whether to go this way.
+Status: accepted on 2026-10-13. The owner chose the runner (approach B in section 4). Nothing is built yet; milestone 0 is next.
 
 ## 1. The decision
 
@@ -193,7 +193,12 @@ Objectives are passed to the slides pipeline as source identifiers. Its existing
 
 ### 5.8 The page
 
-- **Trainings:** what exists, what each is waiting for, what is running.
+- **Status:** everything at once, on one screen that keeps itself up to date.
+  - Every run: its stage, what it is doing or waiting for, and how long it has been there.
+  - What needs a person, first: gates to decide and questions to answer.
+  - The workers running now, and anything that failed, with the reason.
+  - What each run has cost so far.
+  - Whether this computer is ready: Claude Code and Codex installed and signed in, Node and the two harness skills present, Google access working.
 - **A run:** stages and steps, what each worker is doing now, what it cost.
 - **A gate:** the review, the artifact, the comparison, the choices.
 - **Start:** the intake form, the agent to use, the limits.
@@ -241,8 +246,8 @@ Each ends with something that can be judged.
 | | Milestone | Proves | Size |
 | --- | --- | --- | --- |
 | 0 | **Spike.** One research question and one drafting job, run on both agents in a locked staging folder, handing back through worker tools | That both agents can be confined, isolated from local setup and given the same tools; whether unattended research is as good as the interactive kind | Small |
-| 1 | **Approval on the page.** The desk decides gates; the helper refuses `approve` elsewhere | Goal 1, with today's skills | Small |
-| 2 | **Runner, training through the blueprint.** Core moved; intake form; research plan; the research pipeline; gates 1 to 3 | Goals 1 to 3 on the hardest stage | Large |
+| 1 | **Approval and status on the page.** The desk decides gates and gains the status screen, for trainings run by today's skills; the helper refuses `approve` elsewhere | Goal 1, with today's skills | Small |
+| 2 | **Runner, training through the blueprint.** Core moved; intake form; research plan; the research pipeline; gates 1 to 3; live worker activity and cost on the status screen | Goals 1 to 3 on the hardest stage | Large |
 | 3 | **The rest of training.** Document, brief, scenarios, Yoodli, package, Google Docs, hub | A whole training without a chat | Medium |
 | 4 | **Slides.** The deck pipeline, with slides shown at the gate | The last delegated stage | Large |
 | 5 | **Team.** Installer, several runs at once, notifications | Goal 4 | Medium |
@@ -259,14 +264,13 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 - **Size.** This is a product, not a script. My estimate, not a measurement: milestones 2 and 4 are each about as large as everything built for Training Studio so far.
 - **What is given up.** Improvements that arrive in the chat harnesses stop being free; the runner has to adopt them.
 
-## 9. What is needed to proceed
+## 9. Decisions
 
-1. **A choice:** A only, B as laid out, or C.
-2. **If B, confirmation of three assumptions:**
-   - It runs locally for each person; it is not hosted.
-   - It is a new repository, in Python.
-   - Milestone 0 comes first, and its result can end the project.
-
-### Decided
-
+- **Approach (2026-10-13, by the owner).** The runner, approach B, with a status screen on the page.
 - **Sign-in and cost (2026-10-13, by the owner).** The runner starts `claude -p` and `codex exec` under each person's own sign-in. It automates work that person already does by hand in those tools, one run at a time; it is not a service offered to others. No API key or vendor SDK is involved.
+
+### Assumed until the owner says otherwise
+
+- It runs locally for each person; it is not hosted.
+- It is a new repository, in Python, created at milestone 2. Milestones 0 and 1 do not need it.
+- Milestone 0 comes first, and its result can end the project.
