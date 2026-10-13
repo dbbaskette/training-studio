@@ -436,6 +436,9 @@ class Engine:
             workspace.checkpoint(root, stage='document', next_step=pipeline.LATER)
             self._commit(root, 'every blueprint is approved; the later stages are not '
                          'automated yet')
+        # No decision follows this one, so nothing else would ever share it.
+        if self.space().share == gitstate.SHARE[0]:
+            self.share_soon()
 
     def _gate(self, root: Path, step: pipeline.Step) -> None:
         """Put a checked draft to the person, through the core, and wait."""

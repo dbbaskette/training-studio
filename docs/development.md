@@ -26,6 +26,7 @@ skills/training-studio/
     computer.py             the check of this computer that the status screen asks for
     desk/                   the page: index.html, app.js, markdown.js and style.css
     validate_package.py     package and disclosure checks
+runner/                     the runner: see its own section below
 bootstrap/training-studio/  the small entry an installed copy uses
 guidance/manifest.json      which script version the guidance needs
 installer/                  install.sh, install.py and a double-click launcher
@@ -82,6 +83,7 @@ Drop `--dry-run` to run it. The clone is deleted afterwards; its logs are kept.
 | `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
 | `tests/test_desk.py` | The page: what it reads and records, everything it refuses, the command, the check of this computer with its commands stubbed, and the page's scripts and colours |
 | `tests/test_hub.py` | The team hub, against bare git repositories in temporary directories |
+| `tests/test_runner_*.py` | The runner: workers with a scripted agent, the worker tools against a pretend web, the workspace against bare git repositories, research against a stand-in for harness-research, the pipelines, the engine and its server |
 
 The page's scripts are tested in a document that has no HTML parser, so a script that wrote markup would fail. That checks what the scripts build, name and send. It does not replace looking at the page in a browser.
 
@@ -125,6 +127,32 @@ python3 skills/training-studio/scripts/validate_package.py --measure
 ```
 
 Guidance names no harness-specific tools, so it runs on Claude Code and Codex alike.
+
+## The runner
+
+`runner/` is a program beside the skill, not part of it. It imports the helper's own modules and adds nothing to them except that the page's server can be given more addresses to answer. [The runner](runner.md) says what it does for a person; this is how it is put together.
+
+```
+runner/
+  studio.py                 the command line: serve and status
+  page.py                   the page's server, with the runner behind it
+  setup.py, settings.py     this computer's workspace, agent and limits
+  engine.py                 walks each training, hands out jobs, stops at gates
+  pipeline.py               the pipelines as data, and where a training is in them
+  agents.py                 starts Claude Code or Codex as a confined worker for one job
+  worker_tools.py           the only tools a worker has, and the checks on what it hands back
+  gitstate.py               the workspace: one folder in a git repository
+  research.py               the harness-research command line, called from Python
+  briefs/                   what a worker is told for each kind of job
+```
+
+Three rules hold it together.
+
+- **The next step is never remembered.** `pipeline.survey` works it out from the training's files each time, so a runner that is started again resumes every training. The run record holds only what the files cannot say.
+- **A worker never holds the keys.** It gets an empty folder outside the workspace and the runner's own tools, and nothing else. Only what those tools accepted is kept, and it is saved through the core, which is the only thing that can approve, and only when the page says a person did.
+- **Every rule about who may ask stays in the desk.** `runner/page.py` adds addresses to the page's server and never loosens one of its rules.
+
+No test starts a real agent or the real harness-research. Both are replaceable: `agents.Scripted` and `research.StandIn`. A change to the engine or the pipelines is finished with one real training, through the page, on each agent it claims to support.
 
 ## What is not yet verified
 

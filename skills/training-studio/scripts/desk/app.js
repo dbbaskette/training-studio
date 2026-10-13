@@ -127,6 +127,10 @@ const STEERED = {
 const AGENTS = ['claude', 'codex'];
 const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
 const SHARE = ['each-decision', 'when-asked'];
+// What the folder and the workspace are called become names of folders, so they are plain.
+const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const PLAIN_SAYS = 'Use letters, digits, dots, hyphens and underscores, with no spaces, '
+  + 'starting with a letter or a digit: field-training, for example.';
 const SHARE_SAYS = [
   'After each decision: your team sees the drafts, your answers and each review as soon as '
     + 'you decide a stage, finished or not.',
@@ -722,7 +726,8 @@ function noteSheet(kind) {
   field.maxLength = 10000;
   field.dataset.key = 'note';
   field.setAttribute('aria-describedby', 'note-hint sheet-problem');
-  const hint = make('p', 'quiet', spec.hint);
+  const hint = make('p', 'quiet', runOf(view.path) ? spec.hint.replace('Your assistant makes',
+    'Training Studio makes') : spec.hint);
   hint.id = 'note-hint';
   const problem = problemLine();
   const submit = make('button', 'button shine button-filled', spec.send);
@@ -1772,7 +1777,9 @@ function paintTraining(fresh) {
     reasonsCard('Left out or limited', training.view.limitations, 'Nothing was left out.'),
     reasonsCard('Warnings', training.view.warnings, 'No warnings.'),
     practiceCard(training), researchCard(training.status), guidanceCard(training.status),
-    decisionsCard(training), folderCard(training)], fresh);
+    decisionsCard(training),
+    // One driver for a training: while the page runs it, nobody is sent to an assistant.
+    training.run && training.run.state !== 'done' ? null : folderCard(training)], fresh);
 }
 
 async function drawTraining(fresh) {
@@ -2274,7 +2281,8 @@ function placeCard(form) {
     field('setup-branch', 'The branch', form, 'branch', { changed: again,
       typed: touch('branch') }),
     field('setup-name', 'A name for this workspace', form, 'name', { typed: touch('name'),
-      hint: 'What your team calls this collection of trainings.' }));
+      hint: 'What your team calls this collection of trainings: a short name with no '
+        + 'spaces, such as field-training.' }));
   const checks = make('div', 'checks');
   checks.id = 'setup-checks';
   checks.setAttribute('role', 'status');
@@ -2404,8 +2412,15 @@ async function saveSetup(pressed) {
     ['branch', 'Say which branch.'], ['name', 'Give it a name.']]) {
     need('setup-' + name, form[name].trim(), text);
   }
+  // What the repository already says is taken as it is. What was typed here has to be plain.
+  for (const name of form.existing ? [] : ['folder', 'name']) {
+    const id = 'setup-' + name;
+    if (missing.includes(id) || PLAIN_NAME.test(form[name].trim())) continue;
+    refuse(id, PLAIN_SAYS);
+    missing.push(id);
+  }
   if (missing.length) {
-    done('Something above is missing. Nothing was saved.');
+    done('Something above is missing or cannot be used. Nothing was saved.');
     byId(missing[0]).focus();
     return;
   }
@@ -2682,7 +2697,8 @@ function runIntro(run, training, promised) {
   if (run.state === 'working') {
     add(node, make('p', 'quiet', 'Nothing is needed from you right now. It carries on by '
       + 'itself, and this page tells you when it needs you.'
-      + (next ? ' Next it asks for your decision on ' + lower(next.label) + '.' : '')));
+      + (next ? ' Next it asks for your decision on '
+        + lower(next.label).replace(/^your review of /, '') + '.' : '')));
   } else if (run.state === 'paused') {
     add(node, make('p', 'quiet', 'Nothing more is started until you resume it. Everything '
       + 'made so far is kept.'));
@@ -2721,9 +2737,11 @@ function questionPart(run, title) {
   return add(node, questionBox(view.path, title, run.question, 'filled', 'answer-run'));
 }
 
-function gatePart(training, waiting) {
-  return callout('yours', make('p', '', training.sentence || sentenceOf(waiting.label)),
-    waiting.question ? make('p', 'quiet', asker(training.path) + waiting.question) : null);
+function gatePart(training, waiting, said) {
+  const sentence = training.sentence || sentenceOf(waiting.label);
+  return callout('yours', sentence === said ? null : make('p', '', sentence),
+    waiting.question ? make('p', sentence === said ? '' : 'quiet',
+      asker(training.path) + waiting.question) : null);
 }
 
 function sentenceOf(label) {
@@ -2827,11 +2845,15 @@ function costCard(run) {
   const agent = AGENT_NAMES[run.agent] || run.agent || 'an agent';
   add(node, make('p', 'cost', given(spent.dollars) ? money(spent.dollars) : 'Not reported'));
   const says = [];
-  if (!given(spent.dollars)) says.push('This agent does not say what it spends.');
-  else says.push('So far.');
+  const silent = !given(spent.dollars) && given(spent.tokens);
+  if (given(spent.dollars)) says.push('So far.');
+  else if (silent) says.push(agent + ' says how many tokens it uses, not what they cost.');
+  else says.push('Nothing has been reported yet. An agent says what it used as each step ends.');
   if (given(spent.tokens)) says.push(Number(spent.tokens).toLocaleString() + ' tokens used.');
   if (given(limits.training_dollars)) {
-    says.push('It stops and asks you at ' + money(limits.training_dollars) + '.');
+    says.push(silent ? 'So the limit of ' + money(limits.training_dollars)
+      + ' cannot stop it: watch the steps instead.'
+      : 'It stops and asks you at ' + money(limits.training_dollars) + '.');
   }
   return add(node, make('p', 'quiet', says.join(' ')),
     make('p', 'quiet', 'Drafted by ' + agent + (run.model ? ', with the model ' + run.model
@@ -2911,7 +2933,7 @@ function paintRun(fresh) {
       : null,
     run.question ? ['question', [run.question, title], () => questionPart(run, title)] : null,
     waiting && !run.question ? ['gate', [waiting, training.sentence],
-      () => gatePart(training, waiting)] : null,
+      () => gatePart(training, waiting, run.sentence)] : null,
     ['steps', list(run.steps).map((step) => [step.id, step.label, step.kind, step.status,
       step.attempts > 1, step.error]), () => stepsCard(run)],
     list(run.workers).length ? ['workers', run.workers, () => workersCard(run)] : null,

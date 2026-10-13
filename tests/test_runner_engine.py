@@ -963,6 +963,15 @@ class SharingTests(StudioCase):
                          'Rolling restarts: ask for a review of the research report')
         self.assertEqual(self.engine.shared(), {'shared': True, 'notice': None})
 
+    def test_the_last_thing_the_runner_does_is_shared_without_another_decision(self):
+        root = self.start()
+        for artifact in ('research-plan', 'research', 'blueprint'):
+            self.decide(root, artifact)
+        self.assertEqual(self.state(root), 'done')
+        self.assertEqual(self.shared()[0], 'Rolling restarts: every blueprint is approved; '
+                         'the later stages are not automated yet')
+        self.assertEqual(self.engine.shared(), {'shared': True, 'notice': None})
+
     def test_a_repository_that_cannot_be_reached_never_holds_a_run_up(self):
         root = self.start()
         self.remote.rename(self.base / 'moved-away.git')

@@ -137,6 +137,8 @@ class RunnerPage(desk.Page):
             coming = HALTED
         elif state == 'working':
             coming = f'{coming} {CLOSE}'
+        elif state == 'done':
+            coming = pipeline.LATER  # "Approved." has already said what was approved
         reply['said'] = f'{desk.SAID[decision]} {coming}'
         reply['next'] = desk.next_up(self.trainings())
         return reply

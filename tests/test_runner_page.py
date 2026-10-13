@@ -842,6 +842,14 @@ class DecideTests(PageCase):
         return self.post('decide', {'path': path, 'artifact': name, 'decision': 'approve',
                                     'seen': workspace.sha256_file(file)}, expect)
 
+    def test_the_last_approval_says_what_is_left_and_says_approved_once(self):
+        path = self.started()
+        for name in ('research-plan', 'research'):
+            self.approve(path, name)
+        said = self.approve(path, 'blueprint')
+        self.assertEqual(said['said'], f'Approved. {pipeline.LATER}')
+        self.assertEqual(self.get('run', path=path)['state'], 'done')
+
     def test_a_decision_made_through_the_desks_own_address_wakes_the_run(self):
         path = self.started()
         gate = self.get('gate', path=path, artifact='research-plan')
