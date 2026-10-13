@@ -347,6 +347,7 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 - **Local, with state in git (2026-10-13, by the owner).** It runs on each person's computer and is not hosted. A git repository manages state, with a commit at every step and gate.
 - **Trainings are stored in the team workspace (2026-10-13, by the owner).** One repository per team holds every training.
 - **The workspace is a folder in a repository the team already uses for other work (2026-10-13, by the owner),** not a repository of its own, and a set-up screen configures it when the runner is first started.
+- **Each tool sharing the repository has its own `hub.json` (2026-10-13, by the owner),** pointing to the repository and at that tool's folder. Training Studio's sits in its own folder and is filled in by the set-up screen. It never writes another tool's.
 
 ### Assumed until the owner says otherwise
 
