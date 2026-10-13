@@ -292,9 +292,9 @@ Staleness already works and is unchanged: an edited file makes what was built fr
 
 ### 5.11 Where the code lives
 
-- **A new repository** for the runner, the core, the adapters, the page and the pipeline definitions.
+- **In the Training Studio repository, under `runner/`.** An earlier version of this design assumed a new repository. The page and the core both live in this one, and a second repository would have meant two copies of each. Decided on 2026-10-13 when milestone 2 was specified; a split can follow if it is wanted.
 - **Python, standard library only**, because the core is already Python and both agents are started as command lines. No vendor SDK is needed.
-- **The two harness skills stay where they are** and are called at pinned versions. Merging them into the new repository is a later choice, not a precondition.
+- **The two harness skills stay where they are** and are called at pinned versions. Merging them into this repository is a later choice, not a precondition.
 - **Training Studio's helper** shrinks to a front end over the shared core.
 
 ## 6. Changes the existing skills need
@@ -351,5 +351,5 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 
 - Today's team hub folds into the workspace: a published revision is a tag, and shared scenarios and audiences are folders in it.
 - Nothing is pushed without the person saying so, unless a workspace is set to push after each gate.
-- The runner itself is a new repository, in Python, created at milestone 2. Milestones 0 and 1 do not need it.
+- The runner is written in Python, standard library only.
 - Milestones 1 and 2 are built on Claude first, behind the adapter interface, with the Codex adapter following in milestone 2 using the mode milestone 0 arrived at.
