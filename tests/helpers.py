@@ -10,6 +10,15 @@ from unittest import mock
 _DATA = tempfile.TemporaryDirectory()
 os.environ['TRAINING_STUDIO_DATA'] = _DATA.name
 
+# After a push, a fetch or a commit, git starts maintenance in the background. It can still be
+# writing when a test's temporary directory is removed, which fails the removal. Every git a
+# test starts, on either end of a push, reads these.
+QUIET_GIT = {'maintenance.auto': 'false', 'gc.auto': '0', 'receive.autogc': 'false'}
+for _index, (_key, _value) in enumerate(QUIET_GIT.items()):
+    os.environ[f'GIT_CONFIG_KEY_{_index}'] = _key
+    os.environ[f'GIT_CONFIG_VALUE_{_index}'] = _value
+os.environ['GIT_CONFIG_COUNT'] = str(len(QUIET_GIT))
+
 REPO = Path(__file__).resolve().parent.parent
 SKILL = REPO / 'skills' / 'training-studio'
 SCRIPTS = SKILL / 'scripts'

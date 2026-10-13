@@ -41,7 +41,9 @@ Save with `training.py save document --built` the first time and `--from <file>`
 On approval:
 
 1. `training.py approve document`.
-2. Export it: `pandoc document.md -o document.docx` if `pandoc` is on the path, otherwise the harness's own document capability. Then `training.py export document`. If neither works: `training.py export document --unavailable "<why>"`. Tell the user which happened.
+2. Make the copies `training.py status` asks for, and tell the user what happened. Often there are none.
+   - `google_docs` lists `document`: `training.py google push document`. If it refuses, or to use a connector, read the google reference.
+   - `exports` lists `document`: `pandoc document.md -o document.docx` if `pandoc` is on the path, otherwise the harness's own document capability. Then `training.py export document`, or `training.py export document --unavailable "<why>"`.
 3. `training.py checkpoint --no-question --stage brief --next "Write the brief"`.
 
-Export again after any later change to `document.md`. The export is a copy; the markdown is the source.
+Make them again after any later change to `document.md`. A copy is a copy; the markdown is the source.

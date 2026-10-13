@@ -48,6 +48,7 @@ SHAPE = {'schema': int, 'id': str, 'title': str, 'levels': list, 'sizing': dict,
          'settings': dict, 'unavailable': dict, 'pins': dict, 'artifacts': dict,
          'exports': dict, 'decisions': list, 'events': list}
 SETTINGS = ('deck_target', 'brand', 'brief_kind', 'stages')
+COPIES = ('google', 'word')
 
 
 class WorkspaceError(Exception):
@@ -109,6 +110,10 @@ def load(root: Path) -> dict:
         if key not in session['settings']:
             raise WorkspaceError(f'The session record has no usable "settings.{key}"; '
                                  'refusing to change it.')
+    # A training started before copies were a choice asked for none.
+    if not isinstance(session['settings'].setdefault('copies', []), list):
+        raise WorkspaceError('The session record has no usable "settings.copies"; '
+                             'refusing to change it.')
     return session
 
 
@@ -188,16 +193,25 @@ def check_levels(levels) -> list[str]:
     return chosen
 
 
+def check_copies(copies) -> list[str]:
+    """The kinds of copy to keep of each document and brief. None is a valid answer."""
+    chosen = sorted(set(copies or ()))
+    if any(kind not in COPIES for kind in chosen):
+        raise WorkspaceError('Copies are any of: ' + ', '.join(COPIES) + '; or none.')
+    return chosen
+
+
 def prefix(level: str | None) -> str:
     return '' if level is None else f'{level}/'
 
 
 def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
          deck_target: str | None = None, brand: str | None = None,
-         yoodli: bool = False) -> dict:
+         yoodli: bool = False, copies=()) -> dict:
     if not title.strip():
         raise WorkspaceError('A training needs a title.')
     levels = check_levels(levels)
+    copies = check_copies(copies)
     check_choice(brief_kind, BRIEF_KINDS, 'The brief kind')
     check_choice(deck_target, DECK_TARGETS, 'The deck target')
     if root == SKILL_DIR or root in SKILL_DIR.parents:
@@ -222,6 +236,7 @@ def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
         'next_step': 'Complete intake',
         'pending_question': None,
         'settings': {'deck_target': deck_target, 'brand': brand, 'brief_kind': brief_kind,
+                     'copies': copies,
                      'stages': [stage for stage in SKIPPABLE
                                 if stage not in OPTIONAL or (stage == 'yoodli' and yoodli)]},
         'unavailable': {},
@@ -532,11 +547,23 @@ def exportable(name: str) -> bool:
     return base in ('document', 'brief') or base.startswith('yoodli:')
 
 
+def export_wanted(session: dict, name: str) -> bool:
+    """Whether an artifact needs a Word copy: the user asked for them, or Yoodli takes it
+    as an upload."""
+    base = split(name)[0]
+    settings = session['settings']
+    if base == 'document':
+        return 'word' in settings['copies']
+    if base == 'brief':
+        return 'word' in settings['copies'] or 'yoodli' in settings['stages']
+    return base.startswith('yoodli:')
+
+
 def export_states(root: Path, session: dict) -> dict[str, str]:
-    """Whether each export is current, outdated, missing or unavailable."""
+    """Whether each wanted export is current, outdated, missing or unavailable."""
     states = {}
     for name in artifact_names(root, session):
-        if not exportable(name):
+        if not export_wanted(session, name):
             continue
         made = session['exports'].get(name)
         if made is None:
@@ -666,6 +693,11 @@ def export(root: Path, name: str, file: str | None = None,
     if not exportable(name):
         raise WorkspaceError(f'{name} is not exported; only the document, the brief and '
                              'Yoodli scenarios are.')
+    if not export_wanted(session, name):
+        raise WorkspaceError(
+            f'Word copies are off for this training, so no export of {name} is kept. To '
+            'turn them on: checkpoint --copies '
+            + ' '.join(sorted({*session['settings']['copies'], 'word'})) + '.')
     if unavailable:
         made = {'unavailable': unavailable, 'at': now()}
     else:
@@ -727,7 +759,7 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
                question: str | None = None, clear_question: bool = False,
                deck_target: str | None = None, brand: str | None = None,
                brief_kind: str | None = None, level: str | None = None,
-               levels=None) -> dict:
+               levels=None, copies=None) -> dict:
     """Record where the run is and change settings."""
     session = load(root)
     check_choice(stage, STAGES, 'The stage')
@@ -762,6 +794,8 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
         session['settings']['brand'] = brand or None
     if brief_kind is not None:
         session['settings']['brief_kind'] = brief_kind
+    if copies is not None:
+        session['settings']['copies'] = check_copies(copies)
     log(session, 'checkpoint', stage=session['stage'])
     store(root, session)
     return {'stage': session['stage'], 'level': session.get('level'),

@@ -356,6 +356,12 @@ function tableCell(tag, role, label, child) {
   return add(node, child);
 }
 
+function copyState(kind, state) {
+  const node = make('span', 'export', kind + ': ' + state);
+  node.dataset.state = state;
+  return node;
+}
+
 function filesTable(training, caption, names) {
   const status = training.status;
   const table = make('table', 'files');
@@ -363,7 +369,7 @@ function filesTable(training, caption, names) {
   if (caption) add(table, make('caption', 'label', caption));
   const head = make('tr');
   head.setAttribute('role', 'row');
-  for (const title of ['Artifact', 'Status', 'File', 'Export']) {
+  for (const title of ['Artifact', 'Status', 'File', 'Copies']) {
     const heading = make('th', 'label', title);
     heading.scope = 'col';
     heading.setAttribute('role', 'columnheader');
@@ -377,13 +383,15 @@ function filesTable(training, caption, names) {
     const file = status.files[name];
     const named = tableCell('th', 'rowheader', '', make('span', 'artifact', name.split('@')[0]));
     named.scope = 'row';
-    const made = status.exports[name];
+    const word = status.exports[name];
+    const doc = (status.google_docs || {})[name];
     add(row, named,
       tableCell('td', 'cell', 'Status', statusWord(state)),
       tableCell('td', 'cell', 'File', fileControl(training, name, file, state)),
-      tableCell('td', 'cell', 'Export',
-        made ? make('span', 'export', made) : null));
-    row.lastChild.dataset.export = made || 'none';
+      add(tableCell('td', 'cell', 'Copies'),
+        doc ? copyState('Google', doc) : null,
+        word ? copyState('Word', word) : null));
+    row.lastChild.dataset.export = word || doc ? 'kept' : 'none';
     body.append(row);
   }
   return add(table, add(make('thead'), head), body);

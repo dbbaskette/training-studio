@@ -34,7 +34,7 @@ Read the one file for the step in hand, once per session, and open only the arti
 | Also | Read |
 | --- | --- |
 | A short command: status, check, redo, skip | [short-commands](references/short-commands.md) |
-| Staleness, history, exports, restoring | [workspace](references/workspace.md) |
+| Staleness, history, copies, restoring | [workspace](references/workspace.md) |
 | Before a public search, upload or share | [privacy](references/privacy.md) |
 | Google Docs for the document or brief | [google](references/google.md) |
 | Browsing trainings in a browser | [desk](references/desk.md) |

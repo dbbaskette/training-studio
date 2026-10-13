@@ -366,6 +366,26 @@ def status(root: Path, transport: Transport | None = None) -> dict:
     return {'docs': docs, 'offline': transport is None}
 
 
+def copy_states(root: Path, session: dict) -> dict[str, str]:
+    """For a training that keeps Google Docs: whether each document and brief has a Doc,
+    and whether the file has changed since the two last agreed. Nothing here asks Google."""
+    if 'google' not in session['settings']['copies']:
+        return {}
+    docs = read_links(root)['docs']
+    states = {}
+    for name in workspace.artifact_names(root, session):
+        if workspace.split(name)[0] not in SYNCED:
+            continue
+        entry = docs.get(name)
+        if entry is None:
+            states[name] = 'missing'
+            continue
+        file = workspace.artifact(root, session, name)['file']
+        same = workspace.sha256_file(root / file) == entry.get('local_sha256')
+        states[name] = 'current' if same else 'outdated'
+    return states
+
+
 def unlink(root: Path, name: str) -> dict:
     """Forget the link. The Doc is left exactly as it is."""
     workspace.load(root)

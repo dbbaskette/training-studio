@@ -16,7 +16,7 @@ class PlainCase(TrainingCase):
 
     def setUp(self):
         super().setUp()
-        workspace.init(self.root, 'Topic', yoodli=True)
+        workspace.init(self.root, 'Topic', yoodli=True, copies=['word'])
 
 
 class LevelCase(TrainingCase):
@@ -24,7 +24,7 @@ class LevelCase(TrainingCase):
 
     def setUp(self):
         super().setUp()
-        workspace.init(self.root, 'Topic', levels=['301', '101'], yoodli=True)
+        workspace.init(self.root, 'Topic', levels=['301', '101'], yoodli=True, copies=['word'])
 
     def through(self, last: str, *levels: str) -> None:
         """Approve the shared artifacts, then each level's chain up to `last`."""
@@ -658,7 +658,7 @@ class OptionalYoodliTests(TrainingCase):
         state = self.state()
         self.assertEqual(state['scenario:main'], 'draft')
         self.assertFalse(any(name.startswith('yoodli:') for name in state))
-        self.assertEqual(sorted(workspace.status(self.root)['exports']), ['brief', 'document'])
+        self.assertEqual(workspace.status(self.root)['exports'], {})
 
     def test_row_59_turning_yoodli_on_lists_its_artifacts(self):
         outcome = workspace.skip(self.root, 'yoodli', clear=True)
@@ -675,6 +675,77 @@ class OptionalYoodliTests(TrainingCase):
         other.mkdir()
         session = workspace.init(other, 'Topic', yoodli=True)
         self.assertEqual(session['settings']['stages'][-1], 'yoodli')
+
+
+class CopiesTests(TrainingCase):
+    """Copies of the document and the brief are kept only when asked for (matrix rows 64
+    to 66 and 69)."""
+
+    def exports(self) -> dict:
+        return workspace.status(self.root)['exports']
+
+    def test_row_64_a_training_keeps_no_copies_unless_asked(self):
+        session = workspace.init(self.root, 'Topic')
+        self.assertEqual(session['settings']['copies'], [])
+        self.approved(*CHAIN)
+        self.assertEqual(self.exports(), {})
+
+    def test_init_records_the_copies_asked_for(self):
+        session = workspace.init(self.root, 'Topic', copies=['word', 'google', 'word'])
+        self.assertEqual(session['settings']['copies'], ['google', 'word'])
+        self.assertEqual(self.exports(), {'brief': 'missing', 'document': 'missing'})
+
+    def test_an_unknown_kind_of_copy_is_refused(self):
+        with self.assertRaisesRegex(WorkspaceError, 'google, word; or none'):
+            workspace.init(self.root, 'Topic', copies=['pdf'])
+        workspace.init(self.root, 'Topic')
+        with self.assertRaisesRegex(WorkspaceError, 'google, word; or none'):
+            workspace.checkpoint(self.root, copies=['pdf'])
+
+    def test_row_65_an_export_is_refused_while_word_copies_are_off(self):
+        workspace.init(self.root, 'Topic', copies=['google'])
+        self.approved(*CHAIN)
+        self.write('document.docx', 'exported v1')
+        with self.assertRaisesRegex(WorkspaceError, 'checkpoint --copies google word\\.'):
+            workspace.export(self.root, 'document')
+        self.assertEqual(workspace.load(self.root)['exports'], {})
+
+    def test_row_66_yoodli_takes_the_brief_as_a_file_whatever_the_copies(self):
+        workspace.init(self.root, 'Topic', yoodli=True)
+        self.write('scenario.md', '# Scenario: mine\n')
+        self.assertEqual(self.exports(), {'brief': 'missing', 'yoodli:main': 'missing'})
+        self.approved(*CHAIN, 'brief')
+        self.write('product-brief.docx', 'exported v1')
+        workspace.export(self.root, 'brief')
+        self.assertEqual(self.exports()['brief'], 'current')
+
+    def test_row_69_copies_can_be_turned_on_and_off_without_staling_anything(self):
+        workspace.init(self.root, 'Topic')
+        self.approved(*CHAIN)
+        before = self.state()
+        outcome = workspace.checkpoint(self.root, copies=['word'])
+        self.assertEqual(outcome['settings']['copies'], ['word'])
+        self.assertEqual(self.exports(), {'brief': 'missing', 'document': 'missing'})
+        self.write('document.docx', 'exported v1')
+        workspace.export(self.root, 'document')
+        self.assertEqual(self.exports()['document'], 'current')
+        workspace.checkpoint(self.root, copies=[])
+        self.assertEqual(self.exports(), {})
+        self.assertEqual(self.state(), before)
+
+    def test_a_checkpoint_that_does_not_mention_copies_leaves_them_alone(self):
+        workspace.init(self.root, 'Topic', copies=['google'])
+        workspace.checkpoint(self.root, stage='blueprint')
+        self.assertEqual(workspace.load(self.root)['settings']['copies'], ['google'])
+
+    def test_a_training_started_before_copies_were_a_choice_keeps_none(self):
+        workspace.init(self.root, 'Topic', copies=['word'])
+        path = workspace.session_path(self.root)
+        session = json.loads(path.read_text(encoding='utf-8'))
+        del session['settings']['copies']
+        path.write_text(json.dumps(session), encoding='utf-8')
+        self.assertEqual(workspace.load(self.root)['settings']['copies'], [])
+        self.assertEqual(self.exports(), {})
 
 
 class CheckpointTests(PlainCase):

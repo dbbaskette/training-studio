@@ -23,7 +23,7 @@ It tells you what it is about to do and asks before changing anything. When it f
 5. Links the skill into each assistant it finds:
    - Claude Code: `~/.claude/skills/training-studio`
    - Codex: `~/.agents/skills/training-studio`
-6. Reports what else Training Studio needs and whether it is there: the `harness-research` and `harness-slides` skills, Node 20 or newer for them, and `pandoc`, which is optional.
+6. Reports what else Training Studio needs and whether it is there: the `harness-research` and `harness-slides` skills, Node 20 or newer for them, and `pandoc`, which matters only if you ask for Word copies.
 
 It installs for every assistant whose skill folder already exists. To choose, add `--target claude`, `--target codex` or `--target both`; a named assistant's folder is created if it is missing.
 

@@ -1267,6 +1267,20 @@ class ContractTests(HubCase):
                                    'to publish. Approve at least one deliverable first.'})
 
 
+class BackgroundWorkTests(HubCase):
+    def test_git_starts_no_maintenance_behind_a_test(self):
+        """A detached maintenance run outlives the command that started it, and a test's
+        temporary directory is removed as soon as the test ends."""
+        self.founded()
+        for repo in (self.clone(), self.remote):
+            for key, value in helpers.QUIET_GIT.items():
+                self.assertEqual(git(repo, 'config', '--get', key), value, (repo.name, key))
+        traced = subprocess.run(['git', 'fetch', 'origin'], cwd=self.clone(), text=True,
+                                capture_output=True, env={**os.environ, 'GIT_TRACE': '1'})
+        self.assertEqual(traced.returncode, 0, traced.stderr)
+        self.assertNotIn('maintenance run', traced.stderr)
+
+
 class GuidanceTests(unittest.TestCase):
     def test_the_guidance_states_the_boundaries(self):
         text = (helpers.SKILL / 'references' / 'hub.md').read_text()

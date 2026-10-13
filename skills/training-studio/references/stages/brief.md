@@ -44,5 +44,5 @@ Save with `training.py save brief --built` the first time and `--from <file>` af
 On approval:
 
 1. `training.py approve brief`.
-2. Export it the way the document is exported, then `training.py export brief`, or `training.py export brief --unavailable "<why>"`. Scenarios name this export as the file to upload, so without it the Yoodli handoff is incomplete: tell the user.
+2. Make the copies `training.py status` asks for, as the workspace reference describes: a push if `google_docs` lists `brief`, a Word copy and `training.py export brief` if `exports` does. With Yoodli on, `exports` lists the brief whatever was chosen: Yoodli scenarios name it as the file to upload, so without it the Yoodli handoff is incomplete. Tell the user.
 3. `training.py checkpoint --no-question --stage deck --next "Hand the deck to harness-slides"`.

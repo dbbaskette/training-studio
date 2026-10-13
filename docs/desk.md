@@ -28,7 +28,7 @@ It prints one line with the link and runs until you press Ctrl-C. Add `--port 87
 
 **One training.** Choose a training to see:
 
-- its files, level by level, each with its status, its file name and whether its Word copy is current,
+- its files, level by level, each with its status, its file name and, where you keep a Google Doc or a Word copy of it, whether that copy is current,
 - what is blocking it,
 - any check that failed or could not run, and why,
 - its limitations: what was skipped, could not be produced, or was accepted as it was,

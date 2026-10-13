@@ -29,7 +29,7 @@ For each, present the scenario and its Yoodli file together as the gates referen
 - whether the brief's export is `current`, since it is the file the user uploads,
 - your judgment of whether the context and goals agree with the brief.
 
-On approval, for each: `training.py approve yoodli:<id>`. Export the Yoodli file as the document is exported and record it with `training.py export yoodli:<id>`, or `--unavailable "<why>"`.
+On approval, for each: `training.py approve yoodli:<id>`. Make a Word copy of the Yoodli file as the workspace reference describes and record it with `training.py export yoodli:<id>`, or `--unavailable "<why>"`.
 
 Then `training.py checkpoint --no-question --stage package --next "Write the index"`. With levels, use the checkpoint in the levels reference: another level may remain.
 

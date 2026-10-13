@@ -637,12 +637,14 @@ def practice_from_plan(parsed: dict, scenario_ids: set[str]) -> dict:
 def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dict],
               skipped: list[str], unavailable: dict[str, str],
               without_scenario: list[str], pending_question: str | None = None,
-              decisions: list[dict] | None = None, yoodli: bool = False) -> dict:
+              decisions: list[dict] | None = None, yoodli: bool = False,
+              docs: dict[str, str] | None = None) -> dict:
     """Whether the training is complete, what blocks it, and what it had to leave out.
 
     `artifacts` lists each artifact's name, stage and status. `without_scenario` names the
     levels (or '' for a plain training) that want scenarios and have no scenario file.
     `yoodli` says the optional Yoodli stage is wanted, which makes the brief's export an upload.
+    `exports` and `docs` hold only the Word copies and Google Docs this training keeps.
     """
     blocking = [f"{item['name']} is {item['status']}" for item in artifacts
                 if item['status'] not in ('approved', 'skipped', 'unavailable')]
@@ -675,4 +677,9 @@ def readiness(artifacts: list[dict], exports: dict[str, str], outcomes: list[dic
                                 'as the file to upload')
         else:
             limitations.append(f'{name} has no export')
+    for name, state in (docs or {}).items():
+        if state == 'outdated':
+            blocking.append(f'The Google Doc of {name} is behind its file')
+        elif state == 'missing' and name in approved:
+            limitations.append(f'{name} is not in a Google Doc')
     return {'ready': not blocking, 'blocking': blocking, 'limitations': limitations}

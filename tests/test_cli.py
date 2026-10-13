@@ -5,8 +5,10 @@ import json
 import subprocess
 import sys
 
+import gdocs
 import helpers
 from helpers import TrainingCase
+from test_google import FakeTransport
 import training
 
 CLI = helpers.SCRIPTS / 'training.py'
@@ -57,9 +59,9 @@ class Flow(TrainingCase):
         self.cli('save', artifact, '--built')
         self.cli('approve', artifact)
 
-    def research(self, *init_args, yoodli: bool = True) -> None:
+    def research(self, *init_args, yoodli: bool = True, copies=('word',)) -> None:
         self.cli('init', '--title', 'Rolling restarts', *init_args,
-                 *(['--yoodli'] if yoodli else []))
+                 *(['--yoodli'] if yoodli else []), *(['--copies', *copies] if copies else []))
         self.make('intake', 'intake.md', '# Intake\n\n## Topic\nRolling restarts\n')
         self.make('research-plan', '.training-studio/research-plan.json',
                   json.dumps(helpers.PLAN))
@@ -453,6 +455,77 @@ class OptionalYoodliTests(Flow):
         self.assertTrue(report['ready'])
         self.assertFalse(any('yoodli' in text.lower() for text in report['limitations']))
         self.assertTrue((self.root / 'yoodli' / 'main.md').is_file())
+
+
+class CopiesTests(Flow):
+    """Word copies and Google Docs are kept only when asked for (matrix rows 64, 67 and 68)."""
+
+    def built(self, *copies: str) -> None:
+        """Everything approved, Yoodli off, and no copy of anything made yet."""
+        self.research(yoodli=False, copies=copies)
+        for name, file in (('blueprint', 'blueprint.md'), ('document', 'document.md'),
+                           ('brief', 'product-brief.md')):
+            self.make(name, file, example(file))
+        self.deck()
+        self.scenario(yoodli=False)
+
+    def test_row_64_a_training_with_no_copies_is_ready_and_reports_none(self):
+        self.built()
+        report = self.check('--complete')
+        self.assertEqual((report['ready'], report['blocking'], report['limitations']),
+                         (True, [], []))
+        status = self.cli('status')
+        self.assertEqual((status['settings']['copies'], status['exports'],
+                          status['google_docs']), ([], {}, {}))
+
+    def test_an_export_is_refused_from_the_command_line_while_word_is_off(self):
+        self.built()
+        self.write('document.docx', 'exported')
+        refusal = self.cli('export', 'document', expect=2)
+        self.assertIn('checkpoint --copies', refusal['error'])
+
+    def test_copies_are_chosen_at_init_and_changed_at_a_checkpoint(self):
+        self.built('google', 'word')
+        self.assertEqual(self.cli('status')['settings']['copies'], ['google', 'word'])
+        self.assertEqual(self.cli('checkpoint', '--copies', 'word')['settings']['copies'],
+                         ['word'])
+        self.assertEqual(self.cli('checkpoint', '--copies')['settings']['copies'], [])
+        self.assertIn('invalid choice', self.cli('checkpoint', '--copies', 'pdf',
+                                                 expect=2)['error'])
+
+    def test_row_67_a_wanted_google_doc_that_is_not_made_is_a_limitation(self):
+        self.built('google')
+        self.assertEqual(self.cli('status')['google_docs'],
+                         {'brief': 'missing', 'document': 'missing'})
+        report = self.check('--complete')
+        self.assertTrue(report['ready'])
+        self.assertEqual(report['limitations'], ['document is not in a Google Doc',
+                                                 'brief is not in a Google Doc'])
+
+    def test_row_68_a_google_doc_behind_its_file_blocks(self):
+        self.built('google')
+        drive = FakeTransport()
+        for name in ('document', 'brief'):
+            gdocs.push(self.root, name, drive)
+        self.assertEqual(self.cli('status')['google_docs'],
+                         {'brief': 'current', 'document': 'current'})
+        self.assertEqual(self.check('--complete')['limitations'], [])
+        self.write('document.md', example('document.md') + '\nOne more line.\n')
+        self.cli('approve', 'document')
+        self.assertEqual(self.cli('status')['google_docs']['document'], 'outdated')
+        report = self.check('--complete', expect=1)
+        self.assertIn('The Google Doc of document is behind its file', report['blocking'])
+        gdocs.push(self.root, 'document', drive)
+        self.assertNotIn('The Google Doc of document is behind its file',
+                         self.check()['blocking'])
+
+    def test_a_linked_doc_is_not_tracked_unless_google_copies_were_asked_for(self):
+        self.built()
+        gdocs.push(self.root, 'document', FakeTransport())
+        self.write('document.md', example('document.md') + '\nOne more line.\n')
+        self.cli('approve', 'document')
+        self.assertEqual(self.cli('status')['google_docs'], {})
+        self.assertFalse(any('Google Doc' in text for text in self.check()['blocking']))
 
 
 class DryRunFindingTests(Flow):

@@ -296,8 +296,9 @@ def prerequisites(home: Path, harnesses: list[str]) -> dict:
                              f'Get it from {COMPANIONS[name]}')
     pandoc = bool(shutil.which('pandoc'))
     if not pandoc:
-        notes.append('pandoc was not found. Word copies will rely on your assistant, or be '
-                     'reported as unavailable. It is optional: https://pandoc.org')
+        notes.append('pandoc was not found. It matters only if you ask for Word copies, which '
+                     'will then rely on your assistant or be reported as unavailable: '
+                     'https://pandoc.org')
     return {'python': sys.version.split()[0], 'node': node, 'pandoc': pandoc,
             'companions': companions, 'notes': notes}
 
