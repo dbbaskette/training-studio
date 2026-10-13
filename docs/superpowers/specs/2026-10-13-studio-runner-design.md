@@ -20,7 +20,7 @@ These came from the owner.
 3. **Same behaviour everywhere.** One policy for files, network and shell, set by the runner, not by whichever harness is in use.
 4. **Team use.** A teammate can run it without installing the skills or learning how they work.
 5. **Either agent, one per run.** A run is started on Claude or on Codex and stays on it.
-6. **A local web page** is where reviews are read and gates are approved.
+6. **A local web page** is where reviews are read and gates are approved. It must be inviting, easy to use and easy to follow from one step to the next.
 
 Covered first: Training Studio, `harness-research` and `harness-slides`. Other pipelines, such as one for blog posts, follow the same pattern later.
 
@@ -194,15 +194,54 @@ Objectives are passed to the slides pipeline as source identifiers. Its existing
 
 ### 5.8 The page
 
-- **Status:** everything at once, on one screen that keeps itself up to date.
-  - Every run: its stage, what it is doing or waiting for, and how long it has been there.
-  - What needs a person, first: gates to decide and questions to answer.
-  - The workers running now, and anything that failed, with the reason.
-  - What each run has cost so far.
-  - Whether this computer is ready: Claude Code and Codex installed and signed in, Node and the two harness skills present, Google access working.
-- **A run:** stages and steps, what each worker is doing now, what it cost.
-- **A gate:** the review, the artifact, the comparison, the choices.
-- **Start:** the intake form, the agent to use, the limits.
+The page is the product. The people using it include teammates who have never seen the skills, so it has to be inviting, obvious and hard to get lost in. That is a requirement with tests, set out below, not a hope.
+
+**What it must be like**
+
+1. **What needs you comes first.** The home screen opens on the gates to decide and the questions to answer, above everything else. Someone who opens the page and does only the first thing on it is always doing the right thing.
+2. **Plain words.** No "artifact", "stale" or "lineage" on screen. A training is "waiting for your review", "working on its own", "stopped: it needs a decision" or "finished".
+3. **A gate is something to read.** The document is rendered as a document, with the review beside it: what was checked for you, and what is worth a look. What changed since last time is one click away.
+4. **Deciding takes one action.** Approve, or say what should change in your own words. Rebuild and skip are there, and out of the way.
+5. **You can leave.** After a decision the page says what happens next and that it can be closed. It tells you when you are needed again, through the browser's own notifications and a count in the tab title.
+6. **You always know where a training is.** One row of stages, the same everywhere: done, in progress, yours to review, not started.
+7. **No dead ends.** Every failure says what happened, what was kept, and offers one clear next step.
+8. **Nothing is final by accident.** An approval can be reopened. Because state is in git, reopening is safe.
+9. **Usable by everyone.** Works from the keyboard, readable by a screen reader, never relies on colour alone, comfortable in light and dark and at a narrow width.
+
+**The flow**
+
+```
+home  ->  new training  ->  the run  ->  a gate  ->  the next thing that needs you
+  ^                                         |
+  +-----------------------------------------+
+```
+
+- **Home.** What needs you; what is working on its own, with the stage it has reached; what is finished. One button starts a new training. A line at the foot says whether this computer is ready.
+- **New training.** Three short steps: the topic and who it is for; its shape, with a sensible default for every choice; the sources and the agent. Before it starts, it says how many times it will ask for you.
+- **The run.** The row of stages, what is happening now in a sentence, the files made so far, and what it has cost. Detail about what a worker did is there to open, not in the way.
+- **A gate.** The document, the review, the decision. After deciding, the page goes to the next thing that needs you, or back to home if nothing does.
+- **Status.** Everything at once, for when more than one training is running: every run and its stage, how long it has been there, the workers running now, anything that failed with the reason, cost, and whether the computer is ready (Claude Code and Codex signed in, Node and the two harness skills present, Google access working).
+- **Settings.** The workspace, the agent to use by default, limits, notifications.
+
+**States that are designed, not left over**
+
+| State | What the page shows |
+| --- | --- |
+| First time | A short checklist of what this computer needs, each item with how to fix it, then "Start your first training" |
+| Nothing yet | An invitation to start, not an empty table |
+| Working | What it is doing in a sentence, and what it will ask of you next |
+| Waiting for you | The decision, first on the home screen |
+| A step failed | What happened, what was kept, and one suggested action |
+| Not signed in, or offline | Which thing is missing and how to put it right; work already done stays readable |
+
+**How this is checked**
+
+- **A design pass before each screen is built:** a mockup, reviewed, then code. The first mockups of home and a gate were shown to the owner on 2026-10-13.
+- **A walk-through at milestones 1 and 2** with someone who has not seen it, given four tasks and no instructions: start a training, decide a gate, ask for a change, find the finished deck. What trips them is fixed before the milestone is called done.
+- **Three questions every screen must answer at a glance:** what is happening, what is needed from me, what happens next.
+- **Automated:** each screen is exercised from the keyboard and checked for contrast and labels in the test suite.
+
+**Safety**
 
 The desk is read-only today, answers on the local machine only, and requires a token. It gains write endpoints for decisions. Two rules come with that:
 
@@ -271,7 +310,7 @@ Each ends with something that can be judged.
 | | Milestone | Proves | Size |
 | --- | --- | --- | --- |
 | 0 | **Spike.** One research question and one drafting job, run on both agents in a locked staging folder, handing back through worker tools | That both agents can be confined, isolated from local setup and given the same tools; whether unattended research is as good as the interactive kind | Small |
-| 1 | **Approval and status on the page.** The desk decides gates and gains the status screen, for trainings run by today's skills; the helper refuses `approve` elsewhere | Goal 1, with today's skills | Small |
+| 1 | **Approval and status on the page.** The desk becomes the home, gate and status screens of section 5.8, for trainings run by today's skills; the helper refuses `approve` elsewhere. Ends with a walk-through by someone who has not seen it | Goal 1, with today's skills; whether the page is as easy as it must be | Medium |
 | 2 | **Runner, training through the blueprint.** Core moved; state committed to git at each step and gate; intake form; research plan; the research pipeline; gates 1 to 3; live worker activity and cost on the status screen | Goals 1 to 3 on the hardest stage | Large |
 | 3 | **The rest of training.** Document, brief, scenarios, Yoodli, package, Google Docs, hub | A whole training without a chat | Medium |
 | 4 | **Slides.** The deck pipeline, with slides shown at the gate | The last delegated stage | Large |
