@@ -1,5 +1,5 @@
 // The page: home, trainings, status, settings, one training, and a gate. With the runner
-// behind it there are three more: set-up, a new training, and a run.
+// behind it there are four more: set-up, a new training, a run, and a finished training's index.
 // It draws what the server says and sends back only what the person decides. Every value
 // from the server is placed as text, so nothing in a training's files or its record can
 // ever be read as markup. Documents are drawn by markdown.js, which keeps the same rule.
@@ -103,7 +103,7 @@ const NAV = [['go-home', 'home', 'home'], ['go-trainings', 'trainings', 'trainin
   ['go-status', 'status', 'status'], ['go-settings', 'settings', 'settings']];
 // The screen in the sidebar that each other screen belongs to.
 const PARENTS = { training: 'trainings', gate: 'trainings', run: 'trainings', new: 'trainings',
-  setup: 'settings' };
+  index: 'trainings', setup: 'settings' };
 
 // What the runner adds. A run and each of its steps say where they are in these words.
 const RUN_WORDS = {
@@ -142,6 +142,38 @@ const LEVELS = ['101', '201', '301', '401'];
 const DECKS = [['pptx', 'PowerPoint'], ['google', 'Google Slides'], [null, 'No deck']];
 const COPIES = [['google', 'Google Docs'], ['word', 'Word']];
 const STEPS = ['The topic and who it is for', 'Its shape', 'The sources, the agent and the limits'];
+// Where the research looks. What each answer means is said under the choice.
+const SOURCES = [['public-web', 'The public web'], ['supplied-only', 'Your documents only'],
+  ['both', 'Both']];
+const SOURCE_SAYS = [
+  'The public web: it searches for pages anyone can read, and keeps every page it quotes '
+    + 'with the training.',
+  'Your documents only: it reads the documents you give it and nothing else, and never '
+    + 'searches the web or opens a page. You add them right after starting, and they stay on '
+    + 'this computer.',
+  'Both: it reads your documents and researches the public web as well. You add the '
+    + 'documents right after starting, and they stay on this computer.',
+];
+// A training where the run has made everything it can, and the deck is all that is left.
+const DECK_LEFT = 'Everything but the slide deck is made: make the deck with your assistant, '
+  + 'or leave it out.';
+const SETTLED = ['done', 'left-out', 'unavailable'];
+// Who wrote a practice scenario. A person's own file is never rewritten for them.
+const WHOSE = {
+  you: 'This file is yours: you wrote it, and Training Studio does not rewrite it. If you ask '
+    + 'for changes, your own wording is laid out under the headings, and you are asked for '
+    + 'anything that is missing.',
+  runner: 'This file is Training Studio’s draft, written from the practice plan in the '
+    + 'blueprint.',
+};
+// A copy of a guide, a brief or a Yoodli scenario, and where it stands.
+const COPY_KINDS = { google: 'Google Doc', word: 'Word copy' };
+const COPY_STATES = {
+  made: ['done', 'Made'], 'out-of-date': ['late', 'Out of date'], 'not-made': ['off', 'Not made'],
+};
+const WEB_LINK = /^https?:\/\/\S+$/i;
+const KEPT_HERE = 'Your documents stay on this computer and are never shared with your team. '
+  + 'Passages quoted from them appear in the research report, which is shared.';
 
 const view = {
   token: '', screen: 'home', path: null, artifact: null,
@@ -153,6 +185,9 @@ const view = {
   runner: undefined, setup: null, form: null, draft: null, run: null, promised: null,
   asks: {}, answers: {}, agents: null, looking: false, unlooked: '', sharing: false,
   steered: '', barred: '',
+  // What a sheet opened from a run decides, what a gate is read beside, and what was said
+  // no to on a run: a document, the end of adding them, another try at the copies.
+  deciding: null, beside: null, unadded: '', undone: '', copying: false, uncopied: '',
 };
 // Each part of a screen that is drawn in parts, and what it was drawn from.
 const PARTS = new WeakMap();
@@ -182,6 +217,12 @@ function count(number, one, many) {
 
 function list(value) {
   return Array.isArray(value) ? value : [];
+}
+
+// Several things named in a row: "one, two and three".
+function series(items) {
+  return items.length < 2 ? items.join('')
+    : items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
 }
 
 function ago(then) {
@@ -339,7 +380,8 @@ function say(problem, text) {
 }
 
 // A labelled box to type in. What is typed is kept in `held[name]` as it is typed, so a
-// screen that is drawn again still has it.
+// screen that is drawn again still has it. With `picked` it is the browser's own file picker
+// instead: nothing of it is kept, and what is chosen is handed to `picked`.
 function field(id, label, held, name, about) {
   const spec = about || {};
   const title = make('label', 'field-label', label);
@@ -348,24 +390,36 @@ function field(id, label, held, name, about) {
     'input' + (spec.short ? ' input-short' : ''));
   input.id = id;
   if (spec.long) input.rows = 3;
-  else input.type = 'text';
-  input.value = held[name] || '';
-  input.maxLength = spec.long ? 4000 : 400;
-  input.autocomplete = 'off';
-  input.spellcheck = Boolean(spec.long);
+  else input.type = spec.picked ? 'file' : 'text';
+  if (spec.picked) {
+    input.multiple = true;
+    input.accept = spec.accept || '';
+    input.addEventListener('change', () => spec.picked(input));
+  } else {
+    input.value = held[name] || '';
+    input.maxLength = spec.long ? 4000 : 400;
+    input.autocomplete = 'off';
+    input.spellcheck = Boolean(spec.long);
+    input.addEventListener('input', () => {
+      held[name] = input.value;
+      // A box that is being put right no longer says it is wrong.
+      if (input.getAttribute('aria-invalid')) refuse(id, '');
+      if (spec.typed) spec.typed();
+    });
+  }
   if (spec.mode) input.inputMode = spec.mode;
   input.dataset.key = id;
   const hint = spec.hint ? make('p', 'quiet field-hint', spec.hint) : null;
   if (hint) hint.id = id + '-hint';
   input.setAttribute('aria-describedby', (hint ? id + '-hint ' : '') + id + '-problem');
-  input.addEventListener('input', () => {
-    held[name] = input.value;
-    // A box that is being put right no longer says it is wrong.
-    if (input.getAttribute('aria-invalid')) refuse(id, '');
-    if (spec.typed) spec.typed();
-  });
   if (spec.changed) input.addEventListener('change', spec.changed);
-  return add(make('div', 'field'), title, input, hint, alertLine(id + '-problem'));
+  const problem = alertLine(id + '-problem');
+  // Drawn again after it was refused, it still says why.
+  if (spec.refused) {
+    say(problem, spec.refused);
+    input.setAttribute('aria-invalid', 'true');
+  }
+  return add(make('div', 'field'), title, input, hint, problem);
 }
 
 // Refuse what is in a field, beside it, before anything is sent. Returns the field.
@@ -385,6 +439,22 @@ function choice(label, options, at, choose, key, hint) {
   }, key);
   return add(make('div', 'field'), make('p', 'field-label', label), control,
     hint ? make('p', 'quiet field-hint', hint) : null);
+}
+
+// A choice with what each of its answers means spelled out under it. The one that is chosen
+// is marked there too.
+function explained(label, options, says, at, choose, key) {
+  const meanings = make('ul', 'reasons meanings');
+  const mark = (chosen) => Array.from(meanings.children).forEach((item, index) => {
+    if (index === chosen) item.dataset.chosen = 'true';
+    else delete item.dataset.chosen;
+  });
+  for (const text of says) meanings.append(make('li', '', text));
+  mark(at);
+  return [choice(label, options, at, (index) => {
+    choose(index);
+    mark(index);
+  }, key), meanings];
 }
 
 // A capsule that is on or off. A tick says it is on, so it does not rest on colour.
@@ -535,7 +605,8 @@ function back() {
     window.history.back();
     return;
   }
-  const up = { gate: homeOf(view.path), new: 'home', setup: 'settings' };
+  const up = { gate: homeOf(view.path), index: homeOf(view.path), new: 'home',
+    setup: 'settings' };
   show(up[view.screen] || 'trainings', { path: view.path }, true);
 }
 
@@ -570,6 +641,12 @@ function open(next) {
   view.form = null;
   view.steered = '';
   view.barred = '';
+  view.deciding = null;
+  view.beside = null;
+  view.unadded = '';
+  view.undone = '';
+  view.copying = false;
+  view.uncopied = '';
   view.turn += 1;
   frame();
   const current = PARENTS[view.screen] || view.screen;
@@ -650,6 +727,7 @@ function draw(fresh) {
   if (view.screen === 'gate') return drawGate(fresh);
   if (view.screen === 'training') return drawTraining(fresh);
   if (view.screen === 'run') return drawRun(fresh);
+  if (view.screen === 'index') return drawIndex(fresh);
   if (view.screen === 'setup' && view.setup) return drawSetup(fresh);
   const titles = { home: 'Home', trainings: 'Trainings', status: 'Status', settings: 'Settings',
     setup: 'Set-up', new: 'New training' };
@@ -694,8 +772,10 @@ function closeSheet() {
   const opener = view.opener;
   view.sheet = '';
   view.after = null;
+  view.deciding = null;
   drawSheet();
   if (view.gate) paintGate(false);
+  else if (view.screen === 'run' && view.run) paintRun(false);
   if (!focusKey(opener)) byId('title').focus({ preventScroll: true });
 }
 
@@ -758,7 +838,8 @@ function afterSheet() {
   const next = done.next;
   const nodes = [sheetTitle('Done'), make('p', '', done.said)];
   // A training that runs on its own carries on from here, and its run is the place to watch.
-  const watch = runOf(view.path) ? capsule('Watch it carry on', '',
+  // Decided from the run itself, that is where the person already is.
+  const watch = runOf(view.path) && view.screen !== 'run' ? capsule('Watch it carry on', '',
     () => show('run', { path: view.path }), 'watch') : null;
   if (next) {
     nodes.push(make('p', 'quiet', 'Next: ' + next.title + '. ' + next.sentence));
@@ -778,7 +859,7 @@ function afterSheet() {
 
 function drawSheet() {
   const holder = byId('sheet');
-  const shown = view.after || (view.sheet && view.gate);
+  const shown = view.after || (view.sheet && (view.gate || view.deciding));
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
@@ -798,9 +879,10 @@ async function decide(decision, note, problem, pressed) {
   const turn = view.turn;
   view.busy = true;
   pressed.disabled = true;
-  const body = { path: view.path, artifact: view.artifact, decision };
+  // At a gate, what is decided is what is being read. A sheet opened from a run names it.
+  const body = { path: view.path, artifact: view.deciding || view.artifact, decision };
   if (note) body.note = note;
-  if (view.gate.sha256) body.seen = view.gate.sha256;
+  if (view.gate && view.gate.sha256) body.seen = view.gate.sha256;
   try {
     view.after = await send('decide', body);
   } catch (failure) {
@@ -813,11 +895,18 @@ async function decide(decision, note, problem, pressed) {
   view.busy = false;
   if (turn !== view.turn) return;
   view.sheet = '';
+  view.deciding = null;
   try {
-    // Draw the gate as it now stands, so nothing on it still says "waiting".
-    view.gate = await ask('gate', { path: view.path, artifact: view.artifact });
-    view.newer = null;
-    if (turn === view.turn) paintGate(false);
+    if (view.gate) {
+      // Draw the gate as it now stands, so nothing on it still says "waiting".
+      view.gate = await ask('gate', { path: view.path, artifact: view.artifact });
+      view.newer = null;
+      if (turn === view.turn) paintGate(false);
+    } else {
+      // Decided from a run, which is read again below and then shows what follows.
+      if (view.run) paintRun(false);
+      drawSheet();
+    }
   } catch (failure) {
     drawSheet();
   }
@@ -885,8 +974,9 @@ function working(training) {
 }
 
 // One sentence for a training in a list. A run says what it is doing now; a gate says what
-// is waiting.
+// is waiting. Where the deck is all that is left, that is the one thing said.
 function saysOf(training) {
+  if (deckLeft(training)) return DECK_LEFT;
   const atGate = training.state === 'needs-you' && (training.waiting || {}).artifact;
   return (training.run && !atGate && training.run.sentence) || training.sentence;
 }
@@ -918,7 +1008,8 @@ function quietRow(training, kind) {
     make('h3', 'row-title', training.title || 'Untitled'));
   if (kind === 'in-progress') add(text, beads(training.stages, true));
   // A run that is not working says so: paused, stopped, or finished as far as it goes here.
-  if (training.run && training.run.state !== 'working' && kind === 'in-progress') {
+  if (training.run && training.run.state !== 'working' && kind === 'in-progress'
+      && !deckLeft(training)) {
     add(text, state(...runWords(training.run)));
   }
   add(text, make('p', 'row-says', saysOf(training)));
@@ -1254,6 +1345,12 @@ function documentBody(shown, found) {
   return node;
 }
 
+// A file of a training as the server reads it out, in the shape a gate's document has.
+function asDocument(read) {
+  return { kind: read.binary ? 'file' : 'markdown', file: read.file, size: read.size,
+    text: read.text, truncated: read.truncated };
+}
+
 function comparison(changed) {
   const node = make('article', 'paper diff');
   node.tabIndex = 0;
@@ -1289,6 +1386,45 @@ function reading(found) {
       slide(control, index);
       holder.replaceChildren(panes[index]());
     }, 'pane'), holder);
+}
+
+// What a Yoodli scenario was laid out from, to read beside it. It is read once for a gate.
+async function readBeside(found, turn) {
+  const named = found.beside;
+  if (!named) {
+    view.beside = null;
+    return;
+  }
+  if (view.beside && view.beside.artifact === named.artifact) return;
+  let held;
+  try {
+    held = { artifact: named.artifact,
+      read: await ask('file', { path: found.path, artifact: named.artifact }) };
+  } catch (failure) {
+    held = { artifact: named.artifact, error: failure.message };
+  }
+  if (turn === view.turn) view.beside = held;
+}
+
+// It sits beside the document that is being decided, and never in its place.
+function besidePart(found) {
+  const named = found.beside;
+  const held = view.beside && view.beside.artifact === named.artifact ? view.beside : null;
+  const label = lower(named.label);
+  const node = make('section', 'beside');
+  node.setAttribute('aria-label', 'What it was laid out from');
+  add(node, make('h2', 'aside-title', 'Laid out from ' + label),
+    make('p', 'quiet', 'Here to compare with. What you are deciding is ' + lower(found.label)
+      + ', not this.'));
+  if (!held) return add(node, make('p', 'quiet', 'Reading it.'));
+  if (held.error) {
+    return add(node, callout('late', make('p', '', 'It could not be read. ' + held.error),
+      make('p', 'quiet', 'Nothing was changed, and what you are deciding is not affected.'),
+      add(make('div', 'bar'), button('Open it on its own', 'link', () => show('gate',
+        { path: found.path, artifact: named.artifact }), 'beside ' + named.artifact))));
+  }
+  return add(node, documentBody(asDocument(held.read),
+    { label: label.charAt(0).toUpperCase() + label.slice(1), path: found.path }));
 }
 
 function changesNote(changed) {
@@ -1375,7 +1511,8 @@ function lookNote(found) {
 function gateSignature(found) {
   return JSON.stringify([found.status, found.sha256, found.checked, found.out_of_date,
     found.review, found.asked, found.decisions, found.first, found.approval, found.stages,
-    found.waiting, found.question, found.changes.same, found.changes.available]);
+    found.waiting, found.question, found.changes.same, found.changes.available,
+    found.whose, found.beside]);
 }
 
 function callout(kind, ...children) {
@@ -1491,8 +1628,10 @@ function paintGate(fresh) {
   const words = found.waiting ? ['review', found.status === 'stale'
     ? 'Out of date, and waiting for your decision' : 'Waiting for your review']
     : [FILE_BEADS[found.status], found.words.charAt(0).toUpperCase() + found.words.slice(1)];
+  // A practice scenario says whose file it is: the person's own, or a draft made for them.
   const intro = add(make('div', 'intro'), state(words[0], words[1]),
-    beads(found.stages, false));
+    beads(found.stages, false),
+    WHOSE[found.whose] ? make('p', 'lede', WHOSE[found.whose]) : null);
   const aside = add(make('aside', 'aside'), checkedNote(found), lookNote(found),
     changesNote(found.changes));
   aside.setAttribute('aria-label', 'The review');
@@ -1501,7 +1640,8 @@ function paintGate(fresh) {
   levelsText(found.levels) ? make('span', '', ' · ' + levelsText(found.levels)) : null];
   place({ title: found.label, name: found.label + ' · ' + found.title, above, back: true,
     actions: gateActions(found) },
-  [intro, inChat(found), standing(found), add(make('div', 'gate'), aside, reading(found))],
+  [intro, inChat(found), standing(found), add(make('div', found.beside ? 'gate gate-pair'
+    : 'gate'), aside, reading(found), found.beside ? besidePart(found) : null)],
   fresh);
   drawSheet();
 }
@@ -1513,6 +1653,8 @@ async function drawGate(fresh) {
   }
   try {
     const found = await ask('gate', { path: view.path, artifact: view.artifact });
+    if (turn !== view.turn) return;
+    await readBeside(found, turn);
     if (turn !== view.turn) return;
     if (!fresh && view.gate && (view.after || view.sheet)) {
       // Someone is in the middle of deciding. A newer version waits until they are done.
@@ -1856,9 +1998,21 @@ function runWords(run) {
   return RUN_WORDS[run.state] || RUN_WORDS.working;
 }
 
+// The run has made everything it can, and the one stage that is neither done nor left out is
+// the deck's. The list does not say so itself, so it is read from the row of stages.
+function deckLeft(training) {
+  if (!training.run || training.run.state !== 'done' || training.state !== 'in-progress') {
+    return false;
+  }
+  const open = list(training.stages).filter((stage) => stage.stage !== 'package'
+    && !SETTLED.includes(stage.state));
+  return open.length === 1 && open[0].stage === 'deck';
+}
+
 // Where a training stands, as a shape and words. A run knows more than the list does about
 // one that is working, paused or stopped.
 function standingOf(training) {
+  if (deckLeft(training)) return STATES['in-progress'];
   if (training.run && (training.state === 'in-progress' || training.run.state === 'failed')) {
     return runWords(training.run);
   }
@@ -2293,21 +2447,10 @@ function placeCard(form) {
 }
 
 function shareCard(form) {
-  const node = card('When your team sees the work');
-  const meanings = make('ul', 'reasons meanings');
-  SHARE_SAYS.forEach((says, index) => {
-    const item = make('li', '', says);
-    if (index === form.share) item.dataset.chosen = 'true';
-    meanings.append(item);
-  });
-  return add(node, choice('Share', ['After each decision', 'Only when I ask'], form.share,
-    (index) => {
+  return add(card('When your team sees the work'), ...explained('Share',
+    ['After each decision', 'Only when I ask'], SHARE_SAYS, form.share, (index) => {
       form.share = index;
-      Array.from(meanings.children).forEach((item, at) => {
-        if (at === index) item.dataset.chosen = 'true';
-        else delete item.dataset.chosen;
-      });
-    }, 'share-when'), meanings);
+    }, 'share-when'));
 }
 
 function limitsCard(form) {
@@ -2456,15 +2599,17 @@ async function saveSetup(pressed) {
 function newDraft() {
   const agent = (view.setup && view.setup.agent) || {};
   return { step: 0, title: '', topic: '', audience: '', purpose: 0, levels: ['101'], brief: 0,
-    time: '', deck: 0, brand: '', copies: [], yoodli: false,
+    time: '', deck: 0, brand: '', copies: [], yoodli: false, sources: 0,
     agent: agent.default === 'codex' ? 'codex' : 'claude', model: agent.model || '',
     starting: false };
 }
 
-// How many times a training stops for a decision: at its questions, at its research, and at
-// the blueprint of each level. The runner says the same number back once it has started.
+// The fewest times a training stops for a decision: at its questions, at its research, and at
+// the blueprint, the guide and the brief of each level. Each practice scenario asks once more,
+// and how many there are is not known until a blueprint names them. The runner says the same
+// number back once it has started.
 function gatesFor(draft) {
-  return 2 + Math.max(1, draft.levels.length);
+  return 2 + 3 * Math.max(1, draft.levels.length);
 }
 
 function times(number) {
@@ -2534,20 +2679,34 @@ function startStep(draft) {
   const limits = (view.setup && view.setup.limits) || {};
   const levels = draft.levels.length;
   const asks = gatesFor(draft);
-  return [add(card('Sources'),
-    make('p', '', 'It researches the public web, and keeps every page it quotes with the '
-      + 'training.'),
-    make('p', 'quiet', 'Using documents of your own is not offered yet.')),
+  // With documents of your own, the first thing it does is wait for them.
+  const first = make('p', '', 'First it waits for your documents. You add them on the next '
+    + 'screen, and nothing is researched until you say that is all of them.');
+  const then = make('p', '');
+  const tell = () => {
+    const supplied = SOURCES[draft.sources][0] !== 'public-web';
+    first.hidden = !supplied;
+    then.textContent = (supplied ? 'Then it works' : 'It starts at once and works')
+      + ' on its own. It stops and asks for your decision at least ' + times(asks)
+      + ': at the research questions, at the research, and at the blueprint, the learner '
+      + 'guide and the brief' + (levels > 1 ? ' of each of the ' + levels + ' levels.' : '.');
+  };
+  tell();
+  return [add(card('Sources'), ...explained('Where the research looks',
+    SOURCES.map((source) => source[1]), SOURCE_SAYS, draft.sources, (index) => {
+      draft.sources = index;
+      tell();
+    }, 'sources')),
   add(card('The agent that does the drafting'), ...agentFields(draft, 'new', 'For this training')),
   add(card('Limits'), make('p', '', limitsSays(limits)
     || 'No limits are set for this computer.'),
   make('p', 'quiet', 'A training that reaches a limit stops and asks you. The limits are '
     + 'changed in Settings.')),
   add(make('div', 'paper callout'),
-    make('h2', 'aside-title', 'What happens when you start'),
-    make('p', '', 'It starts at once and works on its own. It stops and asks for your '
-      + 'decision ' + times(asks) + ': at the research questions, at the research, and at '
-      + (levels > 1 ? 'the blueprint of each of the ' + levels + ' levels.' : 'the blueprint.')),
+    make('h2', 'aside-title', 'What happens when you start'), first, then,
+    make('p', '', 'It asks once more for each practice scenario' + (draft.yoodli
+      ? ', and again for each one laid out for Yoodli' : '') + '. How many there are is not '
+      + 'known until a blueprint names them.'),
     make('p', 'quiet', 'This page tells you each time. In between, you can close it.'))];
 }
 
@@ -2608,7 +2767,7 @@ async function startTraining(pressed) {
     levels: LEVELS.filter((level) => draft.levels.includes(level)),
     brief_kind: draft.brief ? 'competitive' : 'product',
     time_limit: draft.time.trim() || null,
-    source_scope: 'public-web',
+    source_scope: SOURCES[draft.sources][0],
     deck_target: deck,
     brand: (deck && draft.brand.trim()) || null,
     copies: COPIES.map((kind) => kind[0]).filter((kind) => draft.copies.includes(kind)),
@@ -2631,7 +2790,8 @@ async function startTraining(pressed) {
   }
   view.draft = null;
   view.promised = { path: started.path, gates: Number(started.gates) || 0 };
-  toast('Started. It is working on its own now.');
+  toast(body.source_scope === 'public-web' ? 'Started. It is working on its own now.'
+    : 'Started. It waits for your documents first.');
   show('run', { path: started.path }, true);
   refresh();
 }
@@ -2691,12 +2851,27 @@ function nextGate(run) {
   return list(run.steps).find((step) => step.kind === 'gate' && step.status === 'to-do') || null;
 }
 
+// A run that waits for documents waits for its person, whatever it says of itself meanwhile.
+function adding(run) {
+  return Boolean(run.documents && run.documents.waiting);
+}
+
+// A run that is done has finished the training, or has made everything but the deck.
+function runStanding(run) {
+  if (run.finished) {
+    return run.finished.ready ? ['done', 'Finished']
+      : ['late', 'Finished, but not ready to use'];
+  }
+  if (run.deck) return ['done', 'Everything but the slide deck is made'];
+  return run.state === 'working' && adding(run) ? RUN_WORDS.waiting : runWords(run);
+}
+
 function runIntro(run, training, promised) {
-  const node = add(make('div', 'intro'), state(...runWords(run)));
+  const node = add(make('div', 'intro'), state(...runStanding(run)));
   if (list(training.stages).length) add(node, beads(training.stages, false));
   add(node, make('p', 'lede run-says', run.sentence));
   const next = nextGate(run);
-  if (run.state === 'working') {
+  if (run.state === 'working' && !adding(run)) {
     add(node, make('p', 'quiet', 'Nothing is needed from you right now. It carries on by '
       + 'itself, and this page tells you when it needs you.'
       + (next ? ' Next it asks for your decision on '
@@ -2709,7 +2884,7 @@ function runIntro(run, training, promised) {
       + 'from where it stopped.'));
   }
   if (promised && run.state !== 'done') {
-    add(node, make('p', 'quiet', 'In all, it stops and asks for your decision '
+    add(node, make('p', 'quiet', 'In all, it stops and asks for your decision at least '
       + times(promised) + '.'));
   }
   if (view.steered) {
@@ -2862,6 +3037,345 @@ function costCard(run) {
       : '') + '.'));
 }
 
+// --- a run: your own documents ---------------------------------------------------------
+// With documents of your own, a run waits for them before it researches anything. They are
+// sent one at a time, and each is refused here first if the runner would refuse it anyway.
+
+// The ending of a file's name, as the runner names a type: lower case, with its dot.
+function ending(name) {
+  const at = String(name).lastIndexOf('.');
+  return at < 0 ? '' : String(name).slice(at).toLowerCase();
+}
+
+function typesOf(held) {
+  return list(held.types).map((type) => '.' + String(type).toLowerCase().replace(/^\./, ''));
+}
+
+// Why a file cannot be added, or nothing when it can. `room` is how many more may be.
+function unfit(file, held, room) {
+  const types = typesOf(held);
+  const limits = held.limits || {};
+  if (types.length && !types.includes(ending(file.name))) {
+    return file.name + ' was not added: only ' + series(types) + ' files are taken.';
+  }
+  if (given(limits.bytes) && file.size > limits.bytes) {
+    return file.name + ' was not added: it is ' + size(file.size) + ', and a document can '
+      + 'be at most ' + size(limits.bytes) + '.';
+  }
+  if (room < 1) {
+    return file.name + ' was not added: there is room for ' + limits.files
+      + ' documents and no more.';
+  }
+  return '';
+}
+
+// A file as the runner takes it, in base64. The browser reads it, and puts a few words about
+// its kind in front, up to a comma, which are left off.
+function base64Of(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const read = String(reader.result);
+      const at = read.indexOf(',');
+      resolve(at < 0 ? '' : read.slice(at + 1));
+    };
+    reader.onerror = () => reject(new Error('This browser could not read it.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// While documents are being sent or removed, the card's controls wait.
+function holdDocuments(held) {
+  for (const node of main().querySelectorAll('.documents button, .documents input')) {
+    node.disabled = held;
+  }
+}
+
+// What was not added, said beside the control. The card may have been drawn again since.
+function unadded(text) {
+  view.unadded = text;
+  const problem = byId('documents-file-problem');
+  if (problem && problem.textContent !== text) refuse('documents-file', text);
+}
+
+function undone(text) {
+  view.undone = text;
+  if (byId('documents-problem')) say(byId('documents-problem'), text);
+}
+
+async function addDocuments(input) {
+  const held = view.run.documents;
+  const chosen = Array.from(input.files || []);
+  if (view.busy || !chosen.length) return;
+  const turn = view.turn;
+  const limits = held.limits || {};
+  let room = given(limits.files) ? limits.files - list(held.added).length : chosen.length;
+  const refused = [];
+  const taken = [];
+  for (const file of chosen) {
+    const why = unfit(file, held, room);
+    if (why) {
+      refused.push(why);
+    } else {
+      taken.push(file);
+      room -= 1;
+    }
+  }
+  // What was said about the files chosen last time is no longer about these.
+  undone('');
+  unadded('');
+  if (!taken.length) {
+    // Refused here, beside the control, before anything is sent.
+    input.value = '';
+    unadded(refused.join(' ') + ' Nothing was sent.');
+    input.focus();
+    return;
+  }
+  view.busy = true;
+  holdDocuments(true);
+  let added = 0;
+  for (const [index, file] of taken.entries()) {
+    say(byId('documents-status'), 'Adding ' + (index + 1) + ' of ' + taken.length + ': '
+      + file.name);
+    try {
+      const content = await base64Of(file);
+      view.run = await send('documents', { path: view.path, action: 'add', name: file.name,
+        content });
+      added += 1;
+    } catch (failure) {
+      refused.push(file.name + ' was not added. ' + failure.message);
+      // With no answer at all, there is nobody to send the rest to.
+      if (failure.kind === 'stopped') break;
+    }
+    if (turn !== view.turn) break;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  input.value = '';
+  holdDocuments(false);
+  say(byId('documents-status'), '');
+  paintRun(false);
+  unadded(refused.join(' '));
+  if (added) toast(count(added, 'document', 'documents') + ' added.');
+  if (!focusKey('documents-file')) byId('title').focus({ preventScroll: true });
+}
+
+// Take one document away, or say that is all of them. The runner answers with the run.
+async function settleDocuments(action, name, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  view.busy = true;
+  holdDocuments(true);
+  let run;
+  try {
+    run = await send('documents', name ? { path: view.path, action, name }
+      : { path: view.path, action });
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    holdDocuments(false);
+    undone(failure.message + ' Nothing was changed, and your documents are still here.');
+    pressed.focus();
+    return;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  view.run = run;
+  view.unadded = '';
+  view.undone = '';
+  toast(name ? name + ' is removed.' : 'That is all of them. It carries on from here.');
+  paintRun(false);
+  // A card that the answer left as it was is not drawn again, so its controls are let go here.
+  holdDocuments(false);
+  if (name) {
+    if (!focusKey('documents-file')) byId('title').focus({ preventScroll: true });
+    return;
+  }
+  // The card to add them is gone from the screen: show the run from the top, as it now stands.
+  window.scrollTo(0, 0);
+  byId('title').focus({ preventScroll: true });
+  refresh();
+}
+
+function documentItem(found, waiting) {
+  const text = add(make('div', 'row-text'), make('p', 'step-name', found.name),
+    make('p', 'quiet', size(Number(found.bytes) || 0)));
+  if (!found.readable) {
+    add(text, make('p', 'problem', 'It could not be read' + (found.problem ? ': '
+      + found.problem : '.')), make('p', 'quiet', 'It is kept, and is not used for the '
+      + 'research.' + (waiting ? ' Remove it, or carry on without it.' : '')));
+  }
+  const item = make('li', 'row step');
+  item.dataset.state = found.readable ? 'read' : 'unread';
+  add(item, bead(found.readable ? 'done' : 'late'), text,
+    make('span', 'step-words', found.readable ? 'Can be read' : 'Cannot be read'));
+  if (!waiting) return item;
+  const remove = capsule('Remove', 'quiet',
+    () => settleDocuments('remove', found.name, remove), 'remove ' + found.name);
+  remove.setAttribute('aria-label', 'Remove ' + found.name);
+  return add(item, remove);
+}
+
+function documentsCard(run, lead) {
+  const held = run.documents;
+  const added = list(held.added);
+  const limits = held.limits || {};
+  const node = card(held.waiting ? 'Add your documents' : 'Your documents',
+    'documents' + (held.waiting ? ' card-needs' : ''));
+  if (held.waiting) {
+    const types = typesOf(held);
+    const takes = [types.length ? 'It takes ' + series(types) + ' files' : 'It takes files',
+      given(limits.bytes) ? ', each up to ' + size(limits.bytes) : '',
+      given(limits.files) ? ', and ' + limits.files + ' in all' : ''].join('');
+    const status = make('p', 'quiet');
+    status.id = 'documents-status';
+    status.setAttribute('role', 'status');
+    status.hidden = true;
+    add(node, make('p', '', 'Nothing is researched until you have added them and chosen '
+      + '“That is all of them”.'), make('p', '', KEPT_HERE),
+    field('documents-file', 'Add documents', {}, '', { picked: addDocuments,
+      accept: types.join(','), refused: view.unadded,
+      hint: takes + '. You can choose several at once.' }), status);
+  } else {
+    add(node, make('p', '', added.length ? 'These were given to the research. ' + KEPT_HERE
+      : 'None were added.'));
+  }
+  if (held.note) add(node, make('p', 'quiet', held.note));
+  if (added.length) {
+    const items = make('ul', 'rows');
+    for (const found of added) items.append(documentItem(found, held.waiting));
+    add(node, make('h3', 'row-title', count(added.length, 'document', 'documents')
+      + ' added'), items);
+  } else if (held.waiting) {
+    add(node, make('p', 'quiet', 'Nothing is added yet.'));
+  }
+  if (!held.waiting) return node;
+  const problem = alertLine('documents-problem');
+  say(problem, view.undone);
+  const done = capsule('That is all of them', lead ? 'filled' : '',
+    () => settleDocuments('done', '', done), 'documents-done');
+  return add(node, problem, add(make('div', 'bar'), done));
+}
+
+// --- a run: the copies, the deck, and the end -------------------------------------------
+
+// Where a copy is. A web address is a link to follow; anything else is a file in the
+// training's folder, and is shown as where it is.
+function copyLink(found, kind, what) {
+  if (!found.link) return null;
+  if (!WEB_LINK.test(found.link)) {
+    return add(make('p', 'quiet'), 'Kept with the training as ',
+      pathInto(make('span', 'path'), found.link));
+  }
+  const node = make('a', 'link', 'Open the ' + kind);
+  node.href = found.link;
+  node.rel = 'noopener noreferrer';
+  node.target = '_blank';
+  node.setAttribute('aria-label', 'Open the ' + what + ', in a new tab');
+  return add(make('p', ''), node);
+}
+
+function copyItem(found) {
+  const [shape, words] = COPY_STATES[found.state] || COPY_STATES['not-made'];
+  const kind = COPY_KINDS[found.kind] || 'copy';
+  const what = kind + ' of ' + lower(found.label);
+  const text = add(make('div', 'row-text'),
+    make('p', 'step-name', what.charAt(0).toUpperCase() + what.slice(1)));
+  if (found.state === 'out-of-date') {
+    add(text, make('p', '', 'Its file has changed since this copy was made.'));
+  }
+  const why = found.problem || (found.state === 'not-made' ? 'No reason was given.' : '');
+  if (found.state !== 'made' && why) add(text, make('p', '', why));
+  add(text, copyLink(found, kind, what));
+  const item = make('li', 'row step');
+  item.dataset.state = found.state;
+  return add(item, bead(shape), text, make('span', 'step-words', words));
+}
+
+async function tryCopies() {
+  if (view.copying) return;
+  const turn = view.turn;
+  view.copying = true;
+  view.uncopied = '';
+  paintRun(false);
+  let run = null;
+  let refusal = '';
+  try {
+    run = await send('copies', { path: view.path });
+  } catch (failure) {
+    refusal = failure.message + ' Nothing was changed: the copies are as they were.';
+  }
+  // Another screen is open by now, and it has put this one's state away.
+  if (turn !== view.turn) return;
+  view.copying = false;
+  view.uncopied = refusal;
+  if (run) {
+    view.run = run;
+    const left = list(run.copies).filter((found) => found.state !== 'made').length;
+    toast(left ? count(left, 'copy is', 'copies are') + ' still not made. Each says why.'
+      : 'Every copy is made.');
+  }
+  paintRun(false);
+  if (!focusKey('copies-again')) byId('title').focus({ preventScroll: true });
+}
+
+function copiesCard(run) {
+  const node = card('Copies');
+  const items = make('ul', 'rows');
+  for (const found of list(run.copies)) items.append(copyItem(found));
+  add(node, items);
+  if (!list(run.copies).some((found) => found.state !== 'made')) return node;
+  const go = capsule(view.copying ? 'Trying again…' : 'Try the copies again', '', tryCopies,
+    'copies-again');
+  if (view.copying) go.setAttribute('aria-busy', 'true');
+  const problem = alertLine('copies-problem');
+  say(problem, view.uncopied);
+  return add(node, make('p', 'quiet', 'The training itself is complete without them. A copy '
+    + 'that is not made is listed as a limitation.'), problem, add(make('div', 'bar'), go));
+}
+
+// The deck is the one stage a run does not make. It says so in its own words, and leaving
+// the deck out is the decision a gate has, with its reason.
+function deckPart(run) {
+  const found = run.deck;
+  const leave = capsule('Leave the deck out', '', () => {
+    view.deciding = found.artifact;
+    openSheet('skip', 'leave-deck')();
+    paintRun(false);
+  }, 'leave-deck');
+  return callout('yours', make('h2', 'aside-title', 'What to do about the slide deck'),
+    found.says === run.sentence ? null : make('p', '', found.says),
+    make('p', 'quiet', 'Leaving it out takes a reason, which is kept with the training. You '
+      + 'can bring the deck back later.'),
+    add(make('div', 'bar'), leave));
+}
+
+function finishedPart(run, lead) {
+  const found = run.finished;
+  const limits = list(found.limitations);
+  // The index is one more file of the training, read on a screen of its own.
+  const open = found.index ? capsule('Open the index', lead && found.ready ? 'filled' : '',
+    () => show('index', { path: view.path, artifact: found.index }), 'index') : null;
+  const limited = limits.length ? [make('p', '', count(limits.length, 'thing was',
+    'things were') + ' left out or limited:'), bullets(limits, 'reasons')] : [];
+  const indexed = open ? make('p', 'quiet', 'The index lists every file, what was checked, '
+    + 'and how to use the practice scenarios.') : null;
+  if (found.ready) {
+    return callout('', make('h2', 'aside-title', 'Ready to use'),
+      ...(limited.length ? limited : [make('p', '', 'Nothing was left out or limited.')]),
+      indexed, add(make('div', 'bar'), open));
+  }
+  const blocking = list(found.blocking);
+  const go = capsule('See what is in the way', lead ? 'filled' : '',
+    () => show('training', { path: view.path }), 'blocking');
+  return callout('late', make('h2', 'aside-title', 'Not ready to use yet'),
+    make('p', '', blocking.length ? count(blocking.length, 'thing is', 'things are')
+      + ' in the way:' : 'Something is in the way, and it was not said what.'),
+    blocking.length ? bullets(blocking, 'reasons') : null,
+    add(make('p', ''), make('strong', '', 'What was kept: '), 'everything that was made.'),
+    ...limited, indexed, add(make('div', 'bar'), go, open));
+}
+
 async function steer(action, pressed) {
   if (view.busy) return;
   const turn = view.turn;
@@ -2920,26 +3434,40 @@ function paintRun(fresh) {
   const waiting = training.waiting && training.waiting.artifact ? training.waiting : null;
   const promised = view.promised && view.promised.path === view.path ? view.promised.gates : 0;
   const offered = run.problem && run.problem.action;
-  // One filled button on the screen, for the first thing that is needed.
-  const lead = run.question ? 'answer' : offered ? 'problem' : waiting ? 'review'
-    : ['paused', 'stopped'].includes(run.state) ? 'resume'
-      : run.state === 'failed' && !run.problem ? 'retry' : '';
+  const supplying = adding(run);
+  // One filled button on the screen, for the first thing that is needed. While a sheet is
+  // open it holds that button, so nothing under it is filled.
+  const lead = view.sheet || view.after ? '' : run.question ? 'answer' : offered ? 'problem'
+    : supplying ? 'documents' : waiting ? 'review' : run.finished ? 'finished'
+      : ['paused', 'stopped'].includes(run.state) ? 'resume'
+        : run.state === 'failed' && !run.problem ? 'retry' : '';
   const limits = (view.setup && view.setup.limits) || {};
   const above = [make('span', '', [levelsText(training.levels), 'Runs on this page']
     .filter(Boolean).join(' · '))];
   placeParts({ title, above, back: true, actions: runActions(run, waiting, lead),
     mark: [title, training.levels, run.state, lead, offered, waiting] }, [
     ['intro', [run.state, run.sentence, training.stages, promised, view.steered,
-      nextGate(run), Boolean(run.problem)], () => runIntro(run, training, promised)],
+      nextGate(run), Boolean(run.problem), runStanding(run), supplying],
+    () => runIntro(run, training, promised)],
     run.problem ? ['problem', [run.problem, lead], () => problemPart(run, lead === 'problem')]
       : null,
     run.question ? ['question', [run.question, title], () => questionPart(run, title)] : null,
+    supplying ? ['documents', [run.documents, lead],
+      () => documentsCard(run, lead === 'documents')] : null,
     waiting && !run.question ? ['gate', [waiting, training.sentence],
       () => gatePart(training, waiting, run.sentence)] : null,
+    run.deck ? ['deck', [run.deck, run.sentence], () => deckPart(run)] : null,
+    run.finished ? ['finished', [run.finished, lead],
+      () => finishedPart(run, lead === 'finished')] : null,
     ['steps', list(run.steps).map((step) => [step.id, step.label, step.kind, step.status,
       step.attempts > 1, step.error]), () => stepsCard(run)],
     list(run.workers).length ? ['workers', run.workers, () => workersCard(run)] : null,
     ['made', [training.path, training.view && training.view.files], () => madeCard(training)],
+    list(run.copies).length ? ['copies', [run.copies, view.copying, view.uncopied],
+      () => copiesCard(run)] : null,
+    // Once that is all of them, what was added is kept on the screen, with nothing to press.
+    run.documents && !supplying ? ['documents', [run.documents, ''],
+      () => documentsCard(run, false)] : null,
     ['cost', [run.spent, run.agent, run.model, limits.training_dollars], () => costCard(run)],
   ], fresh);
   tickSteps(run);
@@ -2957,7 +3485,8 @@ async function drawRun(fresh) {
     const first = fresh || !view.run;
     view.run = run;
     if (training) view.training = training;
-    if (!view.busy) paintRun(first);
+    // Someone is in the middle of leaving the deck out. The run waits until they are done.
+    if (!view.busy && !view.sheet) paintRun(first);
     // A run just opened is read again at its own pace, not at the list's.
     if (first) later();
   } catch (failure) {
@@ -2969,6 +3498,36 @@ async function drawRun(fresh) {
           make('p', 'quiet', 'Nothing was changed. The training itself is as it was.'),
           capsule('Back to home', 'filled', () => show('home'), 'home')], fresh);
     }
+  }
+}
+
+// --- the index -----------------------------------------------------------------------
+// README.md at the top of a finished training, read like any other of its files. It is
+// written once, when the training finishes, so it is read once and not again.
+
+async function drawIndex(fresh) {
+  if (!fresh) return;
+  const turn = view.turn;
+  const path = view.path;
+  const found = list(view.listing).find((training) => training.path === path) || {};
+  const home = () => show(homeOf(path), { path });
+  view.drawn = 'index';
+  place({ title: 'Opening', back: true }, [make('p', 'quiet', 'Reading the index.')], true);
+  try {
+    const read = await ask('file', { path, artifact: view.artifact });
+    if (turn !== view.turn) return;
+    place({ title: 'The index', name: 'The index · ' + (found.title || 'Untitled'), back: true,
+      above: [button(found.title || 'Untitled', 'link', home, 'training')] },
+    [add(make('div', 'reading index'), documentBody(asDocument(read),
+      { label: 'The index', path }))], true);
+  } catch (failure) {
+    if (turn !== view.turn) return;
+    if (failure.kind === 'stopped') notify(failure.message);
+    place({ title: 'The index cannot be opened', back: true },
+      [make('p', 'problem', failure.message),
+        make('p', 'quiet', 'Nothing was changed. The training and everything it made are as '
+          + 'they were.'),
+        capsule('Back to the training', 'filled', home, 'home')], true);
   }
 }
 
@@ -3041,8 +3600,9 @@ async function refresh() {
       show('setup', null, true);
     } else if (view.screen === 'gate' || view.screen === 'training' || view.screen === 'run') {
       await draw(false);
-    } else if (view.screen === 'setup' || view.screen === 'new') {
-      // A form is drawn once and never again under the person filling it in.
+    } else if (view.screen === 'setup' || view.screen === 'new' || view.screen === 'index') {
+      // A form is drawn once and never again under the person filling it in. So is the
+      // index, under the person reading it.
       if (!view.drawn) draw(true);
     } else if (!view.busy && !view.checking && !typing() && view.drawn !== signature()) {
       draw(!view.drawn);

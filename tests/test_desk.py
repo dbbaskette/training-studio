@@ -4,6 +4,7 @@ Classes built on DeskCase talk to a real server on a local port and are skipped 
 cannot be opened. Classes built on PageCase ask the same questions without a socket, so the
 rules for decisions are tested everywhere.
 """
+import base64
 import contextlib
 import io
 import json
@@ -2105,8 +2106,9 @@ def ok(body) -> dict:
     return {'status': 200, 'body': body}
 
 
-# The runner's answers, written out field for field from the appendix of the milestone 2
-# specification ("What the page asks the runner"). Its server is built apart from the page.
+# The runner's answers, written out field for field from the appendices of the milestone 2
+# and milestone 3 specifications ("What the page asks the runner"). Its server is built apart
+# from the page.
 RUNNER = ok({'runner': True, 'version': '0.9.0'})
 LIMITS = {'step_seconds': 900, 'training_dollars': 20, 'parallel': 2}
 NOT_SET_UP = {'configured': False, 'workspace': None,
@@ -2123,8 +2125,16 @@ AGENTS_FOUND = {'agents': [
      'version': '0.48.0',
      'problem': 'Codex is not signed in. Run codex login in a terminal, then look again.'}]}
 RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'steps', 'workers', 'spent', 'question',
-              'problem'}
+              'problem', 'documents', 'copies', 'deck', 'finished'}
 STEP_FIELDS = {'id', 'label', 'kind', 'status', 'attempts', 'seconds', 'dollars', 'error'}
+DOCUMENT_FIELDS = {'name', 'bytes', 'readable', 'problem'}
+COPY_FIELDS = {'artifact', 'label', 'kind', 'state', 'link', 'problem'}
+TYPES = ['.txt', '.md', '.html', '.htm', '.docx']
+NO_PDF = 'A PDF cannot be read on this computer. Save it as text or Word first.'
+KEPT_HERE = ('Your documents stay on this computer and are never shared with your team. '
+             'Passages quoted from them appear in the research report, which is shared.')
+DECK_LEFT = ('Everything but the slide deck is made: make the deck with your assistant, or '
+             'leave it out.')
 
 
 def a_step(name: str, label: str, kind: str, status: str, **more) -> dict:
@@ -2138,9 +2148,30 @@ def a_step(name: str, label: str, kind: str, status: str, **more) -> dict:
 def a_run(state: str, sentence: str, **more) -> dict:
     run = {'state': state, 'sentence': sentence, 'agent': 'claude', 'model': None,
            'steps': [], 'workers': [], 'spent': {'dollars': None, 'tokens': None},
-           'question': None, 'problem': None, **more}
+           'question': None, 'problem': None, 'documents': None, 'copies': [], 'deck': None,
+           'finished': None, **more}
     assert set(run) == RUN_FIELDS, run
     return ok(run)
+
+
+def supplied(*added: dict, waiting: bool = True, files: int = 40) -> dict:
+    """What a run says about the documents a person supplies."""
+    for entry in added:
+        assert set(entry) == DOCUMENT_FIELDS, entry
+    return {'waiting': waiting, 'added': list(added), 'types': TYPES,
+            'limits': {'bytes': 8_000_000, 'files': files}, 'note': NO_PDF}
+
+
+def a_document(name: str, size: int, problem: str | None = None) -> dict:
+    return {'name': name, 'bytes': size, 'readable': problem is None, 'problem': problem}
+
+
+def a_copy(artifact: str, label: str, kind: str, state: str, link: str | None = None,
+           problem: str | None = None) -> dict:
+    copy = {'artifact': artifact, 'label': label, 'kind': kind, 'state': state, 'link': link,
+            'problem': problem}
+    assert set(copy) == COPY_FIELDS, copy
+    return copy
 
 
 def steps(*statuses: str) -> list:
@@ -2469,7 +2500,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             'GET /api/trainings': [ok({'trainings': [], 'needs': 0}),
                                    self.listed('working', sentence)],
             'POST /api/trainings': [ok({'path': str(self.root), 'id': 'rolling-restarts',
-                                        'gates': 4})],
+                                        'gates': 8})],
             'GET /api/run': [working], 'GET /api/training': [self.detail('working', sentence)]})
         result = self.run_page(answers, [
             {'snapshot': 'home'},
@@ -2517,13 +2548,19 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         three = shots['three']
         self.assertEqual((three['heading'], three['filled']),
                          ('The sources, the agent and the limits', ['Start the training']))
-        for shown in ('It researches the public web', 'not offered yet', 'Claude Code',
+        for shown in ('The public web: it searches for pages anyone can read', 'Claude Code',
                       'A step may take up to 15 minutes.',
-                      'It stops and asks for your decision 4 times: at the research questions, '
-                      'at the research, and at the blueprint of each of the 2 levels.',
+                      'It starts at once and works on its own. It stops and asks for your '
+                      'decision at least 8 times: at the research questions, at the research, '
+                      'and at the blueprint, the learner guide and the brief of each of the 2 '
+                      'levels.',
+                      'It asks once more for each practice scenario. How many there are is not '
+                      'known until a blueprint names them.',
                       'In between, you can close it.'):
             self.assertIn(shown, three['text'])
-        self.assertEqual((three['pressed'], three['posts']), (['Claude Code'], 0))
+        self.assertNotIn('not offered yet', three['text'])
+        self.assertEqual((three['pressed'], three['posts']),
+                         (['The public web', 'Claude Code'], 0))
         self.assertEqual(self.asked(result, 'agents'), ['/api/agents'] * 2)
 
         # Going back a step loses nothing.
@@ -2544,7 +2581,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertEqual((run['heading'], run['title']),
                          ('Rolling restarts', 'Rolling restarts · Training Studio'))
         self.assertIn(sentence, run['text'])
-        self.assertIn('In all, it stops and asks for your decision 4 times.', run['text'])
+        self.assertIn('In all, it stops and asks for your decision at least 8 times.',
+                      run['text'])
         self.assertIn('Started. It is working on its own now.', run['toasts'])
         # Nothing reported yet is not the same as an agent that never says.
         self.assertIn('Nothing has been reported yet.', run['text'])
@@ -2910,6 +2948,580 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertIn('By Hand', settings['text'].split('Where each training is decided')[1])
         self.assertNotIn('Held', settings['text'].split('Where each training is decided')[1])
         self.assertEqual(self.asked(result, 'run'), [])
+
+    # --- milestone 3: the rest of a training ---------------------------------------------
+
+    def to_the_last_step(self, *shape: dict) -> list:
+        """A new training filled in as far as its last step, with `shape` chosen on the way."""
+        return [{'click': 'New training'},
+                {'fill': 'A short title', 'value': 'Rolling restarts'},
+                {'fill': 'What should it teach?', 'value': 'How a rolling restart works.'},
+                {'fill': 'Who is it for?', 'value': 'Platform engineers new to it.'},
+                {'click': 'Continue'}, *shape, {'click': 'Continue'}]
+
+    def test_each_sources_choice_says_what_it_means_and_is_what_is_sent(self):
+        self.started()
+        waits, going = 'Waiting for your documents.', 'Drafting the research questions.'
+        first = 'First it waits for your documents. You add them on the next screen'
+        meanings = (
+            'The public web: it searches for pages anyone can read, and keeps every page it '
+            'quotes with the training.',
+            'Your documents only: it reads the documents you give it and nothing else, and '
+            'never searches the web or opens a page. You add them right after starting, and '
+            'they stay on this computer.',
+            'Both: it reads your documents and researches the public web as well. You add the '
+            'documents right after starting, and they stay on this computer.')
+        plain = ('at least 5 times: at the research questions, at the research, and at the '
+                 'blueprint, the learner guide and the brief.')
+        shaped = [{'click': '101'}, {'click': 'No deck'}, {'click': 'Make scenarios for Yoodli'}]
+        for choice, scope, shape in ((None, 'public-web', []),
+                                     ('Your documents only', 'supplied-only', shaped),
+                                     ('Both', 'both', [])):
+            with self.subTest(scope):
+                web = scope == 'public-web'
+                state, says = ('working', going) if web else ('waiting', waits)
+                run = a_run(state, says, steps=steps('done', 'working') if web else steps('done'),
+                            documents=None if web else supplied())
+                answers = self.answers(**{
+                    'GET /api/trainings': [ok({'trainings': [], 'needs': 0}),
+                                           self.listed(state, says, needs=not web)],
+                    'POST /api/trainings': [ok({'path': str(self.root),
+                                                'id': 'rolling-restarts', 'gates': 5})],
+                    'GET /api/run': [run], 'GET /api/training': [self.detail(state, says)]})
+                result = self.run_page(answers, [
+                    *self.to_the_last_step(*shape),
+                    *([{'click': choice}] if choice else []), {'snapshot': 'three'},
+                    {'click': 'Start the training'}, {'snapshot': 'run'}])
+                three, landed = result['snapshots']['three'], result['snapshots']['run']
+                self.assertEqual(three['pressed'], [choice or 'The public web', 'Claude Code'])
+                for said in meanings:
+                    self.assertIn(said, three['text'])
+                # With documents, the first thing it does is wait for them, and it says so.
+                self.assertEqual(first in three['text'], not web)
+                self.assertIn('It starts at once and works on its own.' if web
+                              else 'Then it works on its own.', three['text'])
+                (address, sent), = self.posts(result)
+                self.assertEqual((address, sent['source_scope']), ('/api/trainings', scope))
+                self.assertIn('Started. It is working on its own now.' if web
+                              else 'Started. It waits for your documents first.',
+                              landed['toasts'])
+                self.assertEqual(landed['filled'], [] if web else ['That is all of them'])
+                self.assertEqual('Add your documents' in landed['text'], not web)
+                if shape:
+                    # No levels, no deck, and Yoodli: each is counted or named as it is sent.
+                    self.assertEqual((sent['levels'], sent['deck_target'], sent['yoodli']),
+                                     ([], None, True))
+                    self.assertIn(plain, three['text'])
+                    self.assertIn('It asks once more for each practice scenario, and again '
+                                  'for each one laid out for Yoodli.', three['text'])
+                    self.assertIn('In all, it stops and asks for your decision at least 5 '
+                                  'times.', landed['text'])
+
+    def test_documents_are_added_refused_removed_and_then_that_is_all_of_them(self):
+        self.started()
+        waits, going = 'Waiting for your documents.', 'Drafting the research questions.'
+        notes = a_document('Notes.MD', 8)
+        scan = a_document('scan.docx', 4, 'It holds no text that can be read.')
+
+        def asked(*added: dict) -> dict:
+            return a_run('waiting', waits, steps=steps('done'), documents=supplied(*added))
+
+        twice = {'status': 409,
+                 'body': {'error': 'A document called Notes.MD was already added.'}}
+        saving = {'status': 409, 'body': {'error': 'A step is being saved.'}}
+        carried = a_run('working', going, steps=steps('done', 'working'),
+                        documents=supplied(notes, waiting=False))
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('waiting', waits, needs=True),
+                                   self.listed('working', going)],
+            'GET /api/training': [self.detail('waiting', waits)],
+            # Read once for the list, once on opening the run, and once more when it carries on.
+            'GET /api/run': [asked(), asked(), carried],
+            'POST /api/documents': [asked(notes), asked(notes, scan), twice, asked(notes),
+                                    saving, carried]})
+        pick = 'Add documents'
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'empty'},
+            {'attach': pick, 'files': [{'name': 'plan.rtf', 'text': 'A plan.'},
+                                       {'name': 'big.docx', 'size': 9_000_000}]},
+            {'snapshot': 'refused'},
+            {'attach': pick, 'files': [{'name': 'Notes.MD', 'text': '# Notes\n'},
+                                       {'name': 'scan.docx', 'bytes': [80, 75, 3, 4]}]},
+            {'snapshot': 'added'},
+            {'attach': pick, 'files': [{'name': 'Notes.MD', 'text': 'Again.'}]},
+            {'snapshot': 'twice'},
+            {'click': 'Remove scan.docx'}, {'snapshot': 'removed'},
+            {'click': 'That is all of them'}, {'snapshot': 'not yet'},
+            {'click': 'That is all of them'}, {'snapshot': 'done'},
+        ])
+        shots = result['snapshots']
+        # A run that waits for documents needs its person, and home says what for.
+        self.assertIn(waits, shots['home']['text'])
+        self.assertEqual(shots['home']['filled'], ['Open Rolling restarts'])
+
+        empty = shots['empty']
+        self.assertEqual((empty['heading'], empty['filled'], empty['fields']),
+                         ('Rolling restarts', ['That is all of them'], {pick: ''}))
+        for shown in ('Waiting for you', waits, 'Add your documents',
+                      'Nothing is researched until you have added them and chosen “That is '
+                      'all of them”.', KEPT_HERE,
+                      'It takes .txt, .md, .html, .htm and .docx files, each up to 7.6 MB, and '
+                      '40 in all. You can choose several at once.', NO_PDF,
+                      'Nothing is added yet.'):
+            self.assertIn(shown, empty['text'])
+        self.assertLess(empty['text'].index('Add your documents'), empty['text'].index('Steps'))
+        # Nothing is said about copies where none were asked for.
+        self.assertNotIn('Copies', empty['text'])
+
+        # Another type, and one too large: refused beside the control, and nothing is sent.
+        refused = shots['refused']
+        for shown in ('plan.rtf was not added: only .txt, .md, .html, .htm and .docx files '
+                      'are taken.',
+                      'big.docx was not added: it is 8.6 MB, and a document can be at most '
+                      '7.6 MB.', 'Nothing was sent.'):
+            self.assertIn(shown, refused['text'])
+        self.assertEqual((refused['invalid'], refused['focus'], refused['posts']),
+                         ([pick], 'documents-file', 0))
+
+        # Several at once, each with its size and whether it could be read, and why not.
+        added = shots['added']
+        for shown in ('2 documents added', 'Notes.MD', '8 bytes', 'Can be read', 'scan.docx',
+                      '4 bytes', 'Cannot be read',
+                      'It could not be read: It holds no text that can be read.',
+                      'It is kept, and is not used for the research. Remove it, or carry on '
+                      'without it.'):
+            self.assertIn(shown, added['text'])
+        self.assertIn('2 documents added.', added['toasts'])
+        self.assertEqual((added['invalid'], added['focus'], added['off']),
+                         ([], 'documents-file', []))
+        self.assertNotIn('was not added', added['text'])
+        self.assertIn('late', added['beads'])
+        self.assertEqual(added['filled'], ['That is all of them'])
+
+        # The runner's own refusal is shown as it gave it, and what was added is still there.
+        said_no = shots['twice']
+        self.assertIn('Notes.MD was not added. A document called Notes.MD was already added.',
+                      said_no['text'])
+        self.assertEqual(said_no['invalid'], [pick])
+        self.assertIn('2 documents added', said_no['text'])
+
+        removed = shots['removed']
+        self.assertIn('scan.docx is removed.', removed['toasts'])
+        self.assertIn('1 document added', removed['text'])
+        self.assertNotIn('Remove scan.docx', removed['buttons'])
+        self.assertIn('Remove Notes.MD', removed['buttons'])
+        self.assertEqual((removed['invalid'], removed['focus']), ([], 'documents-file'))
+
+        waiting = shots['not yet']
+        self.assertIn('A step is being saved. Nothing was changed, and your documents are '
+                      'still here.', waiting['text'])
+        self.assertEqual((waiting['focus'], waiting['off'], waiting['filled']),
+                         ('That is all of them', [], ['That is all of them']))
+
+        done = shots['done']
+        self.assertIn('That is all of them. It carries on from here.', done['toasts'])
+        self.assertEqual((done['filled'], done['focus'], done['fields']), ([], 'title', {}))
+        for shown in ('Working on its own', going, 'Your documents',
+                      'These were given to the research. ' + KEPT_HERE, 'Notes.MD'):
+            self.assertIn(shown, done['text'])
+        for absent in ('That is all of them', 'Remove Notes.MD'):
+            self.assertNotIn(absent, done['buttons'])
+        self.assertNotIn('Add your documents', done['text'])
+        self.assertLess(done['text'].index('Made so far'), done['text'].index('Your documents'))
+
+        def coded(content: bytes) -> str:
+            return base64.b64encode(content).decode()
+
+        root = {'path': str(self.root)}
+        self.assertEqual(self.posts(result), [('/api/documents', sent) for sent in (
+            {**root, 'action': 'add', 'name': 'Notes.MD', 'content': coded(b'# Notes\n')},
+            {**root, 'action': 'add', 'name': 'scan.docx', 'content': coded(b'PK\x03\x04')},
+            {**root, 'action': 'add', 'name': 'Notes.MD', 'content': coded(b'Again.')},
+            {**root, 'action': 'remove', 'name': 'scan.docx'},
+            {**root, 'action': 'done'}, {**root, 'action': 'done'})])
+
+    def test_no_more_documents_are_sent_than_there_is_room_for(self):
+        self.started()
+        waits = 'Waiting for your documents.'
+        one, two = a_document('one.txt', 3), a_document('two.txt', 3)
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('waiting', waits, needs=True)],
+            'GET /api/training': [self.detail('waiting', waits)],
+            # A run that waits for documents waits for its person, whatever it says of itself.
+            'GET /api/run': [a_run('working', waits, documents=supplied(one, files=2))],
+            'POST /api/documents': [a_run('working', waits,
+                                          documents=supplied(one, two, files=2))]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'room for one'},
+            {'attach': 'Add documents', 'files': [{'name': 'two.txt', 'text': 'two'},
+                                                  {'name': 'three.txt', 'text': 'three'}]},
+            {'snapshot': 'full'}])
+        first, full = result['snapshots']['room for one'], result['snapshots']['full']
+        self.assertIn('Waiting for you', first['text'])
+        self.assertNotIn('Nothing is needed from you right now.', first['text'])
+        self.assertIn('each up to 7.6 MB, and 2 in all.', first['text'])
+        self.assertEqual(first['filled'], ['That is all of them'])
+        self.assertIn('three.txt was not added: there is room for 2 documents and no more.',
+                      full['text'])
+        self.assertIn('2 documents added', full['text'])
+        self.assertIn('1 document added.', full['toasts'])
+        self.assertEqual([sent['name'] for _, sent in self.posts(result)], ['two.txt'])
+
+    def test_each_copy_says_where_it_stands_and_the_copies_are_tried_again(self):
+        self.started()
+        going = 'Drafting the practice scenario.'
+        guide = 'https://docs.example.com/document/d/guide/edit'
+        brief = 'https://docs.example.com/document/d/brief/edit'
+        no_pandoc = ('Pandoc is not installed on this computer. Install it, then try the '
+                     'copies again.')
+
+        def run(doc: str, word: str) -> dict:
+            made = word == 'made'
+            return a_run('working', going, steps=steps(*['done'] * 7), copies=[
+                a_copy('document', 'the learner guide', 'google', 'made', guide),
+                a_copy('document', 'the learner guide', 'word', 'made', 'document.docx'),
+                a_copy('brief', 'the brief', 'google', doc, brief),
+                a_copy('brief', 'the brief', 'word', word,
+                       'product-brief.docx' if made else None, None if made else no_pandoc),
+                # An address that is not a web address is never made into a link.
+                a_copy('yoodli:main', 'the Yoodli scenario', 'word', 'made',
+                       'javascript:alert(1)')])
+
+        busy = {'status': 409, 'body': {'error': 'The copies are already being made.'}}
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('working', going)],
+            'GET /api/training': [self.detail('working', going)],
+            'GET /api/run': [run('out-of-date', 'not-made')],
+            'POST /api/copies': [busy, run('made', 'not-made'), run('made', 'made')]})
+        again = 'Try the copies again'
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'copies'},
+            {'click': again}, {'snapshot': 'refused'},
+            {'click': again}, {'snapshot': 'one left'},
+            {'click': again}, {'snapshot': 'all made'},
+        ])
+        shots = result['snapshots']
+        first = shots['copies']
+        for shown in ('Copies', 'Google Doc of the learner guide', 'Made',
+                      'Word copy of the learner guide',
+                      'Kept with the training as document.docx', 'Google Doc of the brief',
+                      'Out of date', 'Its file has changed since this copy was made.',
+                      'Word copy of the brief', 'Not made', no_pandoc,
+                      'Kept with the training as javascript:alert(1)',
+                      'A copy that is not made is listed as a limitation.'):
+            self.assertIn(shown, first['text'])
+        link = {'rel': 'noopener noreferrer', 'target': '_blank'}
+        self.assertEqual(first['links'], [
+            {'name': 'Open the Google Doc of the learner guide, in a new tab', 'href': guide,
+             **link},
+            {'name': 'Open the Google Doc of the brief, in a new tab', 'href': brief, **link}])
+        # A copy is not what the run needs first, so trying again is not the filled button.
+        self.assertIn(again, first['buttons'])
+        self.assertEqual(first['filled'], [])
+        self.assertLessEqual({'done', 'late', 'off'}, set(first['beads']))
+        self.assertLess(first['text'].index('Made so far'), first['text'].index('Copies'))
+
+        refused = shots['refused']
+        self.assertIn('The copies are already being made. Nothing was changed: the copies are '
+                      'as they were.', refused['text'])
+        self.assertEqual(refused['focus'], again)
+        self.assertIn('Out of date', refused['text'])
+
+        left = shots['one left']
+        self.assertIn('1 copy is still not made. Each says why.', left['toasts'])
+        self.assertNotIn('Out of date', left['text'])
+        self.assertNotIn('already being made', left['text'])
+        self.assertEqual((left['focus'], again in left['buttons']), (again, True))
+
+        made = shots['all made']
+        self.assertIn('Every copy is made.', made['toasts'])
+        self.assertNotIn(again, made['buttons'])
+        self.assertNotIn('Not made', made['text'])
+        self.assertEqual(made['focus'], 'title')
+        self.assertEqual(self.posts(result), [('/api/copies', {'path': str(self.root)})] * 3)
+
+    def test_the_deck_is_left_out_from_the_run_with_a_reason(self):
+        self.started()
+        left = 'Everything but the slide deck is made.'
+        says = (f'{left} Training Studio does not make the deck yet: make it in a '
+                'conversation with your assistant, or leave it out.')
+        over = 'Finished, and ready to use, with 1 thing left out or limited.'
+        reason = 'We present from the guide.'
+        skip = {'path': str(self.root), 'artifact': 'deck', 'decision': 'skip', 'note': reason}
+        lists, details = [self.listed('done', left)], [self.detail('done', left)]
+        # The decision is the one a gate makes. What follows it is in the runner's words.
+        decided = self.captured('POST', '/api/decide', skip)
+        decided['body']['said'] = ('This stage is left out. You can bring it back from the '
+                                   'training at any time. Writing the index.')
+        lists.append(self.listed('done', over))
+        details.append(self.detail('done', over))
+        limited = [f'The deck stage was left out: {reason}']
+        answers = self.answers(**{
+            'GET /api/trainings': lists, 'GET /api/training': details,
+            'GET /api/run': [
+                a_run('done', left, steps=steps(*['done'] * 7),
+                      deck={'says': says, 'artifact': 'deck'}),
+                a_run('done', over, steps=steps(*['done'] * 7), finished={
+                    'ready': True, 'limitations': limited, 'blocking': [],
+                    'index': 'README.md'})],
+            'POST /api/decide': [decided]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'deck'},
+            {'click': 'Leave the deck out'}, {'snapshot': 'sheet'},
+            {'click': 'Skip this stage'}, {'snapshot': 'no reason'},
+            {'type': f'  {reason}  '}, {'click': 'Skip this stage'}, {'snapshot': 'left out'},
+            {'click': 'Stay here'}, {'snapshot': 'after'},
+        ])
+        shots = result['snapshots']
+        notice = shots['deck']
+        for shown in ('Everything but the slide deck is made', left,
+                      'What to do about the slide deck', says,
+                      'Leaving it out takes a reason, which is kept with the training.'):
+            self.assertIn(shown, notice['text'])
+        self.assertNotIn('Finished here', notice['text'])
+        # Making the deck elsewhere is as right as leaving it out, so neither is the filled one.
+        self.assertIn('Leave the deck out', notice['buttons'])
+        self.assertEqual(notice['filled'], [])
+        for absent in ('Pause', 'Stop', 'Resume'):
+            self.assertNotIn(absent, notice['buttons'])
+
+        sheet = shots['sheet']
+        self.assertIn('Why leave this stage out?', sheet['sheet'])
+        self.assertEqual((sheet['filled'], sheet['focus'], sheet['posts']),
+                         (['Skip this stage'], 'note-text', 0))
+        self.assertIn('Give a reason first.', shots['no reason']['sheet'])
+        self.assertEqual(shots['no reason']['posts'], 0)
+
+        # Nothing was read at a gate, so no version is named: only the stage and the reason.
+        self.assertEqual(self.posts(result), [('/api/decide', skip)])
+        after = shots['left out']
+        self.assertIn('This stage is left out.', after['sheet'])
+        self.assertIn('Writing the index.', after['sheet'])
+        self.assertEqual((after['filled'], after['focus']), (['Back to home'], 'sheet'))
+        # It is decided from the run, so nobody is sent to the run they are already on.
+        self.assertNotIn('Watch it carry on', after['buttons'])
+        self.assertNotIn('Leave the deck out', after['buttons'])
+        self.assertIn('Ready to use', after['text'])
+
+        stayed = shots['after']
+        self.assertEqual((stayed['sheet'], stayed['filled'], stayed['focus']),
+                         ('', ['Open the index'], 'title'))
+        self.assertIn(limited[0], stayed['text'])
+
+    def test_a_finished_run_says_whether_it_is_ready_and_opens_its_index(self):
+        self.started()
+        over = 'Finished, and ready to use, with 2 things left out or limited.'
+        limited = ['The deck stage was left out: We present from the guide.',
+                   'The brief has no Word copy: pandoc is not installed on this computer.']
+        index = '# Rolling restarts\n\n## Who it is for\n\nPlatform engineers new to it.\n'
+        read = ok({'artifact': 'README.md', 'file': 'README.md', 'size': len(index),
+                   'binary': False, 'text': index, 'truncated': False})
+        asked = f'/api/file?{urlencode({"path": self.root, "artifact": "README.md"})}'
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('done', over)],
+            'GET /api/training': [self.detail('done', over)],
+            'GET /api/run': [a_run('done', over, steps=steps(*['done'] * 7), finished={
+                'ready': True, 'limitations': limited, 'blocking': [], 'index': 'README.md'})],
+            'GET /api/file': [read]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'ready'},
+            {'click': 'Open the index'}, {'snapshot': 'index'},
+            {'poll': True}, {'click': 'Back'}, {'snapshot': 'back'},
+        ])
+        shots = result['snapshots']
+        ready = shots['ready']
+        for shown in ('Finished', over, 'Ready to use',
+                      '2 things were left out or limited:', *limited,
+                      'The index lists every file, what was checked, and how to use the '
+                      'practice scenarios.'):
+            self.assertIn(shown, ready['text'])
+        self.assertNotIn('Finished here', ready['text'])
+        self.assertEqual((ready['filled'], ready['working']), (['Open the index'], 0))
+        for absent in ('Pause', 'Stop', 'Resume', 'Leave the deck out'):
+            self.assertNotIn(absent, ready['buttons'])
+
+        # The index is read like any other file of the training, once, and drawn as a document.
+        page = shots['index']
+        self.assertEqual((page['heading'], page['title'], page['current'], page['filled']),
+                         ('The index', 'The index · Rolling restarts · Training Studio',
+                          ['Trainings'], []))
+        for shown in ('Who it is for', 'Platform engineers new to it.'):
+            self.assertIn(shown, page['text'])
+        self.assertNotIn('## Who', page['text'])
+        self.assertEqual(page['buttons'][4:6], ['Back', 'Rolling restarts'])
+        self.assertEqual(self.asked(result, 'file'), [asked])
+        self.assertEqual((shots['back']['heading'], shots['back']['filled']),
+                         ('Rolling restarts', ['Open the index']))
+
+        # Not ready: what is in the way, what was kept, and the one thing to do next.
+        stuck = 'Finished, but not ready to use: 1 thing is in the way.'
+        blocking = ['The brief is not approved yet. Open it from the training and decide.']
+        missing = {'status': 404, 'body': {'error': 'README.md does not exist yet.'}}
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('done', stuck)],
+            'GET /api/training': [self.detail('done', stuck)],
+            'GET /api/run': [a_run('done', stuck, steps=steps(*['done'] * 7), finished={
+                'ready': False, 'limitations': limited[:1], 'blocking': blocking,
+                'index': 'README.md'})],
+            'GET /api/file': [missing]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'not ready'},
+            {'click': 'Open the index'}, {'snapshot': 'no index'},
+            {'click': 'Back to the training'}, {'click': 'See what is in the way'},
+            {'snapshot': 'in the way'},
+        ])
+        shots = result['snapshots']
+        halted = shots['not ready']
+        for shown in ('Finished, but not ready to use', stuck,
+                      'Not ready to use yet', '1 thing is in the way:',
+                      blocking[0], 'What was kept: everything that was made.',
+                      '1 thing was left out or limited:', limited[0]):
+            self.assertIn(shown, halted['text'])
+        self.assertEqual(halted['filled'], ['See what is in the way'])
+        self.assertIn('Open the index', halted['buttons'])
+        self.assertIn('late', halted['beads'])
+        # An index that cannot be read is not a dead end.
+        gone = shots['no index']
+        for shown in ('README.md does not exist yet.', 'Nothing was changed. The training and '
+                      'everything it made are as they were.'):
+            self.assertIn(shown, gone['text'])
+        self.assertEqual((gone['heading'], gone['filled']),
+                         ('The index cannot be opened', ['Back to the training']))
+        detail = shots['in the way']
+        self.assertEqual(detail['heading'], 'Rolling restarts')
+        self.assertIn('In the way', detail['text'])
+        self.assertIn('Watch the run', detail['buttons'])
+
+    def at_the_yoodli_gate(self) -> dict:
+        """A Yoodli scenario at its gate, laid out from a scenario that is approved. Returns
+        the address of each gate and of the scenario's file."""
+        self.research()
+        self.content()
+        self.scenario(yoodli=False)
+        self.write('yoodli/main.md', test_cli.example('yoodli.md'))
+        self.cli('save', 'yoodli:main', '--built')
+        self.cli('checkpoint', '--approval', 'page', '--gate', 'yoodli:main', '--stage',
+                 'yoodli', '--question', 'Is this ready to paste into Yoodli?')
+        return {name: f'{{}}?{urlencode({"path": self.root, "artifact": name})}'
+                for name in ('yoodli:main', 'scenario:main')}
+
+    def gate_as_the_runner_gives_it(self, artifact: str, **more) -> dict:
+        found = self.read('gate', path=str(self.root), artifact=artifact)
+        found['body'].update(more)
+        return found
+
+    def test_a_scenario_says_whose_file_it_is_and_a_yoodli_scenario_is_read_beside_it(self):
+        at = self.at_the_yoodli_gate()
+        waits = 'The Yoodli scenario is waiting for your review.'
+        beside = {'artifact': 'scenario:main', 'label': 'the practice scenario'}
+        yours = 'This file is yours: you wrote it, and Training Studio does not rewrite it.'
+        drafted = ('This file is Training Studio’s draft, written from the practice plan in '
+                   'the blueprint.')
+        laid_out = 'Laid out from the practice scenario'
+        scenario, yoodli = (test_cli.example(name).splitlines()[0].lstrip('# ')
+                            for name in ('scenario.md', 'yoodli.md'))
+
+        def answers(whose: str, file: dict) -> dict:
+            return self.answers(**{
+                'GET /api/trainings': [self.listed('waiting', waits)],
+                'GET /api/training': [self.detail('waiting', waits)],
+                'GET /api/run': [a_run('waiting', waits, steps=steps(*['done'] * 7))],
+                'GET ' + at['yoodli:main'].format('/api/gate'): [
+                    self.gate_as_the_runner_gives_it('yoodli:main', beside=beside)],
+                'GET ' + at['scenario:main'].format('/api/gate'): [
+                    self.gate_as_the_runner_gives_it('scenario:main', whose=whose)],
+                'GET /api/file': [file]})
+
+        result = self.run_page(answers('you', self.read('file', path=str(self.root),
+                                                        artifact='scenario:main')), [
+            {'click': 'Review the Yoodli scenario'}, {'snapshot': 'yoodli'},
+            {'poll': True}, {'snapshot': 'later'},
+            {'click': 'Rolling restarts'}, {'click': 'Open the practice scenario'},
+            {'snapshot': 'scenario'},
+        ])
+        shots = result['snapshots']
+        pair = shots['yoodli']
+        self.assertEqual((pair['heading'], pair['filled']), ('The Yoodli scenario', ['Approve']))
+        # Both are on the screen: the one being decided, and the one it was laid out from.
+        for shown in (laid_out, 'Here to compare with. What you are deciding is the Yoodli '
+                      'scenario, not this.', scenario, yoodli, 'Checked for you'):
+            self.assertIn(shown, pair['text'])
+        self.assertLess(pair['text'].index(yoodli), pair['text'].index(laid_out))
+        self.assertNotIn('This file is', pair['text'])
+        # It is read with the address every file of a training is read with, and once.
+        self.assertEqual(shots['later']['text'], pair['text'])
+        self.assertEqual(self.asked(result, 'file'), [at['scenario:main'].format('/api/file')])
+
+        own = shots['scenario']
+        self.assertEqual(own['heading'], 'The practice scenario')
+        self.assertIn(yours, own['text'])
+        self.assertIn('your own wording is laid out under the headings', own['text'])
+        self.assertNotIn(laid_out, own['text'])
+        self.assertNotIn(drafted, own['text'])
+
+        # A scenario the runner drafted says so. One that cannot be read beside the Yoodli
+        # scenario says what happened, and the document being decided is still there.
+        missing = {'status': 404, 'body': {'error': 'scenario.md does not exist yet.'}}
+        result = self.run_page(answers('runner', missing), [
+            {'click': 'Review the Yoodli scenario'}, {'snapshot': 'yoodli'},
+            {'click': 'Open it on its own'}, {'snapshot': 'scenario'},
+        ])
+        shots = result['snapshots']
+        for shown in (laid_out, 'It could not be read. scenario.md does not exist yet.',
+                      'Nothing was changed, and what you are deciding is not affected.', yoodli):
+            self.assertIn(shown, shots['yoodli']['text'])
+        self.assertEqual(shots['yoodli']['filled'], ['Approve'])
+        self.assertEqual(shots['scenario']['heading'], 'The practice scenario')
+        self.assertIn(drafted, shots['scenario']['text'])
+        self.assertNotIn(yours, shots['scenario']['text'])
+
+    def test_home_files_a_finished_training_under_finished_and_says_when_the_deck_is_left(self):
+        self.research(yoodli=False, copies=())
+        for name, file in (('blueprint', 'blueprint.md'), ('document', 'document.md'),
+                           ('brief', 'product-brief.md')):
+            self.make(name, file, test_cli.example(file))
+        self.scenario(yoodli=False)
+        left = ('Everything but the slide deck is made. Training Studio does not make the '
+                'deck yet.')
+        over = 'Finished, and ready to use.'
+        lists = [self.listed('done', left)]
+        # The deck is made in a conversation, and the runner then finishes the training.
+        self.deck()
+        lists.append(self.listed('done', over))
+        self.assertEqual([found['body']['trainings'][0]['state'] for found in lists],
+                         ['in-progress', 'finished'])
+        result = self.run_page(self.answers(**{'GET /api/trainings': lists}), [
+            {'snapshot': 'home'}, {'click': 'Trainings'}, {'snapshot': 'trainings'},
+            {'click': 'Status'}, {'snapshot': 'status'},
+            {'click': 'Home'}, {'poll': True}, {'snapshot': 'finished'},
+            {'click': 'Trainings'}, {'snapshot': 'finished trainings'},
+        ])
+        shots = result['snapshots']
+        # The deck is all that is left: one sentence says so, in the page's own words.
+        home = shots['home']
+        self.assertEqual(home['text'].count(DECK_LEFT), 1)
+        self.assertLess(home['text'].index('In progress'), home['text'].index(DECK_LEFT))
+        for absent in ('Finished', left):
+            self.assertNotIn(absent, home['text'])
+        self.assertEqual((home['working'], home['filled']), (0, ['New training']))
+        for name in ('trainings', 'status'):
+            with self.subTest(screen=name):
+                for shown in ('In progress', DECK_LEFT):
+                    self.assertIn(shown, shots[name]['text'])
+                self.assertNotIn('Finished here', shots[name]['text'])
+
+        # Finished by the runner: under Finished, and nowhere under In progress.
+        done = shots['finished']
+        self.assertLess(done['text'].index('Finished'), done['text'].index(over))
+        for absent in ('In progress', 'Finished here', DECK_LEFT):
+            self.assertNotIn(absent, done['text'])
+        self.assertEqual((done['working'], done['beads']), (0, ['done']))
+        self.assertIn('Open Rolling restarts', done['buttons'])
+        every = shots['finished trainings']
+        self.assertIn('Finished', every['text'])
+        for absent in ('In progress', 'Finished here'):
+            self.assertNotIn(absent, every['text'])
 
     def test_the_plain_desk_shows_none_of_it(self):
         self.at_the_blueprint_gate()
