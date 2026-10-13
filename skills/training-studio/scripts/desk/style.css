@@ -1106,6 +1106,16 @@ code,
   font-weight: 650;
 }
 
+/* A choice too wide for its card breaks its words over two lines rather than spilling out. */
+.field > .segmented {
+  max-width: 100%;
+}
+
+.field .seg-option {
+  line-height: 1.2;
+  white-space: normal;
+}
+
 .field-hint {
   font-size: 0.93rem;
 }
@@ -1139,6 +1149,30 @@ textarea.input {
 .input[readonly] {
   background: none;
   border-style: dashed;
+}
+
+/* The browser's own file picker, on paper like any other box. Its button is a capsule. */
+.input[type="file"] {
+  padding: 0.4rem 0.5rem;
+  cursor: pointer;
+}
+
+.input[type="file"]::file-selector-button {
+  min-height: 1.9rem;
+  margin-right: 0.75rem;
+  padding: 0.2rem 0.9rem;
+  background: var(--well);
+  color: var(--ink);
+  border: 1px solid var(--quiet);
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.input:disabled {
+  opacity: 0.55;
+  cursor: progress;
 }
 
 .chips {
@@ -1274,7 +1308,11 @@ p.fact > .bead {
   font-weight: 700;
 }
 
-.step[data-state="failed"] > .step-words {
+/* A step that failed, a document that cannot be read, a copy that is not there. */
+.step[data-state="failed"] > .step-words,
+.step[data-state="unread"] > .step-words,
+.step[data-state="out-of-date"] > .step-words,
+.step[data-state="not-made"] > .step-words {
   color: var(--late);
   font-weight: 700;
 }
@@ -1353,6 +1391,17 @@ p.fact > .bead {
 .question-id {
   display: block;
   color: var(--quiet);
+}
+
+/* What a Yoodli scenario was laid out from. It goes beside the document where there is
+   room, and under it where there is not. */
+.beside > * + * {
+  margin-top: 0.6rem;
+}
+
+/* The index of a finished training: one document, at a width that reads well. */
+.index {
+  max-width: 56rem;
 }
 
 .aside {
@@ -1675,6 +1724,32 @@ summary {
     top: 5.4rem;
     max-height: calc(100vh - 6.5rem);
     overflow-y: auto;
+  }
+
+  /* Two documents side by side take the whole width, so the review goes above them. */
+  .gate-pair {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .gate-pair > .aside {
+    grid-area: 1 / 1 / 2 / 3;
+    position: static;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    align-items: start;
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .gate-pair > .reading {
+    grid-area: 2 / 1;
+  }
+
+  .gate-pair > .beside {
+    grid-area: 2 / 2;
+  }
+
+  .gate-pair .doc {
+    padding: clamp(1.1rem, 2.4vw, 1.8rem);
   }
 }
 

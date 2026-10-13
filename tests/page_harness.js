@@ -7,8 +7,10 @@
 //
 // A step is one of: {snapshot: name}, {click: the name of a control}, {fill: the label of a
 // box, value: what is typed}, {type: text} for the note in the sheet, {poll: true} for the
-// page's own refresh, and {key: 'Escape'}. A box that is filled is left as a person leaves
-// it, unless the step says {stay: true}: then they are still typing in it.
+// page's own refresh, {key: 'Escape'}, and {attach: the label of a file picker, files: what
+// is chosen in it}. A box that is filled is left as a person leaves it, unless the step says
+// {stay: true}: then they are still typing in it. A chosen file is {name, text} or {name,
+// bytes}; {size} says how large it claims to be, for one too large to write out here.
 //
 // The document here has no HTML parser at all. A script that tried to set innerHTML would
 // throw, so anything that reaches the page as markup fails the test that runs this.
@@ -384,6 +386,11 @@ function snapshot() {
     current: document.body.querySelectorAll('[aria-current]').map(name),
     sheet: sheet.hidden ? '' : words(sheet).replace(/\n+/g, '\n'),
     toasts: document.body.querySelectorAll('.toast').map((node) => node.textContent),
+    links: document.body.querySelectorAll('a').filter((node) => visible(node) && node.href)
+      .map((node) => ({ name: name(node), href: node.href, rel: node.rel,
+        target: node.target })),
+    off: controls.filter((node) => visible(node) && node.disabled)
+      .map((node) => name(node) || node.id),
     posts: report.requests.filter((request) => request.method === 'POST').length,
     badge: badge.hidden ? '' : badge.textContent,
     fields: Object.fromEntries(boxes().map(([label, held]) => [label, held.value])),
@@ -396,6 +403,25 @@ function snapshot() {
     sidebar: !document.getElementById('sidebar').hidden,
     pace: report.paces[report.paces.length - 1] || 0,
   };
+}
+
+// There is no File API here. A chosen file is its name, its size and its bytes, and the one
+// way the page reads a file is stood in for: the bytes, in base64, after a few words and a
+// comma, handed over a moment later.
+function chosen(file) {
+  const bytes = Buffer.from(file.bytes || file.text || '');
+  return { name: file.name, type: file.type || '', bytes,
+    size: file.size === undefined ? bytes.length : file.size };
+}
+
+class FileReader {
+  readAsDataURL(file) {
+    queueMicrotask(() => {
+      this.result = 'data:' + (file.type || 'application/octet-stream') + ';base64,'
+        + file.bytes.toString('base64');
+      if (this.onload) this.onload();
+    });
+  }
 }
 
 function control(label) {
@@ -470,6 +496,7 @@ async function app(file) {
       },
     },
     navigator: { clipboard: { writeText: () => Promise.resolve() } },
+    FileReader,
     addEventListener: (type, listener) => {
       (windowListeners[type] = windowListeners[type] || []).push(listener);
     },
@@ -515,6 +542,12 @@ async function app(file) {
         held.value = step.value;
         held.dispatch('input', { target: held });
         if (!step.stay) held.dispatch('change', { target: held });
+      }
+      if (step.attach !== undefined) {
+        const held = box(step.attach);
+        held.focus();
+        held.files = step.files.map(chosen);
+        held.dispatch('change', { target: held });
       }
       if (step.poll) await timers.filter((timer) => timer.name === 'refresh').pop()();
       if (step.key) for (const listener of documentListeners.keydown || []) listener({ key: step.key });
