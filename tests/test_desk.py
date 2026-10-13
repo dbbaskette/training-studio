@@ -2438,10 +2438,13 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             {'fill': 'The repository’s address', 'value': address}, {'snapshot': 'checked'},
             {'fill': name, 'value': 'Field training'},
             {'click': 'Save and go on'}, {'snapshot': 'refused'},
-            {'fill': name, 'value': 'field-training'},
+            {'fill': name, 'value': 'field-training'}, {'snapshot': 'put right'},
             {'click': 'Save and go on'}, {'snapshot': 'saved'},
         ])
         shots = result['snapshots']
+        # A box that is being put right no longer says it is wrong.
+        self.assertEqual(shots['put right']['invalid'], [])
+        self.assertNotIn('with no spaces, starting', shots['put right']['text'])
 
         # The rule is said before anyone breaks it.
         self.assertIn('a short name with no spaces, such as field-training',

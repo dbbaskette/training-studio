@@ -360,6 +360,8 @@ function field(id, label, held, name, about) {
   input.setAttribute('aria-describedby', (hint ? id + '-hint ' : '') + id + '-problem');
   input.addEventListener('input', () => {
     held[name] = input.value;
+    // A box that is being put right no longer says it is wrong.
+    if (input.getAttribute('aria-invalid')) refuse(id, '');
     if (spec.typed) spec.typed();
   });
   if (spec.changed) input.addEventListener('change', spec.changed);
