@@ -49,6 +49,19 @@ SHAPE = {'schema': int, 'id': str, 'title': str, 'levels': list, 'sizing': dict,
          'exports': dict, 'decisions': list, 'events': list}
 SETTINGS = ('deck_target', 'brand', 'brief_kind', 'stages')
 COPIES = ('google', 'word')
+APPROVAL = ('chat', 'page')
+DECISIONS = ('approve', 'accept', 'revise', 'rebuild', 'skip', 'restore')
+REQUESTS = ('revise', 'rebuild')
+WHERE = {'chat': 'in the conversation', 'page': 'on the page'}
+OPEN_THE_PAGE = ('The user opens the page by running `training.py desk` in a terminal of '
+                 'their own.')
+LABELS = {'intake': 'intake summary', 'research-plan': 'research plan',
+          'research': 'research report', 'blueprint': 'blueprint', 'document': 'learner guide',
+          'brief': 'brief', 'deck': 'slide deck', 'scenario': 'practice scenario',
+          'yoodli': 'Yoodli scenario'}
+STAGE_LABELS = {'document': 'the learner guide stage', 'brief': 'the brief stage',
+                'deck': 'the deck stage', 'scenario': 'the practice stage',
+                'yoodli': 'the Yoodli stage'}
 
 
 class WorkspaceError(Exception):
@@ -113,6 +126,14 @@ def load(root: Path) -> dict:
     # A training started before copies were a choice asked for none.
     if not isinstance(session['settings'].setdefault('copies', []), list):
         raise WorkspaceError('The session record has no usable "settings.copies"; '
+                             'refusing to change it.')
+    # One started before approval could move to the page is approved in the conversation.
+    if session['settings'].setdefault('approval', 'chat') not in APPROVAL:
+        raise WorkspaceError('The session record has no usable "settings.approval"; '
+                             'refusing to change it.')
+    requests = session.setdefault('requests', [])
+    if not isinstance(requests, list) or not all(isinstance(item, dict) for item in requests):
+        raise WorkspaceError('The session record has no usable "requests"; '
                              'refusing to change it.')
     return session
 
@@ -207,11 +228,12 @@ def prefix(level: str | None) -> str:
 
 def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
          deck_target: str | None = None, brand: str | None = None,
-         yoodli: bool = False, copies=()) -> dict:
+         yoodli: bool = False, copies=(), approval: str = 'chat') -> dict:
     if not title.strip():
         raise WorkspaceError('A training needs a title.')
     levels = check_levels(levels)
     copies = check_copies(copies)
+    check_choice(approval, APPROVAL, 'Approval')
     check_choice(brief_kind, BRIEF_KINDS, 'The brief kind')
     check_choice(deck_target, DECK_TARGETS, 'The deck target')
     if root == SKILL_DIR or root in SKILL_DIR.parents:
@@ -235,8 +257,10 @@ def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
         'stage': 'intake',
         'next_step': 'Complete intake',
         'pending_question': None,
+        'gate': None,
+        'requests': [],
         'settings': {'deck_target': deck_target, 'brand': brand, 'brief_kind': brief_kind,
-                     'copies': copies,
+                     'copies': copies, 'approval': approval,
                      'stages': [stage for stage in SKIPPABLE
                                 if stage not in OPTIONAL or (stage == 'yoodli' and yoodli)]},
         'unavailable': {},
@@ -263,6 +287,20 @@ def split(name: str) -> tuple[str, str | None]:
 
 def qualify(base: str, level: str | None) -> str:
     return base if level is None else f'{base}@{level}'
+
+
+def label(name: str) -> str:
+    """An artifact in plain words: "the level 101 blueprint"."""
+    base, level = split(name)
+    kind, _, ident = base.partition(':')
+    words = LABELS.get(kind, base)
+    if ident and ident != 'main':
+        words += f' "{ident}"'
+    return f'the {words}' if level is None else f'the level {level} {words}'
+
+
+def sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 def scenario_file(root: Path, level: str | None, ident: str) -> str:
@@ -403,13 +441,18 @@ def inputs(root: Path, session: dict, name: str) -> dict:
 
 # --- saving and history ---------------------------------------------------------
 
+def history_file(root: Path, name: str, digest: str, suffix: str) -> Path:
+    """Where the kept copy of one version of an artifact is, or would be."""
+    folder = re.sub(r'[:@]', '-', name)
+    return root / STATE_DIR / 'history' / folder / f'{digest}{suffix}'
+
+
 def snapshot(root: Path, name: str, path: Path) -> str | None:
     """Keep a content-addressed copy of a file and return its hash."""
     digest = sha256_file(path)
     if digest is None:
         return None
-    folder = re.sub(r'[:@]', '-', name)
-    kept = root / STATE_DIR / 'history' / folder / f'{digest}{path.suffix}'
+    kept = history_file(root, name, digest, path.suffix)
     if not kept.exists():
         write_atomic(kept, path.read_bytes())
     return digest
@@ -489,7 +532,10 @@ def save(root: Path, name: str, source: Path | None = None, built: bool = False,
         pinned_inputs(root, session, name)
         snapshot(root, name, path)
         write_atomic(path, source.read_bytes())
-    entry = record(root, session, name, built=built or (source is not None and not edit))
+    rebuilt = built or (source is not None and not edit)
+    entry = record(root, session, name, built=rebuilt)
+    if rebuilt:
+        close_requests(session, name)
     if coverage is not None:
         blueprint = artifact(root, session, qualify('blueprint', split(name)[1]))['file']
         entry['reviewed_coverage'] = {'deck_sha256': entry['sha256'],
@@ -618,6 +664,9 @@ def status(root: Path) -> dict:
         'stage': session['stage'],
         'next_step': session.get('next_step'),
         'pending_question': session.get('pending_question'),
+        'gate': session.get('gate'),
+        'approval': session['settings']['approval'],
+        'requests': session['requests'],
         'settings': session['settings'],
         'unavailable_stages': session['unavailable'],
         'pins': session['pins'],
@@ -645,11 +694,25 @@ def research_record(root: Path) -> dict | None:
     return value if recognised else None
 
 
-@mutating
-def approve(root: Path, name: str, accept_stale: str | None = None) -> dict:
-    """Record the user's approval of what is on disk, against what it was built from."""
-    session = load(root)
+def on_the_page_only(session: dict, by: str, what: str) -> None:
+    """Refuse a decision that did not come from the page, once approval has moved there."""
+    if session['settings']['approval'] == 'page' and by != 'page':
+        raise WorkspaceError(f'{sentence(what)} is decided on the page for this training, not '
+                             f'on the command line. {OPEN_THE_PAGE}')
+
+
+def close_requests(session: dict, name: str) -> None:
+    session['requests'] = [request for request in session['requests']
+                           if request.get('artifact') != name]
+
+
+def _approve(root: Path, session: dict, name: str, accept_stale: str | None,
+             by: str) -> dict:
+    """Approve what is on disk in a loaded record. The caller stores it."""
     spec = artifact(root, session, name)
+    check_choice(by, tuple(WHERE), 'Who decided')
+    if name != 'intake':  # intake records the user's own answers, given in the conversation
+        on_the_page_only(session, by, f'approval of {label(name)}')
     path = managed(root, spec['file'])
     state = statuses(root, session)
     if state[name] in ('skipped', 'unavailable'):
@@ -668,10 +731,11 @@ def approve(root: Path, name: str, accept_stale: str | None = None) -> dict:
                 'Rebuild it, or approve with a reason to accept it as it is.')
         session['decisions'].append({'at': now(), 'artifact': name,
                                      'decision': 'accepted-stale', 'from': entry['built_from'],
-                                     'to': current, 'reason': accept_stale})
+                                     'to': current, 'reason': accept_stale, 'by': by})
         entry['built_from'] = current
     entry['approved'] = {'sha256': entry['sha256'], 'inputs': dict(entry['built_from']),
-                         'at': now()}
+                         'at': now(), 'by': by}
+    close_requests(session, name)
     warnings = []
     if name == 'research':
         write_atomic(root / RESEARCH_COPY, path.read_bytes())
@@ -689,9 +753,130 @@ def approve(root: Path, name: str, accept_stale: str | None = None) -> dict:
                              if value == 'pending')
             if pending:
                 warnings.append('Research questions still pending: ' + ', '.join(pending))
-    log(session, 'approve', artifact=name, sha256=entry['sha256'])
-    store(root, session)
+    log(session, 'approve', artifact=name, sha256=entry['sha256'], by=by)
     return {'artifact': name, 'approved': entry['approved'], 'warnings': warnings}
+
+
+@mutating
+def approve(root: Path, name: str, accept_stale: str | None = None,
+            by: str = 'chat') -> dict:
+    """Record the user's approval of what is on disk, against what it was built from."""
+    session = load(root)
+    outcome = _approve(root, session, name, accept_stale, by)
+    store(root, session)
+    return outcome
+
+
+# --- decisions ------------------------------------------------------------------
+
+def review_file(name: str) -> str:
+    """Where the reviews of an artifact are kept, with `:` and `@` written as `-`."""
+    return 'reviews/' + re.sub(r'[:@]', '-', name) + '.md'
+
+
+def review_path(root: Path, name: str) -> Path:
+    """An artifact's review file, refused if writing it would leave the training directory."""
+    path = managed(root, review_file(name))
+    if path.parent.is_symlink() or root.resolve() not in path.resolve().parents:
+        raise WorkspaceError('The reviews folder must be a real folder in the training '
+                             'directory.')
+    return path
+
+
+def append_review(root: Path, name: str, heading: str, note: str | None) -> None:
+    """Add a dated entry to an artifact's review file, making the file if it is missing."""
+    path = review_path(root, name)
+    text = path.read_text(encoding='utf-8') if path.is_file() else f'# Reviews of {name}\n'
+    entry = f'\n## {heading}\n'
+    if note:
+        # Quoted, so nothing in a note can pass for a heading or another entry.
+        entry += '\n' + '\n'.join(f'> {line}'.rstrip() for line in note.splitlines()) + '\n'
+    write_atomic(path, (text.rstrip('\n') + '\n' + entry).encode('utf-8'))
+
+
+def shortened(note: str, limit: int = 200) -> str:
+    """A note as one line of a sentence; `requests` and the review keep it whole."""
+    line = ' '.join(note.split())
+    return line if len(line) <= limit else line[:limit - 1].rstrip() + '…'
+
+
+DECIDED = {'approve': 'approved', 'accept': 'accepted as it is',
+           'revise': 'changes asked for', 'rebuild': 'a rebuild asked for',
+           'skip': 'its stage left out', 'restore': 'its stage brought back'}
+
+
+@mutating
+def decide(root: Path, target: str, decision: str, note: str | None = None,
+           by: str = 'chat', seen: str | None = None) -> dict:
+    """Record what the user decided about an artifact, at a gate or after it.
+
+    `approve`, `accept`, `revise` and `rebuild` are about one artifact. `skip` and `restore`
+    are about a stage, named itself or by one of its artifacts. `seen` is the hash of the
+    version the user was shown: an approval of anything else is refused.
+    """
+    session = load(root)
+    check_choice(decision, DECISIONS, 'A decision')
+    check_choice(by, tuple(WHERE), 'Who decided')
+    note = (note or '').strip() or None
+    where, brief = WHERE[by], shortened(note or '')
+    names = artifact_names(root, session)
+    outcome: dict = {}
+    if decision in ('skip', 'restore'):
+        if target in SKIPPABLE:
+            stage = target
+        elif target in names:
+            stage = artifact(root, session, target)['stage']
+        else:
+            raise WorkspaceError(f'{target} is not a stage or an artifact of this training.')
+        outcome = _skip(session, stage, note, clear=decision == 'restore', by=by)
+        names = list(dict.fromkeys(names + artifact_names(root, session)))
+        about = [name for name in names if artifact(root, session, name)['stage'] == stage]
+        for name in about:
+            review_path(root, name)
+        subject = STAGE_LABELS[stage]
+        said = (f'{subject} was brought back {where}.' if decision == 'restore'
+                else f'{subject} was left out {where}: {brief}')
+        outcome['stage'] = stage
+    else:
+        if target not in names:
+            raise WorkspaceError(f'{target} is not an artifact of this training.')
+        about, subject = [target], label(target)
+        review_path(root, target)  # before anything is decided: the decision is written there
+        outcome['artifact'] = target
+        if decision in ('approve', 'accept'):
+            if decision == 'accept' and not note:
+                raise WorkspaceError('Give a reason for accepting it as it is.')
+            file = managed(root, artifact(root, session, target)['file'])
+            if seen is not None and seen != sha256_file(file):
+                raise WorkspaceError(f'{sentence(subject)} has changed since it was opened. '
+                                     'Read the new version before deciding.')
+            outcome.update(_approve(root, session, target,
+                                    note if decision == 'accept' else None, by))
+            said = (f'{subject} was approved {where}.' if decision == 'approve'
+                    else f'{subject} was accepted as it is {where}: {brief}')
+        else:
+            on_the_page_only(session, by, f'a request about {subject}')
+            state = statuses(root, session)[target]
+            if state in ('not-started', 'skipped', 'unavailable'):
+                raise WorkspaceError(f'Nothing to change in {target}: it is {state}.')
+            if decision == 'revise' and not note:
+                raise WorkspaceError('Say what should change.')
+            request = {'artifact': target, 'kind': decision, 'note': note, 'at': now()}
+            session['requests'].append(request)
+            log(session, 'request', artifact=target, kind=decision, by=by)
+            outcome['request'] = request
+            said = (f'Changes to {subject} were asked for {where}: {brief}'
+                    if decision == 'revise'
+                    else f'A rebuild of {subject} was asked for {where}'
+                    + (f': {brief}' if note else '.'))
+    session['pending_question'] = None
+    session['gate'] = None
+    session['next_step'] = sentence(said)
+    store(root, session)
+    for name in about:
+        append_review(root, name, f'Decision: {DECIDED[decision]} {where}, {now()}', note)
+    return {**outcome, 'decision': decision, 'by': by, 'next_step': session['next_step'],
+            'requests': session['requests']}
 
 
 # --- exports --------------------------------------------------------------------
@@ -732,14 +917,16 @@ def export(root: Path, name: str, file: str | None = None,
 
 # --- skip, checkpoint, pin --------------------------------------------------------
 
-@mutating
-def skip(root: Path, stage: str, reason: str | None = None, unavailable: bool = False,
-         clear: bool = False) -> dict:
-    """Skip a stage, mark it unavailable, or clear either mark."""
-    session = load(root)
+def _skip(session: dict, stage: str, reason: str | None = None, unavailable: bool = False,
+          clear: bool = False, by: str = 'chat') -> dict:
+    """Skip a stage, mark it unavailable, or clear either mark, in a loaded record."""
     if stage not in SKIPPABLE:
         raise WorkspaceError('Only these stages can be skipped: ' + ', '.join(SKIPPABLE))
+    check_choice(by, tuple(WHERE), 'Who decided')
     wanted = session['settings']['stages']
+    # Saying a stage could not run, or that it now can, reports a fact. The rest are decisions.
+    if not (clear and stage in wanted) and not (unavailable and not clear):
+        on_the_page_only(session, by, f'leaving out or bringing back {STAGE_LABELS[stage]}')
     if clear:
         if stage == 'yoodli' and not {'brief', 'scenario'} <= set(wanted):
             raise WorkspaceError('Restore the brief and the scenarios first; a Yoodli '
@@ -748,7 +935,7 @@ def skip(root: Path, stage: str, reason: str | None = None, unavailable: bool = 
             wanted.append(stage)
             wanted.sort(key=SKIPPABLE.index)
         session['unavailable'].pop(stage, None)
-        log(session, 'restore', stage=stage)
+        log(session, 'restore', stage=stage, by=by)
     elif not reason:
         raise WorkspaceError('Give a reason.')
     elif unavailable:
@@ -761,9 +948,18 @@ def skip(root: Path, stage: str, reason: str | None = None, unavailable: bool = 
                                  'brief as its knowledge source.')
         if stage in wanted:
             wanted.remove(stage)
-        log(session, 'skip', stage=stage, reason=reason)
-    store(root, session)
+        log(session, 'skip', stage=stage, reason=reason, by=by)
     return {'stages': wanted, 'unavailable': session['unavailable']}
+
+
+@mutating
+def skip(root: Path, stage: str, reason: str | None = None, unavailable: bool = False,
+         clear: bool = False, by: str = 'chat') -> dict:
+    """Skip a stage, mark it unavailable, or clear either mark."""
+    session = load(root)
+    outcome = _skip(session, stage, reason, unavailable, clear, by)
+    store(root, session)
+    return outcome
 
 
 @mutating
@@ -771,12 +967,21 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
                question: str | None = None, clear_question: bool = False,
                deck_target: str | None = None, brand: str | None = None,
                brief_kind: str | None = None, level: str | None = None,
-               levels=None, copies=None) -> dict:
+               levels=None, copies=None, approval: str | None = None,
+               gate: str | None = None, by: str = 'chat') -> dict:
     """Record where the run is and change settings."""
     session = load(root)
     check_choice(stage, STAGES, 'The stage')
     check_choice(deck_target, DECK_TARGETS, 'The deck target')
     check_choice(brief_kind, BRIEF_KINDS, 'The brief kind')
+    check_choice(approval, APPROVAL, 'Approval')
+    check_choice(by, tuple(WHERE), 'Who decided')
+    if approval is not None and approval != session['settings']['approval']:
+        if approval == 'chat' and by != 'page':
+            raise WorkspaceError('Approval was moved to the page for this training, and only '
+                                 f'the page can move it back. {OPEN_THE_PAGE}')
+        session['settings']['approval'] = approval
+        log(session, 'approval', mode=approval, by=by)
     if levels is not None:
         if not session['levels']:
             raise WorkspaceError('A plain training cannot be given levels; start a levelled '
@@ -798,8 +1003,14 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
         session['next_step'] = next_step
     if clear_question:
         session['pending_question'] = None
+        session['gate'] = None
     if question is not None:
         session['pending_question'] = question
+    if gate is not None:
+        if gate not in artifact_names(root, session):
+            raise WorkspaceError(f'{gate} is not an artifact of this training, so it cannot '
+                                 'be at the gate.')
+        session['gate'] = gate
     if deck_target is not None:
         session['settings']['deck_target'] = deck_target
     if brand is not None:
@@ -813,7 +1024,7 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
     return {'stage': session['stage'], 'level': session.get('level'),
             'levels': session['levels'], 'next_step': session.get('next_step'),
             'pending_question': session.get('pending_question'),
-            'settings': session['settings']}
+            'gate': session.get('gate'), 'settings': session['settings']}
 
 
 @mutating

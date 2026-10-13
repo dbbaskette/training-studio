@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import unittest
 from unittest import mock
 
 import helpers
@@ -791,6 +792,385 @@ class CheckpointTests(PlainCase):
     def test_pin_refuses_other_skills(self):
         with self.assertRaisesRegex(WorkspaceError, 'harness-research'):
             workspace.pin(self.root, 'another-skill', task='t', runtime='/r')
+
+
+class ApprovalModeTests(PlainCase):
+    """Where a gate is decided: in the conversation, or on the page (matrix rows 74 to 81)."""
+
+    def events(self) -> list[dict]:
+        return workspace.load(self.root)['events']
+
+    def test_row_74_approval_is_in_chat_unless_asked_for(self):
+        report = workspace.status(self.root)
+        self.assertEqual((report['approval'], report['settings']['approval']), ('chat', 'chat'))
+        self.assertEqual((report['gate'], report['requests']), (None, []))
+        other = self.root.parent / 'other'
+        other.mkdir()
+        session = workspace.init(other, 'Topic', approval='page')
+        self.assertEqual(session['settings']['approval'], 'page')
+        with self.assertRaisesRegex(WorkspaceError, 'chat, page'):
+            workspace.init(self.root.parent / 'another', 'Topic', approval='email')
+
+    def test_row_74_a_training_started_before_the_page_reads_as_chat(self):
+        path = workspace.session_path(self.root)
+        session = json.loads(path.read_text(encoding='utf-8'))
+        del session['settings']['approval'], session['requests'], session['gate']
+        path.write_text(json.dumps(session), encoding='utf-8')
+        report = workspace.status(self.root)
+        self.assertEqual((report['approval'], report['gate'], report['requests']),
+                         ('chat', None, []))
+        self.build('intake')
+        workspace.approve(self.root, 'intake')
+        self.assertEqual(self.state()['intake'], 'approved')
+
+    def test_a_record_with_an_unknown_approval_mode_is_refused(self):
+        path = workspace.session_path(self.root)
+        session = json.loads(path.read_text(encoding='utf-8'))
+        session['settings']['approval'] = 'email'
+        path.write_text(json.dumps(session), encoding='utf-8')
+        with self.assertRaisesRegex(WorkspaceError, 'settings.approval'):
+            workspace.status(self.root)
+
+    def test_row_75_a_checkpoint_moves_approval_to_the_page(self):
+        outcome = workspace.checkpoint(self.root, approval='page')
+        self.assertEqual(outcome['settings']['approval'], 'page')
+        self.assertEqual(workspace.status(self.root)['approval'], 'page')
+        self.assertEqual(self.events()[-2], {'at': self.events()[-2]['at'], 'event': 'approval',
+                                             'mode': 'page', 'by': 'chat'})
+        with self.assertRaisesRegex(WorkspaceError, 'chat, page'):
+            workspace.checkpoint(self.root, approval='email')
+
+    def test_row_76_only_the_page_moves_approval_back_to_chat(self):
+        workspace.checkpoint(self.root, approval='page')
+        with self.assertRaisesRegex(WorkspaceError, 'only the page can move it back'):
+            workspace.checkpoint(self.root, approval='chat')
+        self.assertEqual(workspace.status(self.root)['approval'], 'page')
+        workspace.checkpoint(self.root, approval='page', next_step='Still on the page')
+        workspace.checkpoint(self.root, approval='chat', by='page')
+        self.assertEqual(workspace.status(self.root)['approval'], 'chat')
+        self.assertEqual(self.events()[-2]['by'], 'page')
+        workspace.checkpoint(self.root, approval='chat')
+
+    def test_row_77_the_command_line_cannot_approve_in_page_mode(self):
+        self.approved('intake', 'research-plan')
+        self.build('research')
+        workspace.checkpoint(self.root, approval='page')
+        for call in (lambda: workspace.approve(self.root, 'research'),
+                     lambda: workspace.approve(self.root, 'research', accept_stale='Fine'),
+                     lambda: workspace.decide(self.root, 'research', 'approve'),
+                     lambda: workspace.decide(self.root, 'research', 'accept', 'Fine')):
+            with self.assertRaisesRegex(
+                    WorkspaceError, 'decided on the page.*training.py desk.*terminal of their own'):
+                call()
+        self.assertEqual(self.state()['research'], 'draft')
+        self.assertFalse((self.root / 'reviews' / 'research.md').exists())
+
+    def test_row_78_intake_is_still_approved_from_the_command_line_in_page_mode(self):
+        workspace.checkpoint(self.root, approval='page')
+        self.build('intake')
+        outcome = workspace.decide(self.root, 'intake', 'approve')
+        self.assertEqual((outcome['by'], outcome['approved']['by']), ('chat', 'chat'))
+        self.assertEqual(self.state()['intake'], 'approved')
+
+    def test_row_79_the_command_line_cannot_skip_or_restore_in_page_mode(self):
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
+        workspace.checkpoint(self.root, approval='page')
+        before = workspace.load(self.root)['settings']['stages']
+        for call in (lambda: workspace.skip(self.root, 'deck', reason='Not needed'),
+                     lambda: workspace.decide(self.root, 'deck', 'skip', 'Not needed'),
+                     lambda: workspace.skip(self.root, 'yoodli', clear=True),
+                     lambda: workspace.decide(self.root, 'yoodli', 'restore')):
+            with self.assertRaisesRegex(WorkspaceError, 'decided on the page'):
+                call()
+        self.assertEqual(workspace.load(self.root)['settings']['stages'], before)
+
+    def test_row_80_saying_a_stage_could_not_run_is_not_a_decision(self):
+        workspace.checkpoint(self.root, approval='page')
+        workspace.skip(self.root, 'deck', reason='harness-slides is not installed',
+                       unavailable=True)
+        self.assertEqual(self.state()['deck'], 'unavailable')
+        workspace.skip(self.root, 'deck', clear=True)
+        self.assertEqual(self.state()['deck'], 'not-started')
+
+    def test_row_81_a_request_is_not_made_from_the_command_line_in_page_mode(self):
+        self.build('intake')
+        workspace.checkpoint(self.root, approval='page')
+        for decision in ('revise', 'rebuild'):
+            with self.assertRaisesRegex(WorkspaceError, 'decided on the page'):
+                workspace.decide(self.root, 'intake', decision, 'Shorter')
+        self.assertEqual(workspace.status(self.root)['requests'], [])
+
+
+class DecisionTests(PlainCase):
+    """One function records every decision, from the page or the command line (matrix rows
+    82 to 92)."""
+
+    def review(self, name: str = 'document') -> str:
+        return (self.root / 'reviews' / f'{name}.md').read_text(encoding='utf-8')
+
+    def stale_document(self) -> None:
+        self.approved(*CHAIN)
+        self.write('blueprint.md', helpers.CONTENT['blueprint'] + 'edited\n')
+        workspace.approve(self.root, 'blueprint')
+
+    def at_the_document_gate(self, approval: str = 'page') -> None:
+        self.approved(*CHAIN[:-1])
+        self.build('document')
+        workspace.checkpoint(self.root, approval=approval, gate='document',
+                             question='Approve the guide?', next_step='Waiting')
+
+    def test_row_82_a_decision_says_who_made_it(self):
+        self.at_the_document_gate()
+        outcome = workspace.decide(self.root, 'document', 'approve', by='page')
+        self.assertEqual((outcome['decision'], outcome['by'], outcome['approved']['by']),
+                         ('approve', 'page', 'page'))
+        session = workspace.load(self.root)
+        self.assertEqual(session['artifacts']['document']['approved']['by'], 'page')
+        self.assertEqual(session['events'][-1]['event'], 'approve')
+        self.assertEqual(session['events'][-1]['by'], 'page')
+        self.assertEqual(session['artifacts']['blueprint']['approved']['by'], 'chat')
+        self.assertEqual(self.state()['document'], 'approved')
+        with self.assertRaisesRegex(WorkspaceError, 'chat, page'):
+            workspace.decide(self.root, 'document', 'approve', by='someone')
+
+    def test_row_83_accepting_as_it_is_needs_a_reason(self):
+        self.stale_document()
+        workspace.checkpoint(self.root, approval='page')
+        with self.assertRaisesRegex(WorkspaceError, 'Give a reason'):
+            workspace.decide(self.root, 'document', 'accept', '  ', by='page')
+        with self.assertRaisesRegex(WorkspaceError, 'older version'):
+            workspace.decide(self.root, 'document', 'approve', by='page')
+        self.assertEqual(self.state()['document'], 'stale')
+        workspace.decide(self.root, 'document', 'accept', 'Wording only', by='page')
+        self.assertEqual(self.state()['document'], 'approved')
+        decision = workspace.load(self.root)['decisions'][-1]
+        self.assertEqual((decision['decision'], decision['reason'], decision['by']),
+                         ('accepted-stale', 'Wording only', 'page'))
+        self.assertIn('accepted as it is on the page', self.review())
+        self.assertIn('> Wording only', self.review())
+
+    def test_row_84_asking_for_changes_approves_nothing_and_opens_a_request(self):
+        self.at_the_document_gate()
+        with self.assertRaisesRegex(WorkspaceError, 'Say what should change'):
+            workspace.decide(self.root, 'document', 'revise', by='page')
+        self.assertEqual(workspace.status(self.root)['requests'], [])
+        outcome = workspace.decide(self.root, 'document', 'revise', 'Shorten the opening',
+                                   by='page')
+        report = workspace.status(self.root)
+        self.assertEqual(report['artifacts']['document'], 'draft')
+        self.assertEqual(report['requests'], [{'artifact': 'document', 'kind': 'revise',
+                                               'note': 'Shorten the opening',
+                                               'at': outcome['request']['at']}])
+        self.assertEqual(workspace.load(self.root)['events'][-1],
+                         {'at': outcome['request']['at'], 'event': 'request',
+                          'artifact': 'document', 'kind': 'revise', 'by': 'page'})
+
+    def test_row_85_a_rebuild_is_a_request_whose_note_is_optional(self):
+        self.at_the_document_gate()
+        workspace.decide(self.root, 'document', 'rebuild', by='page')
+        workspace.decide(self.root, 'document', 'rebuild', 'Start from the new research',
+                         by='page')
+        requests = workspace.status(self.root)['requests']
+        self.assertEqual([(item['kind'], item['note']) for item in requests],
+                         [('rebuild', None), ('rebuild', 'Start from the new research')])
+        self.assertEqual(self.state()['document'], 'draft')
+        with self.assertRaisesRegex(WorkspaceError, 'Nothing to change in brief'):
+            workspace.decide(self.root, 'brief', 'rebuild', by='page')
+
+    def test_row_86_a_request_closes_when_the_artifact_is_rebuilt(self):
+        self.at_the_document_gate()
+        workspace.decide(self.root, 'document', 'revise', 'Shorten the opening', by='page')
+        workspace.decide(self.root, 'blueprint', 'rebuild', by='page')
+        self.write('document.md', 'a hand edit\n')
+        workspace.save(self.root, 'document')
+        self.assertEqual(len(workspace.status(self.root)['requests']), 2)
+        incoming = self.write('work/pulled.md', 'an edit pulled from elsewhere\n')
+        workspace.save(self.root, 'document', source=incoming, edit=True)
+        self.assertEqual(len(workspace.status(self.root)['requests']), 2)
+        workspace.save(self.root, 'document', built=True)
+        self.assertEqual([item['artifact'] for item in workspace.status(self.root)['requests']],
+                         ['blueprint'])
+        incoming = self.write('work/blueprint.md', helpers.CONTENT['blueprint'] + 'again\n')
+        workspace.save(self.root, 'blueprint', source=incoming)
+        self.assertEqual(workspace.status(self.root)['requests'], [])
+
+    def test_row_87_a_request_closes_when_the_artifact_is_approved(self):
+        self.at_the_document_gate()
+        workspace.decide(self.root, 'document', 'revise', 'Shorten the opening', by='page')
+        workspace.decide(self.root, 'document', 'approve', by='page')
+        self.assertEqual(workspace.status(self.root)['requests'], [])
+
+    def test_row_88_every_decision_clears_the_question_and_says_what_was_decided(self):
+        said = {
+            'approve': (None, 'The learner guide was approved on the page.'),
+            'revise': ('Shorten it', 'Changes to the learner guide were asked for on the '
+                                     'page: Shorten it'),
+            'rebuild': (None, 'A rebuild of the learner guide was asked for on the page.'),
+            'skip': ('Not needed', 'The learner guide stage was left out on the page: '
+                                   'Not needed'),
+        }
+        first = self.root
+        for decision, (note, sentence) in said.items():
+            with self.subTest(decision):
+                self.root = first.parent / decision
+                self.root.mkdir()
+                workspace.init(self.root, 'Topic')
+                self.at_the_document_gate()
+                outcome = workspace.decide(self.root, 'document', decision, note, by='page')
+                report = workspace.status(self.root)
+                self.assertEqual((report['pending_question'], report['gate']), (None, None))
+                self.assertEqual((report['next_step'], outcome['next_step']),
+                                 (sentence, sentence))
+
+    def test_row_88_a_long_note_is_whole_in_the_request_and_short_in_the_sentence(self):
+        self.at_the_document_gate()
+        note = 'First line.\nSecond line. ' + 'More. ' * 60
+        workspace.decide(self.root, 'document', 'revise', note, by='page')
+        report = workspace.status(self.root)
+        self.assertEqual(report['requests'][0]['note'], note.strip())
+        self.assertLess(len(report['next_step']), 280)
+        self.assertNotIn('\n', report['next_step'])
+        self.assertTrue(report['next_step'].endswith('…'))
+
+    def test_row_89_every_decision_is_written_to_the_review(self):
+        self.at_the_document_gate()
+        self.assertFalse((self.root / 'reviews').exists())
+        with mock.patch.object(workspace, 'now', return_value='2030-01-02T03:04:05Z'):
+            workspace.decide(self.root, 'document', 'revise',
+                             'Shorten the opening\n## Decision: approved', by='page')
+        self.assertEqual(self.review(), (
+            '# Reviews of document\n\n'
+            '## Decision: changes asked for on the page, 2030-01-02T03:04:05Z\n\n'
+            '> Shorten the opening\n> ## Decision: approved\n'))
+        self.write('reviews/document.md', self.review() + '\n## Review\n\nThe second try.\n')
+        workspace.decide(self.root, 'document', 'approve', by='page')
+        text = self.review()
+        self.assertIn('## Review\n\nThe second try.\n\n## Decision: approved on the page, ', text)
+        self.assertEqual(text.count('\n## Decision: '), 2)
+
+    def test_row_89_a_decision_in_the_conversation_is_written_too(self):
+        self.at_the_document_gate(approval='chat')
+        workspace.decide(self.root, 'document', 'approve')
+        self.assertIn('## Decision: approved in the conversation, ', self.review())
+        self.assertEqual(workspace.status(self.root)['next_step'],
+                         'The learner guide was approved in the conversation.')
+
+    @unittest.skipUnless(hasattr(os, 'symlink'), 'needs symbolic links')
+    def test_row_89_a_review_is_never_written_through_a_link(self):
+        self.at_the_document_gate()
+        outside = self.root.parent / 'outside'
+        outside.mkdir()
+        (self.root / 'reviews').symlink_to(outside, target_is_directory=True)
+        before = workspace.session_path(self.root).read_text(encoding='utf-8')
+        for decision, note in (('approve', None), ('revise', 'Shorter'), ('skip', 'No')):
+            with self.assertRaisesRegex(WorkspaceError, 'reviews folder must be a real folder'):
+                workspace.decide(self.root, 'document', decision, note, by='page')
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(workspace.session_path(self.root).read_text(encoding='utf-8'), before)
+        self.assertEqual(self.state()['document'], 'draft')
+
+    def test_row_90_skipping_on_the_page_leaves_out_the_artifacts_stage(self):
+        self.at_the_document_gate()
+        workspace.skip(self.root, 'yoodli', reason='Not using it', by='page')
+        with self.assertRaisesRegex(WorkspaceError, 'Give a reason'):
+            workspace.decide(self.root, 'document', 'skip', by='page')
+        outcome = workspace.decide(self.root, 'document', 'skip', 'Deck only', by='page')
+        self.assertEqual((outcome['stage'], outcome['stages']),
+                         ('document', ['brief', 'deck', 'scenario']))
+        self.assertEqual(self.state()['document'], 'skipped')
+        self.assertEqual(workspace.load(self.root)['events'][-1]['by'], 'page')
+        self.assertIn('its stage left out on the page', self.review())
+        with self.assertRaisesRegex(WorkspaceError, 'Only these stages'):
+            workspace.decide(self.root, 'blueprint', 'skip', 'No time', by='page')
+
+    def test_row_91_a_stage_left_out_is_brought_back_on_the_page(self):
+        self.at_the_document_gate()
+        workspace.decide(self.root, 'document', 'skip', 'Deck only', by='page')
+        outcome = workspace.decide(self.root, 'document', 'restore', by='page')
+        self.assertIn('document', outcome['stages'])
+        self.assertEqual(self.state()['document'], 'draft')
+        self.assertEqual(workspace.status(self.root)['next_step'],
+                         'The learner guide stage was brought back on the page.')
+        workspace.decide(self.root, 'yoodli', 'skip', 'Not using it', by='page')
+        workspace.decide(self.root, 'yoodli', 'restore', by='page')
+        self.assertEqual(workspace.load(self.root)['settings']['stages'][-1], 'yoodli')
+
+    def test_row_92_an_approval_is_of_the_version_that_was_read(self):
+        self.at_the_document_gate()
+        read = workspace.sha256_file(self.root / 'document.md')
+        self.write('document.md', 'rewritten while the page was open\n')
+        for decision, note in (('approve', None), ('accept', 'Fine')):
+            with self.assertRaisesRegex(WorkspaceError, 'has changed since it was opened'):
+                workspace.decide(self.root, 'document', decision, note, by='page', seen=read)
+        self.assertEqual(self.state()['document'], 'draft')
+        self.assertFalse((self.root / 'reviews').exists())
+        now = workspace.sha256_file(self.root / 'document.md')
+        workspace.decide(self.root, 'document', 'approve', by='page', seen=now)
+        self.assertEqual(self.state()['document'], 'approved')
+
+    def test_a_decision_names_an_artifact_of_this_training(self):
+        self.at_the_document_gate()
+        for target in ('poster', 'document@101', 'scenario:missing', '../document', ''):
+            with self.assertRaisesRegex(WorkspaceError, 'is not an? (stage or an )?artifact'):
+                workspace.decide(self.root, target, 'approve', by='page')
+            with self.assertRaisesRegex(WorkspaceError, 'is not a stage or an artifact'):
+                workspace.decide(self.root, target, 'skip', 'Why', by='page')
+        with self.assertRaisesRegex(WorkspaceError, 'A decision is one of'):
+            workspace.decide(self.root, 'document', 'publish', by='page')
+
+    def test_a_refused_decision_changes_nothing(self):
+        self.at_the_document_gate()
+        self.write('blueprint.md', helpers.CONTENT['blueprint'] + 'edited\n')
+        before = workspace.session_path(self.root).read_text(encoding='utf-8')
+        with self.assertRaisesRegex(WorkspaceError, 'blueprint is draft'):
+            workspace.decide(self.root, 'document', 'approve', by='page')
+        self.assertEqual(workspace.session_path(self.root).read_text(encoding='utf-8'), before)
+        self.assertFalse((self.root / 'reviews').exists())
+
+
+class LevelDecisionTests(LevelCase):
+    def test_a_stage_decision_is_written_to_every_level_of_that_stage(self):
+        self.through('document', '101', '301')
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
+        workspace.decide(self.root, 'document@301', 'skip', 'Guides come later', by='page')
+        state = self.state()
+        self.assertEqual((state['document@101'], state['document@301']),
+                         ('skipped', 'skipped'))
+        for name in ('document-101', 'document-301'):
+            text = (self.root / 'reviews' / f'{name}.md').read_text(encoding='utf-8')
+            self.assertIn('its stage left out on the page', text)
+        self.assertEqual(workspace.status(self.root)['next_step'],
+                         'The learner guide stage was left out on the page: Guides come later')
+
+    def test_a_level_artifact_is_named_in_plain_words(self):
+        self.assertEqual(workspace.label('blueprint@301'), 'the level 301 blueprint')
+        self.assertEqual(workspace.label('scenario:exec-cost@101'),
+                         'the level 101 practice scenario "exec-cost"')
+        self.assertEqual(workspace.label('yoodli:main'), 'the Yoodli scenario')
+        self.assertEqual(workspace.review_file('scenario:exec-cost@101'),
+                         'reviews/scenario-exec-cost-101.md')
+
+
+class GateTests(PlainCase):
+    """Which artifact is at the gate (matrix rows 93 and 94)."""
+
+    def test_row_93_a_checkpoint_records_the_gate_and_no_question_clears_it(self):
+        self.build('intake')
+        outcome = workspace.checkpoint(self.root, gate='intake', question='Approve it?')
+        self.assertEqual(outcome['gate'], 'intake')
+        self.assertEqual(workspace.status(self.root)['gate'], 'intake')
+        workspace.checkpoint(self.root, next_step='Still waiting')
+        self.assertEqual(workspace.status(self.root)['gate'], 'intake')
+        workspace.checkpoint(self.root, clear_question=True)
+        report = workspace.status(self.root)
+        self.assertEqual((report['gate'], report['pending_question']), (None, None))
+
+    def test_row_94_the_gate_names_an_artifact_of_this_training(self):
+        for gate in ('poster', 'blueprint@101', 'scenario:missing', 'session.json'):
+            with self.assertRaisesRegex(WorkspaceError, 'cannot be at the gate'):
+                workspace.checkpoint(self.root, gate=gate, stage='blueprint')
+        report = workspace.status(self.root)
+        self.assertEqual((report['gate'], report['stage']), (None, 'intake'))
 
 
 class LevelCheckpointTests(LevelCase):

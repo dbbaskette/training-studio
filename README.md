@@ -67,6 +67,8 @@ mkdir valkey-training
 
 At each stop you can approve it, ask for changes, or skip that stage. What you were shown, and what you decided, is also saved under `reviews/` in your folder.
 
+You decide in the conversation, by telling your assistant. If you would rather decide on [a page in your browser](docs/desk.md), where the document is laid out to read and your assistant cannot approve anything for you, say so when you start.
+
 **6. Find your files.** They are ordinary files in your folder: `document.md`, `product-brief.md` or `competitive-brief.md`, the deck, and `scenario.md`. If you chose Google Docs or Word copies, the guide and the brief are there too. If you asked for Yoodli scenarios there is a `yoodli/` folder too. `README.md` in your folder lists everything and says whether the training is complete.
 
 ## Things you can say
@@ -81,7 +83,8 @@ At each stop you can approve it, ask for changes, or skip that stage. What you w
 - "Put the guide in a Google Doc." sends the learner guide or the brief out for review. "Pull the Google Doc." brings the edits back.
 - "Keep the guide and the brief in Google Docs." does that for every one from now on. "Make Word copies too." adds Word files. Neither is made unless you ask.
 - "What trainings do I have?" lists the trainings on this computer.
-- "Open the desk." shows every training in your browser.
+- "Open the page." shows what needs you, and every training, in your browser.
+- "I want to approve on the page." moves the decisions for this training to that page. From then on only you can approve a stage, there.
 - "Publish this to the team hub." shares what you have approved with your team, through a private git repository you control.
 - "What is in the hub about Redis?" finds scenarios, audiences and research your team has shared, to reuse in a new training.
 
@@ -157,7 +160,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 - [How it works](docs/how-it-works.md): the stages, approvals, what "stale" means, and the files in a training folder.
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
 - [Google Docs](docs/google-docs.md): sending the learner guide or the brief to a Google Doc for review, and bringing the edits back.
-- [The training desk](docs/desk.md): a page in your browser showing every training on this computer.
+- [The page](docs/desk.md): what needs you, every training and this computer's readiness in your browser, and approval that only you can give.
 - [Team hub](docs/team-hub.md): sharing finished trainings with your team, and reusing their scenarios, audiences and research.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
