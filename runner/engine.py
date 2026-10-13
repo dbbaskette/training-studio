@@ -8,6 +8,9 @@ What a caller needs to know
     engine.view(path)                        # what the page shows for one run
     engine.act(path, 'pause')                # or 'resume', 'stop', 'retry'
     engine.answer(path, question_id, text)   # a person answers a worker's question
+    engine.supply(path, 'add', name, data)   # a document of theirs; or 'remove', or 'done'
+    engine.whose(path, 'scenario:main')      # who wrote a scenario: 'runner' or 'you'
+    engine.copies_again(path)                # make the copies that are not made, again
     engine.decided(path, outcome)            # commit a decision the page just recorded
     engine.carry_on(path)                    # then share if that is wanted, and wake the run
     engine.share()                           # fetch, replay and push the workspace
@@ -18,8 +21,10 @@ What a caller needs to know
 - The run record, `.training-studio/run.json` in the training's folder, holds only what the
   files cannot say: the agent and model chosen when the training started, the limits, each
   try at each step with its times, cost, outcome and error, which research run the plan
-  was handed to, a worker's question and the person's answers, and why the run is halted.
-  It is committed with everything else.
+  was handed to, a worker's question and the person's answers, why the run is halted,
+  where its research may look and whether the person's documents are all added, which
+  scenario files the runner drafted, and which copies it tried to make and why one could
+  not be made. It is committed with everything else.
 - One try at an agent step: an empty job folder under `agents.staging()`, a brief, a
   worker, and results taken only from what the worker tools accepted. A draft is saved
   through the core and committed. A step is tried up to three times, with the reason for
@@ -30,6 +35,18 @@ What a caller needs to know
   does stop it.
 - The engine never approves. It sets a gate through the core and waits. The page records
   the person's decision through the core, then calls `decided` and `carry_on`.
+- After the blueprints it goes one level at a time: the guide, the brief, each practice
+  scenario, each Yoodli scenario, with the copies the training asked for made after each
+  approval. A copy that cannot be made is noted with the reason and never holds it up.
+  The index is written last. A stage the person left out is passed over, and something
+  made from what has since changed is made again and put to them again.
+- It never makes a slide deck. A training that wants one stops, done as far as the runner
+  goes, with `deck` set in its view; the index is written once the deck is left out, or
+  approved in a conversation.
+- A training researched from the person's documents waits for them first. Nothing is
+  drafted or researched until `supply(path, 'done')`.
+- A training whose decisions were moved to a conversation is left alone, except that its
+  index is written when that is all there is left to do. Moving them back wakes it.
 - Everything the engine writes in the workspace is written and committed while it holds
   `engine.files`, so the folder matches its last commit whenever nothing is being written.
   Whoever else writes there in this process, such as the page recording a decision, holds
@@ -43,6 +60,9 @@ What a caller needs to know
 - `background=False` does every step in the caller's thread, which is how the tests drive
   it. `adapters` maps an agent's name to its adapter, and `research` makes the
   harness-research wrapper; both are replaceable so that no test starts an agent.
+  `documents`, `copies` and `index` are the three modules of those names, or anything
+  with the same functions; a test gives its own, so that none reads a PDF, asks Google or
+  runs a converter.
 """
 from __future__ import annotations
 
@@ -63,22 +83,37 @@ import workspace
 from workspace import WorkspaceError
 
 from runner import agents, gitstate, pipeline, settings, worker_tools
+from runner import copies as copies_made
+from runner import documents as documents_kept
+from runner import index as index_written
 from runner import research as research_cli
 
 SCHEMA = 1
 RECORD = f'{workspace.STATE_DIR}/run.json'
+# Written when a step starts and removed when it ends, and never shared. One left behind
+# says the runner ended in the middle of a step, not that a person changed a file.
+IN_HAND = f'{workspace.STATE_DIR}/step.lock'
 AT_ONCE = 3             # research questions worked on at the same time
 LINES = 6               # the last things a worker did that the page is shown
 READY_FOR = 60          # seconds a look at an agent is reused
 BUSY_TRIES = 20         # times a finding is offered while another save holds the lock
 ACTIONS = ('pause', 'resume', 'stop', 'retry')
+SUPPLYING = ('add', 'remove', 'done')
 STATES = {'working': 'working', 'waiting': 'waiting for you', 'paused': 'paused',
           'stopped': 'stopped', 'failed': 'stopped on a problem',
           'done': 'finished as far as the runner takes it'}
 WORK = ('agent', 'code', 'gate')
-BEFORE_DOCUMENT = ('intake', 'research-plan', 'research', 'blueprint')
 KEPT = 'Everything kept before this step is still here. Nothing from the tries that failed '\
        'was kept.'
+AWAY = ("This training's decisions are made in the conversation now, so the runner is "
+        'leaving it alone. Move them back to the page to have the runner carry on.')
+PRIVATE = ('Your documents stay on this computer. Passages quoted from them appear in the '
+           'research report, which is shared.')
+NO_PDF = 'This computer cannot read a PDF: save it as text or as a Word file first.'
+NOT_HERE = ('The documents this training was researched from are on another computer. '
+            'Research cannot be run again here until they are added again.')
+SETTLED = ('The research for this training was planned from the documents already added, so '
+           'they cannot be changed now.')
 
 
 def read_record(root: Path) -> dict | None:
@@ -94,12 +129,17 @@ def read_record(root: Path) -> dict | None:
     return record
 
 
-def new_record(agent: str, model: str | None, chosen: settings.Settings) -> dict:
+def new_record(agent: str, model: str | None, chosen: settings.Settings,
+               scope: str = pipeline.SCOPE) -> dict:
+    """A run record for a training that is starting. `scope` is where its research may
+    look: anything but the public web alone waits for the person's documents first."""
+    supplied = None if scope == pipeline.SCOPE else {'scope': scope, 'done': None, 'count': 0}
     return {'schema': SCHEMA, 'agent': agent, 'model': model, 'started_at': home.now(),
             'limits': {'step_seconds': chosen.step_seconds,
                        'training_dollars': chosen.training_dollars},
             'steps': {}, 'research': None, 'question': None, 'answers': {}, 'halt': None,
-            'problem': None, 'cleared': 0.0}
+            'problem': None, 'cleared': 0.0, 'documents': supplied, 'drafted': [],
+            'copies': {'problems': {}, 'tried': {}}}
 
 
 def attempts(record: dict, step: str | None = None) -> list[dict]:
@@ -169,9 +209,12 @@ class Engine:
     """Drives every training in this computer's workspace."""
 
     def __init__(self, adapters=None, research=None, background: bool = True,
-                 at_once: int = AT_ONCE):
+                 at_once: int = AT_ONCE, documents=None, copies=None, index=None):
         self.adapters = dict(adapters or agents.AGENTS)
         self.research = research or research_cli.Research
+        self.documents = documents or documents_kept
+        self.copies = copies or copies_made
+        self.index = index or index_written
         self.background, self.at_once = background, at_once
         self.files = threading.RLock()
         self._lock = threading.RLock()
@@ -236,6 +279,22 @@ class Engine:
     def _store(self, root: Path, record: dict) -> None:
         home.write_json(root / RECORD, record)
 
+    def _wanted(self, root: Path, record: dict) -> list[dict]:
+        """Every copy the training asks for, with why one could not be made."""
+        return self.copies.wanted(root, (record.get('copies') or {}).get('problems') or {})
+
+    def _survey(self, root: Path, record: dict, copies=None) -> pipeline.Survey:
+        """Where a training is, with its copies and the person's documents looked at.
+        `copies` saves looking at the copies again when the caller just has."""
+        supplied = self.documents.listed(root) if record.get('documents') else ()
+        copies = self._wanted(root, record) if copies is None else copies
+        return pipeline.survey(root, record, copies, supplied)
+
+    @staticmethod
+    def _away(found: pipeline.Survey) -> bool:
+        """True when the training's decisions are made in a conversation, not on the page."""
+        return found.session['settings']['approval'] != 'page'
+
     def _commit(self, root: Path, what: str) -> None:
         """Commit one training's folder, saying what happened. Call it holding `files`."""
         title = workspace.load(root)['title']
@@ -255,7 +314,7 @@ class Engine:
         with self.files:
             root = pipeline.create(space, form)
             try:
-                record = new_record(agent, model, chosen)
+                record = new_record(agent, model, chosen, form['source_scope'])
                 self._tried(record, 'intake', home.now(), 0.0, 'kept')
                 self._store(root, record)
                 self._commit(root, 'start the training from the form')
@@ -285,19 +344,22 @@ class Engine:
 
     def resume(self) -> None:
         """Pick every training up where its files say it is. What a step left half-made
-        when the runner last ended is discarded first, and so is a lock harness-research
-        was left holding. A training that waits for a person, or that the runner has
-        finished with, is left exactly as it is."""
+        when the runner last ended in the middle of it is discarded first, and so is a
+        lock harness-research was left holding. A training that waits for a person, or
+        that the runner has finished with, is left exactly as it is, and so is whatever a
+        person changed while no step was in hand."""
         self.adopt()
         for root in self.trainings():
             try:
                 record = self._load(root)
-                found = pipeline.survey(root, record)
+                found = self._survey(root, record)
                 if found.next.kind != 'done':
                     research_cli.unlock(root)
-                if found.next.kind in WORK and not self._resting(record):
+                if (root / IN_HAND).exists() and found.next.kind in WORK \
+                        and not self._resting(record) and not self._away(found):
                     with self.files:
                         gitstate.discard(self.space(), root)
+                (root / IN_HAND).unlink(missing_ok=True)
             except (WorkspaceError, OSError):
                 continue  # its view says what is wrong; the others still run
             self.wake(root)
@@ -355,11 +417,13 @@ class Engine:
         try:
             while not self._closing:
                 record = self._load(root)
-                found = pipeline.survey(root, record)
+                found = self._survey(root, record)
                 step = found.next
-                if self._resting(record) or step.kind not in (*WORK, 'done'):
+                if self._resting(record) or step.kind not in (*WORK, 'deck'):
                     return
-                if step.kind == 'done':
+                if self._away(found) and step.step.id != 'package':
+                    return  # a conversation is driving it; only the index is still ours
+                if step.kind == 'deck':
                     return self._hand_on(root, found)
                 if self.background and not held:
                     run.queued = True
@@ -371,8 +435,11 @@ class Engine:
                         f'The runner could not get past this step: {step.step.label}.'),
                         'Everything kept so far is still here.')
                 last = step.step.id if step.kind == 'code' else None
+                (root / IN_HAND).write_text(f'{step.step.id}\n', encoding='utf-8')
                 self._do(root, run, found, step)
+                (root / IN_HAND).unlink(missing_ok=True)
         except Exception as failure:  # whatever a step does, the runner keeps serving
+            (root / IN_HAND).unlink(missing_ok=True)
             self._trouble(root, failure)
         finally:
             run.queued = run.busy = False
@@ -389,6 +456,12 @@ class Engine:
             self._report(root, step.step)
         elif step.step.id == 'research':
             self._research(root, run, found, step)
+        elif step.step.id == 'package':
+            self._package(root, step.step)
+        elif step.step.id.startswith('copies:'):
+            self._copy(root, step.step)
+        elif step.kind == 'code':
+            self._own(root, found, step.step)
         else:
             self._draft(root, run, found, step)
 
@@ -429,25 +502,85 @@ class Engine:
         return entry
 
     def _hand_on(self, root: Path, found: pipeline.Survey) -> None:
-        """Nothing is left for the runner: say that the later stages are done in a chat."""
-        if found.session['stage'] not in BEFORE_DOCUMENT:
+        """The deck is all that is left, and the runner makes no deck: say so through the
+        core, once."""
+        says = pipeline.deck_says(found)
+        if (found.session['stage'], found.session.get('next_step')) == ('deck', says):
             return
         with self.files:
-            workspace.checkpoint(root, stage='document', next_step=pipeline.LATER)
-            self._commit(root, 'every blueprint is approved; the later stages are not '
-                         'automated yet')
-        # No decision follows this one, so nothing else would ever share it.
+            workspace.checkpoint(root, stage='deck', next_step=says)
+            self._commit(root, 'everything but the slide deck is made')
+        self._last(root)
+
+    def _last(self, root: Path) -> None:
+        """Share what the runner did last for a training. No decision follows it, so
+        nothing else would ever share it."""
         if self.space().share == gitstate.SHARE[0]:
             self.share_soon()
+
+    @staticmethod
+    def _level(step: pipeline.Step) -> str | None:
+        return workspace.split(step.artifact)[1] if step.artifact else None
 
     def _gate(self, root: Path, step: pipeline.Step) -> None:
         """Put a checked draft to the person, through the core, and wait."""
         it = workspace.label(step.artifact)
         with self.files:
             workspace.checkpoint(root, stage=step.stage, gate=step.artifact,
-                                 question=f'Approve {it}?',
+                                 question=f'Approve {it}?', level=self._level(step),
                                  next_step=f'Waiting for your review of {it}')
             self._commit(root, f'ask for a review of {it}')
+
+    # --- the code steps after the blueprint ----------------------------------------------
+
+    def _own(self, root: Path, found: pipeline.Survey, step: pipeline.Step) -> None:
+        """Take in a scenario the person wrote, as it is. Nothing in it is changed."""
+        with self.files:
+            pipeline.keep_own(root, step, found)
+            record = self._load(root)
+            self._tried(record, step.id, home.now(), 0.0, 'kept')
+            self._store(root, record)
+            self._commit(root, f'take in {workspace.label(step.artifact)}, as its person '
+                         'wrote it')
+
+    def _make(self, root: Path, record: dict) -> None:
+        """Make every copy that is wanted and not made, and note in the record what was
+        tried and why a Google Doc could not be made. Call it holding `files`."""
+        problems = self.copies.make(root)[1]
+        session, tried = workspace.load(root), {}
+        for entry in self._wanted(root, record):
+            approved = (session['artifacts'].get(entry['artifact']) or {}).get('approved')
+            if approved:
+                tried[entry['artifact']] = approved['sha256']
+        record['copies'] = {'problems': dict(problems or {}), 'tried': tried}
+
+    def _copy(self, root: Path, step: pipeline.Step) -> None:
+        """After an approval: make the copies the training asked for. One that cannot be
+        made is noted with the reason, and the run carries on."""
+        clock = time.monotonic()
+        with self.files:
+            record = self._load(root)
+            self._make(root, record)
+            self._tried(record, step.id, home.now(), time.monotonic() - clock, 'kept')
+            self._store(root, record)
+            self._commit(root, f'make the copies of {workspace.label(step.artifact)}')
+
+    def _package(self, root: Path, step: pipeline.Step) -> None:
+        """Nothing wanted is left to make or decide: write the index from the record, and
+        say through the core whether the training is ready."""
+        clock = time.monotonic()
+        with self.files:
+            record = self._load(root)
+            copies = self._wanted(root, record)
+            report = self.index.write(root, copies)
+            says = pipeline.finished_says(report, self._survey(root, record, copies))
+            workspace.checkpoint(root, stage='done', next_step=says)
+            self._tried(record, step.id, home.now(), time.monotonic() - clock, 'kept')
+            self._store(root, record)
+            self._commit(root, 'write the index; ' + (
+                'the training is finished' if report['ready'] else
+                'the training is not ready yet'))
+        self._last(root)
 
     # --- limits --------------------------------------------------------------------------
 
@@ -559,19 +692,27 @@ class Engine:
 
     def _draft(self, root: Path, run: _Run, found: pipeline.Survey,
                step: pipeline.Next) -> None:
-        """One try at a drafting step: the research plan, or one blueprint."""
+        """One try at a drafting step: the research plan, a blueprint, a guide, a brief, a
+        practice scenario or a Yoodli scenario."""
         if not self._may_go(root):
             return
         record, it = self._load(root), step.step
+        sources = (self.documents.sources(root)
+                   if it.id == 'research-plan' and record.get('documents') else None)
         work = pipeline.work(root, found, it, step.request, last_error(record, it.id),
-                             record['answers'].get(it.id, []))
+                             record['answers'].get(it.id, []), sources)
         outcome, handed, started_at, folder = self._job(root, run, it, work)
         if outcome.reason == 'stopped':
             return self._stopped(root, it, outcome, started_at)
         if handed['artifacts']:
             with self.files:
-                pipeline.keep_draft(root, it, handed, step.request)
                 record = self._load(root)
+                if it.stage == 'scenario' and it.artifact not in found.own \
+                        and it.artifact not in record.setdefault('drafted', []):
+                    # Noted before the file is written, so it is never taken for a person's.
+                    record['drafted'].append(it.artifact)
+                    self._store(root, record)
+                pipeline.keep_draft(root, it, handed, step.request, found)
                 self._tried(record, it.id, started_at, outcome.seconds, 'kept',
                             **self._cost(outcome))
                 self._store(root, record)
@@ -632,8 +773,10 @@ class Engine:
         """One try at one research question. An accepted finding is recorded at once."""
         it = pipeline.Step(f'research:{ident}', 'agent', f'Research the question {ident}',
                            f'Researching the question {ident}', 'research')
-        work = pipeline.question_work(root, found, ident, request,
-                                      last_error(self._load(root), it.id))
+        record = self._load(root)
+        sources = self.documents.sources(root) if record.get('documents') else None
+        work = pipeline.question_work(root, found, ident, request, last_error(record, it.id),
+                                      sources)
         outcome, handed, started_at, folder = self._job(root, run, it, work)
         if outcome.reason == 'stopped':
             return self._stopped(root, it, outcome, started_at)
@@ -679,7 +822,7 @@ class Engine:
         with self.files:
             self.research().status(root)
             record = self._load(root)
-            found = pipeline.survey(root, record).research
+            found = self._survey(root, record).research
             reasons = {ident: last_error(record, f'research:{ident}')
                        for ident in found.unread}
             if len(found.unread) == len(found.verdicts):
@@ -725,10 +868,10 @@ class Engine:
                         'at': outcome['request'].get('at'),
                         'left': pipeline.again(root, record, outcome['request'])}
                 self._store(root, record)
-            found = pipeline.survey(root, record)
+            found = self._survey(root, record)
             ahead = found.next.step
             if found.next.kind in WORK and ahead.stage != found.session['stage']:
-                workspace.checkpoint(root, stage=ahead.stage)
+                workspace.checkpoint(root, stage=ahead.stage, level=self._level(ahead))
             self._commit(root, outcome.get('next_step') or 'a decision was made on the page')
         return True
 
@@ -815,6 +958,73 @@ class Engine:
         self.wake(root)
         return self.view(root)
 
+    def supply(self, path, action: str, name: str | None = None,
+               data: bytes | None = None) -> dict:
+        """Add one of the person's documents, remove one, or take their word that they are
+        all added. `data` is the document as it was sent. Nothing is researched until they
+        are all added, and after that they cannot be changed."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        if action not in SUPPLYING:
+            raise WorkspaceError('A document can be: ' + ', '.join(SUPPLYING) + '.')
+        with self.files:
+            record = self._load(root)
+            given = record.get('documents')
+            if not given:
+                raise WorkspaceError('This training is researched from the public web, so '
+                                     'it takes no documents.')
+            if self._survey(root, record).next.kind != 'documents':
+                raise WorkspaceError(SETTLED)
+            if action == 'add':
+                self.documents.add(root, name or '', data or b'')
+            elif action == 'remove':
+                self.documents.remove(root, name or '')
+            else:
+                readable = [entry for entry in self.documents.listed(root)
+                            if entry.get('readable')]
+                if given['scope'] == 'supplied-only' and not readable:
+                    raise WorkspaceError('Add at least one document that can be read first. '
+                                         'This training is researched from your documents '
+                                         'only.')
+                given.update(done=home.now(), count=len(readable))
+                (root / pipeline.ADDED).parent.mkdir(parents=True, exist_ok=True)
+                (root / pipeline.ADDED).write_text(f"{given['done']}\n", encoding='utf-8')
+                self._store(root, record)
+                self._commit(root, (f'the documents are all added: {len(readable)} to '
+                                    'research from') if readable else
+                             'no documents were added; research uses the public web')
+        if action == 'done':
+            self.wake(root)
+        return self.view(root)
+
+    def copies_again(self, path) -> dict:
+        """Make the copies that are not made, again, as the person asks. One that still
+        cannot be made says why."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        with self.files:
+            record = self._load(root)
+            self._make(root, record)
+            self._store(root, record)
+            copies = self._wanted(root, record)
+            found = self._survey(root, record, copies)
+            if found.next.kind == 'done':  # the index lists the copies, so it is written again
+                report = self.index.write(root, copies)
+                workspace.checkpoint(root, next_step=pipeline.finished_says(report, found))
+            self._commit(root, 'make the copies again, as asked on the page')
+        self.wake(root)
+        return self.view(root)
+
+    def whose(self, path, artifact: str) -> str | None:
+        """Who wrote a scenario's file: 'runner' for one the runner drafted, else 'you'.
+        None when no run is driving the training, which cannot tell."""
+        root = self.driven(path)
+        if root is None:
+            return None
+        return 'runner' if artifact in (self._load(root).get('drafted') or ()) else 'you'
+
     # --- sharing -------------------------------------------------------------------------
 
     def share(self) -> dict:
@@ -886,8 +1096,10 @@ class Engine:
             return f'{step.step.doing} again. The last try did not work: {error}'
         return f'{step.step.doing}.'
 
-    def _state(self, record: dict, found: pipeline.Survey, run: _Run) -> tuple[str, str]:
-        """A run's state, and what is happening in a sentence."""
+    def _state(self, record: dict, found: pipeline.Survey, run: _Run,
+               report: dict | None = None) -> tuple[str, str]:
+        """A run's state, and what is happening in a sentence. `report` is how ready a
+        training with its index written is; without it, what the index step said is used."""
         problem, halt, step = record.get('problem'), record.get('halt'), found.next
         if problem:
             return problem.get('state', 'failed'), problem['what']
@@ -902,11 +1114,16 @@ class Engine:
             it = workspace.sentence(workspace.label(step.step.artifact))
             return 'waiting', f'{it} is waiting for your review.'
         if step.kind == 'done':
-            first = ('Every blueprint is approved.' if len(found.session['levels']) > 1
-                     else 'The blueprint is approved.')
-            return 'done', f'{first} {pipeline.LATER}'
+            return 'done', (pipeline.finished_says(report, found) if report
+                            else found.session.get('next_step') or 'This training is done.')
+        if step.kind == 'deck':
+            return 'done', pipeline.deck_says(found)
         if step.kind == 'stuck':
             return 'failed', step.why
+        if self._away(found) and step.step.id != 'package':
+            return 'done', AWAY
+        if step.kind == 'documents':
+            return 'waiting', self._asking(found.scope)
         if run.queued:
             return 'working', 'Waiting for its turn. Other trainings are working.'
         return 'working', self._doing(record, found)
@@ -929,6 +1146,8 @@ class Engine:
                 status = 'done'
             elif step.id == current and state in ('working', 'waiting'):
                 status = state
+            elif step.id == current and found.next.kind == 'deck':
+                status = 'waiting'
             else:
                 status = 'to-do'
             listed.append({
@@ -972,34 +1191,74 @@ class Engine:
         if root is None:
             return None
         record = self._load(root)
-        found = pipeline.survey(root, record)
+        found = self._survey(root, record)
         state, sentence = self._state(record, found, self._run(root))
         if state != 'working':
             return state, sentence
         coming = [step for step in found.steps if step.id not in found.done]
         ahead = found.next.step if found.next.kind == 'gate' else next(
             (step for step in coming if step.kind != 'code'), found.next.step)
-        if ahead.kind == 'gate':
+        if ahead.kind == 'gate' and ahead.artifact:
             return state, f'Getting {workspace.label(ahead.artifact)} ready for your review.'
         return state, f'{ahead.doing} now.'
 
     def brief(self, path) -> dict | None:
-        """A run in two words and a sentence, for a list. `needs` says a question or a
-        problem is waiting for the person. None when no run is driving the training."""
+        """A run in two words and a sentence, for a list. `needs` says a question, a
+        problem or a wait for the person's documents is waiting for them. None when no run
+        is driving the training."""
         root = self.driven(path)
         if root is None:
             return None
         try:
             record = self._load(root)
-            found = pipeline.survey(root, record)
+            found = self._survey(root, record)
         except (WorkspaceError, OSError) as failure:
             return {'state': 'failed', 'sentence': str(failure), 'needs': True,
                     'question': None}
         state, sentence = self._state(record, found, self._run(root))
         asked = record.get('question')
-        needs = bool(asked or record.get('problem') or found.next.kind == 'stuck')
+        needs = bool(asked or record.get('problem') or found.next.kind == 'stuck'
+                     or (state == 'waiting' and found.next.kind == 'documents'))
         return {'state': state, 'sentence': sentence, 'needs': needs,
                 'question': asked['text'] if asked else None}
+
+    @staticmethod
+    def _asking(scope: str) -> str:
+        """What a run waiting for the person's documents says."""
+        only = ' This training is researched from them alone.' if scope == 'supplied-only' \
+            else ''
+        return ('Add your documents, then say that is all of them. Nothing is researched '
+                f'until you do.{only}')
+
+    def _supplied(self, root: Path, record: dict, found: pipeline.Survey) -> dict | None:
+        """The person's documents, for a training that takes any: what is added, what
+        this computer can take, and whether the run is waiting for them."""
+        given = record.get('documents')
+        if not given:
+            return None
+        added = self.documents.listed(root)
+        types, waiting = list(self.documents.accepts()), found.next.kind == 'documents'
+        note = [PRIVATE]
+        if '.pdf' in self.documents.TYPES and '.pdf' not in types:
+            note.append(NO_PDF)
+        if given.get('count') and not any(entry.get('readable') for entry in added):
+            note.append(NOT_HERE)
+        return {'waiting': waiting,
+                'added': [{key: entry.get(key) for key in ('name', 'bytes', 'readable',
+                                                           'problem')} for entry in added],
+                'types': types, 'limits': dict(self.documents.LIMITS), 'note': ' '.join(note)}
+
+    @staticmethod
+    def _copies(found: pipeline.Survey) -> list[dict]:
+        """The copies the page shows: each one of a file that is approved, and each that
+        is behind a file that has changed since. One not made of a file not approved yet
+        is left out, since there is nothing to make it from. A copy's label is the core's
+        name for its file, to read in the middle of a sentence."""
+        return [{**{key: entry.get(key) for key in ('artifact', 'kind', 'state', 'link',
+                                                    'problem')},
+                 'label': workspace.label(entry['artifact'])} for entry in found.copies
+                if entry['state'] != 'not-made'
+                or found.state.get(entry['artifact']) == 'approved']
 
     def view(self, path) -> dict | None:
         """Everything the page shows for one run. None when no run is driving it."""
@@ -1007,9 +1266,12 @@ class Engine:
         if root is None:
             return None
         record = self._load(root)
-        found = pipeline.survey(root, record)
-        run = self._run(root)
-        state, sentence = self._state(record, found, run)
+        copies = self._wanted(root, record)
+        found = self._survey(root, record, copies)
+        run, ending = self._run(root), found.next.kind
+        resting = self._resting(record)
+        report = self.index.readiness(root, copies) if ending == 'done' else None
+        state, sentence = self._state(record, found, run, report)
         asked, problem = record.get('question'), record.get('problem')
         if problem is None and found.next.kind == 'stuck':
             problem = {'what': found.next.why, 'action': None, 'label': None,
@@ -1023,7 +1285,15 @@ class Engine:
             'question': ({'id': asked['id'], 'text': asked['text'], 'from': asked['from']}
                          if asked else None),
             'problem': ({key: problem.get(key) for key in ('what', 'kept', 'action', 'label')}
-                        if problem else None)}
+                        if problem else None),
+            'documents': self._supplied(root, record, found),
+            'copies': self._copies(found),
+            'deck': ({'says': pipeline.deck_says(found), 'artifact': 'deck'}
+                     if ending == 'deck' and not resting else None),
+            'finished': ({'ready': bool(report['ready']),
+                          'limitations': list(report['limitations']),
+                          'blocking': list(report['blocking']), 'index': report['file']}
+                         if report and not resting else None)}
 
     def status(self) -> dict:
         """Every run in the workspace, for a script."""

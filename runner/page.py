@@ -10,9 +10,17 @@ What a caller needs to know
   local machine only, checks the `Host` header, needs the key for every call, and takes a
   change only as a POST with a JSON body from the page's own origin. Those rules live in
   the desk's `Page`; `RunnerPage` adds addresses and never loosens a rule.
-- What it adds is the contract in the milestone 2 specification's appendix: whether the
-  runner is here, set-up, the agents, starting a training, a run, an answer to a worker's
-  question, and sharing.
+- What it adds is the contract in the appendices of the milestone 2 and milestone 3
+  specifications: whether the runner is here, set-up, the agents, starting a training, a
+  run, an answer to a worker's question, the person's documents, the copies, and sharing.
+- `POST /api/documents` alone may carry up to DOCUMENT_LIMIT bytes, because it carries a
+  document, and only when it is asked with the key. Every other address keeps the desk's
+  limit, and every one of the desk's rules still applies to this one.
+- `GET /api/gate` gains `whose` for a practice scenario: who wrote its file. For a Yoodli
+  scenario it gains `beside`, the scenario it was laid out from.
+- `GET /api/file` also answers for `README.md`, the index at the top of a training this
+  computer knows, once it is written. The index is derived and is not one of a training's
+  own files, so the desk alone refuses it.
 - A refusal is `{"error": "<a sentence for a person>"}`. Something sent in the wrong shape
   is 400, a training this computer does not know is 403, a training no run is driving is
   404, and something that cannot be done as things stand is 409.
@@ -23,12 +31,17 @@ What a caller needs to know
 - Reading never starts or wakes a run: `GET /api/run` can be asked for as often as the
   page likes.
 - While a run is driving a training, its decisions cannot be moved back to a conversation:
-  a gate the runner waits at would then be one an assistant could pass.
+  a gate the runner waits at would then be one an assistant could pass. They can be moved
+  once the run is done as far as it goes, which is how a slide deck gets made. Moving them
+  either way wakes the run, which then looks at the training's files again.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
+from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
 import desk
@@ -40,7 +53,9 @@ from runner import gitstate, pipeline, setup
 
 READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
-          '/api/share')
+          '/api/documents', '/api/copies', '/api/share')
+DOCUMENTS = '/api/documents'
+DOCUMENT_LIMIT = 12_000_000     # bytes: one document of the largest size, in base64
 CLOSE = 'You can close this page; it says when it needs you again.'
 HALTED = ('This training is not running, so nothing more happens until you resume it or '
           'try again.')
@@ -77,7 +92,47 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, {'agents': self.agents()})
         if path == '/api/run':
             return desk.as_json(HTTPStatus.OK, self.run(one('path')))
+        if path == '/api/gate':
+            return desk.as_json(HTTPStatus.OK, self.gate(one('path'), one('artifact')))
+        if path == '/api/file' and one('artifact') == pipeline.INDEX:
+            return desk.as_json(HTTPStatus.OK, self.index(one('path')))
         return super().read(path, one)
+
+    def index(self, path: str) -> dict:
+        """A training's index, in the shape the desk gives any of its files."""
+        desk.registered(path)
+        file = desk.inside(Path(path), pipeline.INDEX)
+        if not file.is_file():
+            raise desk.Refusal(HTTPStatus.NOT_FOUND, 'The index has not been written yet.')
+        shown = {'artifact': pipeline.INDEX, 'file': pipeline.INDEX,
+                 'size': file.stat().st_size, 'binary': True}
+        found = desk.text_of(file)
+        if found is None:
+            return shown
+        return {**shown, 'binary': False, 'text': found[0], 'truncated': found[1]}
+
+    def gate(self, path: str, name: str) -> dict:
+        """The desk's gate. A practice scenario's also says whose file it is, and a Yoodli
+        scenario's names the scenario it was laid out from, to show beside it."""
+        shown = desk.gate(path, name)
+        kind = workspace.split(name)[0].partition(':')[0]
+        if kind == 'scenario':
+            shown['whose'] = self.engine.whose(path, name)
+        elif kind == 'yoodli':
+            source = name.replace('yoodli:', 'scenario:', 1)
+            shown['beside'] = {'artifact': source, 'label': desk.named(source)}
+        return shown
+
+    def body_limit(self, target: str, headers) -> int:
+        """A document may be sent whole, to its own address, by whoever holds the key.
+        Anyone else's request there is held to the desk's limit, so it is refused unread."""
+        if target.partition('?')[0] == DOCUMENTS:
+            try:
+                self.check_token(headers)
+            except desk.Refusal:
+                return super().body_limit(target, headers)
+            return DOCUMENT_LIMIT
+        return super().body_limit(target, headers)
 
     def agents(self) -> list[dict]:
         """Each agent: installed, signed in and reachable now. Looked at when asked, both
@@ -137,8 +192,6 @@ class RunnerPage(desk.Page):
             coming = HALTED
         elif state == 'working':
             coming = f'{coming} {CLOSE}'
-        elif state == 'done':
-            coming = pipeline.LATER  # "Approved." has already said what was approved
         reply['said'] = f'{desk.SAID[decision]} {coming}'
         reply['next'] = desk.next_up(self.trainings())
         return reply
@@ -152,7 +205,10 @@ class RunnerPage(desk.Page):
             raise desk.Refusal(HTTPStatus.CONFLICT, RUNNER_DECIDES)
         with self.engine.files:
             reply = super().move_approval(path, mode)
-            self.engine.changed(path, f'decisions are now made {workspace.WHERE[mode]}')
+            driven = self.engine.changed(path, f'decisions are now made '
+                                         f'{workspace.WHERE[mode]}')
+        if driven:
+            self.engine.wake(path)
         return reply
 
     # --- writes --------------------------------------------------------------------------
@@ -170,6 +226,10 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.act(sent))
         if path == '/api/answer':
             return desk.as_json(HTTPStatus.OK, self.answered(sent))
+        if path == DOCUMENTS:
+            return desk.as_json(HTTPStatus.OK, self.supplied(sent))
+        if path == '/api/copies':
+            return desk.as_json(HTTPStatus.OK, self.copied(sent))
         if path == '/api/share':
             return desk.as_json(HTTPStatus.OK, self.engine.share())
         return super().write(path, sent)
@@ -189,6 +249,31 @@ class RunnerPage(desk.Page):
             raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Write an answer first.')
         self.run(path)
         return self.engine.answer(path, ident, answer)
+
+
+    def supplied(self, sent: dict) -> dict:
+        """Add one of the person's documents, remove one, or hear that they are all added."""
+        path, action = desk.text(sent, 'path'), desk.text(sent, 'action')
+        if action not in engines.SUPPLYING:
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'A document can be: '
+                               + ', '.join(engines.SUPPLYING) + '.')
+        name, data = desk.text(sent, 'name', action != 'done'), None
+        if action == 'add':
+            content = sent.get('content')
+            if not isinstance(content, str) or not content:
+                raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Give content as text.')
+            try:
+                data = base64.b64decode(content, validate=True)
+            except (binascii.Error, ValueError):
+                raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'That document did not arrive '
+                                   'whole. Add it again.')
+        self.run(path)
+        return self.engine.supply(path, action, name, data)
+
+    def copied(self, sent: dict) -> dict:
+        path = desk.text(sent, 'path')
+        self.run(path)
+        return self.engine.copies_again(path)
 
 
 class Studio(desk.Desk):
