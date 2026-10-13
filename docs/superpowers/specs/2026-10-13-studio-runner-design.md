@@ -1,0 +1,267 @@
+# Studio Runner: design for a decision
+
+Date: 2026-10-13
+Status: proposal. Nothing here is built. It exists so its owner can decide whether to go this way.
+
+## 1. The decision
+
+Training Studio, `harness-research` and `harness-slides` run today as skills inside a chat harness. The model reads guidance, decides which command to run next, and is trusted to stop at each gate.
+
+The question is whether to put a program in charge instead: a **runner** that walks the stages itself, uses a model only for bounded pieces of work, and stops at gates that the model cannot reach.
+
+This document recommends doing that, in an order where the first milestone is useful on its own and the riskiest assumptions are tested before most of the work is spent.
+
+## 2. What it must do
+
+These came from the owner.
+
+1. **Gates enforced in code.** The model cannot approve, skip a gate or run stages out of order.
+2. **Unattended runs.** Start a training and leave. It works until it needs a person, and several can run at once.
+3. **Same behaviour everywhere.** One policy for files, network and shell, set by the runner, not by whichever harness is in use.
+4. **Team use.** A teammate can run it without installing the skills or learning how they work.
+5. **Either agent, one per run.** A run is started on Claude or on Codex and stays on it.
+6. **A local web page** is where reviews are read and gates are approved.
+
+Covered first: Training Studio, `harness-research` and `harness-slides`. Other pipelines, such as one for blog posts, follow the same pattern later.
+
+### Not in scope
+
+- A hosted service. Each person runs it on their own computer and shares finished work through the team hub.
+- Its own agent loop. The runner uses Claude Code and Codex as workers; it does not reimplement them.
+- Rewriting the two harness skills. Their command lines are called as they are.
+
+## 3. What exists today
+
+Four background investigations on 2026-10-13 read the two harness repositories and the vendors' documentation. Where something was read but not run, it says so.
+
+| | Training Studio | harness-research | harness-slides |
+| --- | --- | --- | --- |
+| Code | Python 3.11, standard library | Node 20, standard library | Node 20 with four packages, Python, Poppler |
+| What the code does | State, approval bound to content and inputs, checks, readiness, copies, hub, a read-only page | Validates and stores a plan and findings; renders a report | Dozens of commands: outline check, compile, preview, critique, render, import to Drive |
+| What the model does | Writes each artifact; presents each gate; runs the commands in order | All searching, reading, judging and writing | Writes the outline and slide compositions; judges rendered slides |
+| Gates in code | Approval is recorded and checked, but the model runs the command | None | None on the default path; approval is free text |
+
+Things a runner has to work around, all found by reading code, not by running it:
+
+- **harness-research:** every error is one line of prose with exit code 1. Its lock has no recovery after a crash. `status` rewrites the report. A run can reach "complete" with no evidence, because unanswered verdicts count as answered.
+- **harness-slides:** a failed critique or an incomplete outline returns exit code 0, so results must be read from the JSON. The default path keeps no record of which stage a deck is at.
+- **Shared, and already drifting:** the two harness skills carry copies of the same guidance sync that now differ by about 90 lines, and installers that follow one design with different code.
+
+What the vendors offer, from their documentation:
+
+- **Claude.** The Agent SDK (Python and TypeScript) starts a run with a working directory, a tool list, a permission mode, hooks, a turn limit, a spending estimate and a JSON schema for the result. Its sandbox wraps shell commands only; file tools are limited by permission rules instead. It loads the user's settings and skills unless told not to.
+- **Codex.** `codex exec` runs non-interactively with a working directory, a sandbox mode, JSON events and a schema for the final answer. Network access is off by default inside its workspace sandbox. `--ignore-user-config` exists.
+- **Both** accept tools supplied by another program through MCP.
+- **A common protocol** (the Agent Client Protocol) reaches both through adapters. The Codex adapter rests on a component OpenAI calls experimental. It is not the base to build on now.
+
+## 4. Approaches considered
+
+| | A. Gate page only | B. Runner, agents as workers | C. Own harness |
+| --- | --- | --- | --- |
+| What it is | Skills stay in chat; approval moves to the page | A program walks the stages and hands bounded jobs to Claude or Codex | Own agent loop, tools and sandbox on the model APIs |
+| 1. Gates in code | Yes | Yes | Yes |
+| 2. Unattended | No | Yes | Yes |
+| 3. Same behaviour | No | Mostly | Yes |
+| 4. Team use | Partly | Yes | Yes |
+| Size | Small | Large | Very large, then permanent upkeep |
+
+**Recommendation: B, with A as its first milestone.**
+
+- A is needed by B anyway, and it is worth having with today's skills. If the rest disappoints, stop there and keep it.
+- C buys identical behaviour on both vendors by rebuilding web search, page fetching, browsing, PDF reading and image review. Those are what the vendors' harnesses are good at and keep improving.
+- B is "mostly" on goal 3 because the two agents search and browse the web with different tools. Section 5.6 narrows that gap; it does not close it.
+
+## 5. The recommended design
+
+### 5.1 The rule everything follows
+
+**The worker never holds the keys.**
+
+A worker is one agent run doing one job. It can read its inputs and write into one staging folder. It cannot write to the training directory, cannot run an approval, and cannot see the credentials the runner uses for Google or the hub. What it produces is checked by the runner before anything is kept.
+
+With that rule, gate enforcement does not depend on a model following instructions, and it does not depend on a hook that only one vendor offers.
+
+### 5.2 The parts
+
+```
+                 you
+                  |
+            +-----v------+     decisions      +------------------+
+            |  the page  +------------------->|                  |
+            | (browser)  |<---reviews, logs---+      runner      |
+            +------------+                    |  walks stages,   |
+                                              |  owns approval   |
+   training directory  <----keeps checked-----+                  |
+   (deliverables, reviews,                    +--+-----+------+--+
+    session record)                              |     |      |
+                                      code steps |     |      | agent steps
+                       +-------------------------+     |      +-----------------+
+                       |                               |                        |
+              +--------v---------+          +----------v---------+     +--------v---------+
+              | existing command |          |   worker tools     |     |  agent adapter   |
+              | lines: training, |          | (submit, ask,      |<----+ Claude or Codex, |
+              | research, slides |          |  save a source)    |     | in a staging     |
+              +------------------+          +--------------------+     | folder           |
+                                                                       +------------------+
+```
+
+- **Runner.** A local program. It holds the pipeline definitions, runs code steps itself, starts workers for agent steps, and is the only thing that records an approval.
+- **Core.** The state model Training Studio already has: artifacts, what each was built from, approval bound to both, history, staleness, checks, readiness, copies and the hub. It moves under the runner and is shared by every pipeline.
+- **Pipeline definitions.** Data, not prose: for each stage, its steps, and for each step whether it is code, an agent job or a gate.
+- **Agent adapters.** One for Claude, one for Codex, behind the same small interface.
+- **Worker tools.** A handful of tools the runner serves to the worker over MCP, the same for both vendors.
+- **The page.** The training desk, grown from read-only into the place gates are decided.
+
+### 5.3 One agent step, start to finish
+
+1. **Prepare.** The runner makes a staging folder and copies in the step's inputs and nothing else.
+2. **Brief.** It writes the worker's instructions: the guidance for this one step, the inputs, and what to hand back. The guidance is the text of today's stage reference. The worker is not asked to discover skills.
+3. **Run.** The adapter starts the agent in the staging folder under the run's policy, with a turn limit, a time limit and a spending limit.
+4. **Hand back.** The worker returns its work by calling a tool: `submit_artifact`, `submit_finding`, `save_source` or `ask_person`. The runner validates each call with the checks that exist today and answers with the problems, so the worker can fix them and try again.
+5. **Keep.** When the checks pass, the runner copies the result into the training directory and records it through the core.
+6. **Fail safely.** If the limits are reached or the checks keep failing, the step stops in a state that says what went wrong, and the page shows it. Nothing half-made is kept.
+
+A question from a worker (`ask_person`) pauses that step and appears on the page. Everything else carries on.
+
+### 5.4 A gate
+
+1. The runner writes the review from what it already has: the artifact, the check results, what is stale and why, and the worker's own judgment of its work, labelled as such.
+2. The page shows the review beside the artifact, with a comparison against the previous version.
+3. The person chooses: approve, revise with notes, rebuild, or skip.
+4. The runner records the decision in the session record and appends it to `reviews/<artifact>.md`.
+
+No worker tool approves anything. The command-line helper refuses `approve` for a training that is run this way.
+
+### 5.5 The adapters
+
+Both implement one interface: start a job with instructions, a folder, a policy, limits and a result schema; stream events; return a result and what it cost.
+
+| | Claude | Codex |
+| --- | --- | --- |
+| How it is started | Agent SDK, or `claude -p` | `codex exec --json` |
+| Folder | `cwd` | `--cd` |
+| Writes limited to the folder | Shell sandbox, plus permission rules on the file tools | Workspace sandbox |
+| Network | Sandbox allow-list for shell; permission rules for fetching | Off unless enabled for the run |
+| Ignores the person's own setup | `settingSources` set to none; an organisation's managed policy still applies | `--ignore-user-config`, and no instruction files in the folder |
+| Result | JSON schema | `--output-schema` |
+| Worker tools | MCP server | MCP server |
+
+The adapters are deliberately thin. If a control exists on one side only, the design does not rely on it.
+
+### 5.6 One policy
+
+A run has one policy, and each step picks a profile from it.
+
+| Profile | Files | Shell | Network |
+| --- | --- | --- | --- |
+| `write` (drafting an artifact) | Staging folder | No | None |
+| `research` (one question) | Staging folder | Yes | Public web, minus a deny list |
+| `build` (compiling a deck) | Staging folder | Yes | Named hosts only |
+
+Two things narrow the difference between vendors:
+
+- **Sources are saved through the runner.** A worker that finds a page calls `save_source`; the runner fetches it, stores the snapshot and its hash, and returns the text. Both vendors then quote from the same bytes.
+- **Guidance is handed over, not discovered.** A teammate's local skills and instruction files cannot change what a worker is told.
+
+What still differs: how each agent searches, and whether it can drive a real browser. The first live run needed a browser to read pages that refused automated requests. Section 7 tests this before anything else is built.
+
+### 5.7 The pipelines
+
+**Training.**
+
+| Stage | Code | Agent job | Gate |
+| --- | --- | --- | --- |
+| Intake | A form on the page | | The answers are the approval |
+| Research plan | Check the plan | Draft the questions | 1 |
+| Research | Run the research pipeline below | | 2 |
+| Blueprint | Lint, size, level overlap | Draft the blueprint | 3 |
+| Document | Coverage check; push to Google Docs after approval | Write the guide | 4 |
+| Brief | Evidence check; push after approval | Write the brief | 5 |
+| Deck | Run the slides pipeline below | | 6 |
+| Scenario | Shape check | Draft, or use the person's file | 7 |
+| Yoodli | Count and limit checks | Translate each scenario | 8 |
+| Package | Readiness; write the index from the record | | none |
+
+**Research.** `plan` is a code step. Then one worker per question, several at a time, each with the `research` profile and only the evidence rules. The runner calls `record` for each finding, one at a time. After the last, `status` is read and the runner applies its own rule for "enough": a question answered with no evidence is not counted as done.
+
+**Slides.** A worker writes the outline; the runner checks it and renders the draft; a gate approves it. Workers compose sections in parallel; the runner compiles and renders previews. A separate worker answers the review questions about the rendered slides, and the runner records its answers. A gate shows the slides themselves. The runner then renders the deck and imports it.
+
+Objectives are passed to the slides pipeline as source identifiers. Its existing coverage command can then say which slides cover which objective without a model.
+
+### 5.8 The page
+
+- **Trainings:** what exists, what each is waiting for, what is running.
+- **A run:** stages and steps, what each worker is doing now, what it cost.
+- **A gate:** the review, the artifact, the comparison, the choices.
+- **Start:** the intake form, the agent to use, the limits.
+
+The desk is read-only today, answers on the local machine only, and requires a token. It gains write endpoints for decisions. Two rules come with that:
+
+- **A person starts it, not an assistant.** Today the helper prints the page's address, with its token, to whoever ran the command. If an assistant ran it, the assistant could post a decision. The runner is launched by the person and never prints the token where a worker can read it.
+- **Decisions need the token and a same-origin request**, as reads do now.
+
+### 5.9 State, restart and the skills
+
+- The session record stays in the training directory, so a training is still one folder that can be copied or published.
+- The runner keeps a log per run. After a crash it resumes at the first step that did not finish; finished steps are not repeated.
+- Staleness already works: an edited file makes what was built from it stale, and the runner offers to rebuild exactly those.
+- A training has one driver. One started in the runner is run from the page. The skills keep working for trainings started in chat. A chat-driven training can be handed to the runner; the reverse is not planned.
+
+### 5.10 Team use
+
+- One installer for the runner, which brings the pipelines with it.
+- Each person needs Claude Code or Codex installed and signed in, plus Node for the two harness skills.
+- Finished work is shared through the team hub, as now.
+
+### 5.11 Where the code lives
+
+- **A new repository** for the runner, the core, the adapters, the page and the pipeline definitions.
+- **Python**, standard library where possible, because the core is already Python. Whether the Claude adapter needs the SDK package or can start `claude -p` directly is decided by the first milestone.
+- **The two harness skills stay where they are** and are called at pinned versions. Merging them into the new repository is a later choice, not a precondition.
+- **Training Studio's helper** shrinks to a front end over the shared core.
+
+## 6. Changes the existing skills need
+
+Small, and worth making whether or not the runner is built.
+
+| Skill | Change |
+| --- | --- |
+| harness-research | Errors as JSON with a code. Recovery from a lock left by a dead process. A `status` that writes nothing. |
+| harness-slides | A record of where a deck is on the default path. Approval recorded as data, not free text. A structured request to replace the prose handoff. |
+| Both | One shared copy of guidance sync and the installer. |
+| Training Studio | Approval that can be limited to the page. |
+
+## 7. Milestones
+
+Each ends with something that can be judged.
+
+| | Milestone | Proves | Size |
+| --- | --- | --- | --- |
+| 0 | **Spike.** One research question and one drafting job, run on both agents in a locked staging folder, handing back through worker tools | That both agents can be confined, isolated from local setup and given the same tools; whether unattended research is as good as the interactive kind | Small |
+| 1 | **Approval on the page.** The desk decides gates; the helper refuses `approve` elsewhere | Goal 1, with today's skills | Small |
+| 2 | **Runner, training through the blueprint.** Core moved; intake form; research plan; the research pipeline; gates 1 to 3 | Goals 1 to 3 on the hardest stage | Large |
+| 3 | **The rest of training.** Document, brief, scenarios, Yoodli, package, Google Docs, hub | A whole training without a chat | Medium |
+| 4 | **Slides.** The deck pipeline, with slides shown at the gate | The last delegated stage | Large |
+| 5 | **Team.** Installer, several runs at once, notifications | Goal 4 | Medium |
+
+Stop after milestone 0 if research is clearly worse unattended. Stop after milestone 1 if that is enough control.
+
+## 8. Risks and open questions
+
+- **Cost and terms.** Anthropic's documentation gives an API key as the route for programs built on its SDK, and says products may not offer its consumer login without approval. Whether a team's internal runner may use each person's own subscription is not settled there. This needs an answer from Anthropic, and the equivalent check for OpenAI, before milestone 2. It decides what a run costs.
+- **Research quality without a browser.** Covered by milestone 0.
+- **Judging slides from images.** Both agents must read rendered slides in an unattended run. Read in documentation, not tried.
+- **Vendor churn.** Codex's flags and documentation have moved several times this year. Thin adapters limit the damage; they do not remove it.
+- **Passing worker tools to Codex while ignoring user configuration.** Believed possible through command-line overrides. Not verified; part of milestone 0.
+- **Two ways to run a training.** The skills and the runner must agree on the core. One shared core, with tests, is the mitigation.
+- **Size.** This is a product, not a script. My estimate, not a measurement: milestones 2 and 4 are each about as large as everything built for Training Studio so far.
+- **What is given up.** Improvements that arrive in the chat harnesses stop being free; the runner has to adopt them.
+
+## 9. What is needed to proceed
+
+1. **A choice:** A only, B as laid out, or C.
+2. **If B, confirmation of four assumptions:**
+   - It runs locally for each person; it is not hosted.
+   - Paying through API keys is acceptable if subscriptions turn out not to be allowed.
+   - It is a new repository, in Python.
+   - Milestone 0 comes first, and its result can end the project.
