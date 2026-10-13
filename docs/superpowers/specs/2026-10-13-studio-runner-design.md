@@ -26,7 +26,7 @@ Covered first: Training Studio, `harness-research` and `harness-slides`. Other p
 
 ### Not in scope
 
-- A hosted service. Each person runs it on their own computer and shares finished work through the team hub.
+- A hosted service. Each person runs it on their own computer. The only shared piece is a git repository.
 - Its own agent loop. The runner uses Claude Code and Codex as workers; it does not reimplement them.
 - Rewriting the two harness skills. Their command lines are called as they are.
 
@@ -111,6 +111,7 @@ With that rule, gate enforcement does not depend on a model following instructio
 - **Agent adapters.** One for Claude, one for Codex, behind the same small interface.
 - **Worker tools.** A handful of tools the runner serves to the worker over MCP, the same for both vendors.
 - **The page.** The training desk, grown from read-only into the place gates are decided.
+- **Workspace repository.** A git repository that holds the trainings, one folder each, and with them all of the runner's state. Section 5.9.
 
 ### 5.3 One agent step, start to finish
 
@@ -208,18 +209,41 @@ The desk is read-only today, answers on the local machine only, and requires a t
 - **A person starts it, not an assistant.** Today the helper prints the page's address, with its token, to whoever ran the command. If an assistant ran it, the assistant could post a decision. The runner is launched by the person and never prints the token where a worker can read it.
 - **Decisions need the token and a same-origin request**, as reads do now.
 
-### 5.9 State, restart and the skills
+### 5.9 State lives in git
 
-- The session record stays in the training directory, so a training is still one folder that can be copied or published.
-- The runner keeps a log per run. After a crash it resumes at the first step that did not finish; finished steps are not repeated.
-- Staleness already works: an edited file makes what was built from it stale, and the runner offers to rebuild exactly those.
-- A training has one driver. One started in the runner is run from the page. The skills keep working for trainings started in chat. A chat-driven training can be handed to the runner; the reverse is not planned.
+All state is files, and the files are in a git repository. There is no database and no server.
+
+- **A workspace is a git repository; a training is a folder in it.** The session record, the artifacts, the reviews and the run log all sit in the training's folder, as they do today.
+- **The runner commits at every point worth returning to:** a step whose result was kept, a gate decision, a change of settings. Each commit says what happened in its message.
+- **A gate decision is a commit by the person who made it.** Who approved what, and when, is then in the history under their own git identity, with the review file in the same commit.
+- **The comparison at a gate is a git diff** between the version last approved and the one in front of the person.
+- **Restart is simple.** After a crash the runner compares the folder with the last commit, discards what was half-made and resumes at the first step that did not finish.
+- **Going back is a git operation.** Any earlier state of a training can be looked at or restored. The helper's own store of earlier versions can be retired once this works.
+- **Workers never see the repository.** Staging folders are outside it, so no worker can commit or read its history.
+
+What is not committed:
+
+| Kept out | Why |
+| --- | --- |
+| Staging folders and other working files | They are scratch |
+| `sources/` by default | Supplied documents may be private, and saved pages are large: the first live run kept about 90 MB of them. A workspace can opt in |
+| The guidance caches the two harness skills keep, which contain git repositories of their own | They are fetched again when needed |
+| Lock files, tokens, anything a sign-in wrote | They belong to one computer |
+
+Without `sources/`, a teammate can read the research and build on it, but cannot check a quote against its source or add to the research until the sources are fetched again. The approval of the research is bound to hashes that are committed, so it stays verifiable.
+
+Staleness already works and is unchanged: an edited file makes what was built from it stale, and the runner offers to rebuild exactly those.
+
+**One driver per training.** A training started in the runner is run from the page. The skills keep working for trainings started in chat. A chat-driven training can be handed to the runner; the reverse is not planned.
 
 ### 5.10 Team use
 
 - One installer for the runner, which brings the pipelines with it.
 - Each person needs Claude Code or Codex installed and signed in, plus Node for the two harness skills.
-- Finished work is shared through the team hub, as now.
+- **A team shares a workspace by sharing its repository.** Each person clones it. The runner commits locally as it works. It pushes when the person says so, or after each gate decision if the workspace is set that way; pushing is never silent by default.
+- **Different trainings never collide,** because each is its own folder. The runner replays local commits on top of the remote's, as the team hub does today, and never force-pushes.
+- **One person drives a training at a time.** Taking a training over is a small commit that names the driver. If two people take the same one, the second push is refused and the runner says who has it. Handing over is the same commit in reverse.
+- **The team hub stays what it is:** published, approved revisions that never change, for reuse. The workspace is work in progress. They can be two repositories or two parts of one; that is decided at milestone 5.
 
 ### 5.11 Where the code lives
 
@@ -247,10 +271,10 @@ Each ends with something that can be judged.
 | --- | --- | --- | --- |
 | 0 | **Spike.** One research question and one drafting job, run on both agents in a locked staging folder, handing back through worker tools | That both agents can be confined, isolated from local setup and given the same tools; whether unattended research is as good as the interactive kind | Small |
 | 1 | **Approval and status on the page.** The desk decides gates and gains the status screen, for trainings run by today's skills; the helper refuses `approve` elsewhere | Goal 1, with today's skills | Small |
-| 2 | **Runner, training through the blueprint.** Core moved; intake form; research plan; the research pipeline; gates 1 to 3; live worker activity and cost on the status screen | Goals 1 to 3 on the hardest stage | Large |
+| 2 | **Runner, training through the blueprint.** Core moved; state committed to git at each step and gate; intake form; research plan; the research pipeline; gates 1 to 3; live worker activity and cost on the status screen | Goals 1 to 3 on the hardest stage | Large |
 | 3 | **The rest of training.** Document, brief, scenarios, Yoodli, package, Google Docs, hub | A whole training without a chat | Medium |
 | 4 | **Slides.** The deck pipeline, with slides shown at the gate | The last delegated stage | Large |
-| 5 | **Team.** Installer, several runs at once, notifications | Goal 4 | Medium |
+| 5 | **Team.** Installer, shared workspaces with one driver per training, several runs at once, notifications | Goal 4 | Medium |
 
 Stop after milestone 0 if research is clearly worse unattended. Stop after milestone 1 if that is enough control.
 
@@ -260,6 +284,8 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 - **Judging slides from images.** Both agents must read rendered slides in an unattended run. Codex takes images as input and Claude reads image files; neither has been tried here.
 - **Vendor churn.** Codex's flags and documentation have moved several times this year. Thin adapters limit the damage; they do not remove it.
 - **Passing worker tools to Codex while ignoring user configuration.** The override option exists. Whether the two combine as needed is not verified; part of milestone 0.
+- **Two people on one training.** Git merges folders well and a single session record badly. The one-driver rule avoids the conflict; it does not resolve one if someone works around it.
+- **Large files.** Decks and saved sources grow a repository. Sources are kept out by default; decks are committed, and that may need revisiting.
 - **Two ways to run a training.** The skills and the runner must agree on the core. One shared core, with tests, is the mitigation.
 - **Size.** This is a product, not a script. My estimate, not a measurement: milestones 2 and 4 are each about as large as everything built for Training Studio so far.
 - **What is given up.** Improvements that arrive in the chat harnesses stop being free; the runner has to adopt them.
@@ -269,8 +295,10 @@ Stop after milestone 0 if research is clearly worse unattended. Stop after miles
 - **Approach (2026-10-13, by the owner).** The runner, approach B, with a status screen on the page.
 - **Sign-in and cost (2026-10-13, by the owner).** The runner starts `claude -p` and `codex exec` under each person's own sign-in. It automates work that person already does by hand in those tools, one run at a time; it is not a service offered to others. No API key or vendor SDK is involved.
 
+- **Local, with state in git (2026-10-13, by the owner).** It runs on each person's computer and is not hosted. A git repository manages state. Section 5.9 is how that was read: one workspace repository, a folder per training, a commit at every step and gate.
+
 ### Assumed until the owner says otherwise
 
-- It runs locally for each person; it is not hosted.
-- It is a new repository, in Python, created at milestone 2. Milestones 0 and 1 do not need it.
+- A workspace repository holds many trainings. The alternative, one repository per training, is simpler to reason about and harder to browse and share.
+- The runner itself is a new repository, in Python, created at milestone 2. Milestones 0 and 1 do not need it.
 - Milestone 0 comes first, and its result can end the project.
