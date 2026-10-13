@@ -1,10 +1,11 @@
-"""The runner's server: every address the appendix of the milestone 2 specification names,
-each thing it refuses, and what the desk's own answers gain.
+"""The runner's server: every address the appendices of the milestone 2 and milestone 3
+specifications name, each thing it refuses, and what the desk's own answers gain.
 
 Most classes ask the page without a socket, so they run where a port cannot be opened.
 WireTests talks to a real server on a local port and is skipped where that is not allowed.
 Nothing starts an agent, looks at the real computer or touches the network.
 """
+import base64
 import json
 import os
 import stat
@@ -19,7 +20,7 @@ from unittest import mock
 from urllib.parse import urlencode
 
 import helpers
-from runner_support import FORM, StudioCase, asks, fails
+from runner_support import FORM, SCENARIO, StudioCase, asks, fails
 
 import computer
 import desk
@@ -31,10 +32,10 @@ from workspace import WorkspaceError
 VERSION = (helpers.SKILL / 'VERSION').read_text().strip()
 GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
-         '/api/share')
+         '/api/documents', '/api/copies', '/api/share')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
-RUN_KEYS = ['agent', 'model', 'problem', 'question', 'sentence', 'spent', 'state', 'steps',
-            'workers']
+RUN_KEYS = ['agent', 'copies', 'deck', 'documents', 'finished', 'model', 'problem',
+            'question', 'sentence', 'spent', 'state', 'steps', 'workers']
 STEP_KEYS = ['attempts', 'dollars', 'error', 'id', 'kind', 'label', 'seconds', 'status']
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -156,6 +157,9 @@ class RuleTests(PageCase):
                        '/api/trainings': {**FORM, 'title': 'Health checks'},
                        '/api/run': {'path': self.path, 'action': 'stop'},
                        '/api/answer': {'path': self.path, 'id': 'x', 'answer': 'Yes.'},
+                       '/api/documents': {'path': self.path, 'action': 'add',
+                                          'name': 'handbook.txt', 'content': 'V29yZHMu'},
+                       '/api/copies': {'path': self.path},
                        '/api/share': {}}
         self.before = self.on_disk()
 
@@ -565,7 +569,7 @@ class StartTests(PageCase):
                                        'deck_target': 'google', 'brand': 'Neutral',
                                        'copies': ['google'], 'yoodli': True})
         root = self.space.training('rolling-restarts')
-        self.assertEqual(made, {'path': str(root), 'id': 'rolling-restarts', 'gates': 4})
+        self.assertEqual(made, {'path': str(root), 'id': 'rolling-restarts', 'gates': 8})
         run = self.get('run', path=made['path'])
         self.assertEqual((run['state'], run['agent'], run['model']),
                          ('waiting', 'codex', 'a-model'))
@@ -578,15 +582,24 @@ class StartTests(PageCase):
             'stages': ['document', 'brief', 'deck', 'scenario', 'yoodli']})
         self.assertEqual(self.post('trainings', {'title': 'Health checks', 'topic': 'Health '
                                                  'checks', 'audience': 'Operators',
-                                                 'purpose': 'Upskilling'})['gates'], 3)
+                                                 'purpose': 'Upskilling'})['gates'], 5)
 
-    def test_supplied_documents_are_not_available_yet(self):
-        for scope in ('supplied-only', 'both'):
+    def test_the_form_says_where_research_may_look(self):
+        for scope, title in (('supplied-only', 'From documents'), ('both', 'From both')):
             with self.subTest(scope):
-                said = self.post('trainings', {**FORM, 'source_scope': scope}, 400)
-                self.assertEqual(said['error'], 'Supplied documents are not available in the '
-                                 'runner yet. Choose the public web for this training.')
-        self.assertEqual((self.get('trainings')['trainings'], self.workers.jobs), ([], []))
+                path = self.started(source_scope=scope, title=title)
+                run = self.get('run', path=path)
+                self.assertEqual((run['state'], run['documents']['waiting']),
+                                 ('waiting', True))
+        self.assertIsNone(self.get('run', path=self.started())['documents'])
+        self.assertEqual(len(self.workers.jobs), 1, 'only the last has started drafting')
+
+    def test_a_form_with_no_deck_leaves_the_deck_out(self):
+        without = Path(self.started(deck_target=None))
+        wanted = Path(self.started(deck_target='pptx', title='Health checks'))
+        self.assertEqual(('deck' in workspace.status(without)['settings']['stages'],
+                          'deck' in workspace.status(wanted)['settings']['stages']),
+                         (False, True))
 
     def test_a_form_that_makes_no_sense_starts_nothing(self):
         for changes, said in (
@@ -842,13 +855,40 @@ class DecideTests(PageCase):
         return self.post('decide', {'path': path, 'artifact': name, 'decision': 'approve',
                                     'seen': workspace.sha256_file(file)}, expect)
 
-    def test_the_last_approval_says_what_is_left_and_says_approved_once(self):
+    def test_the_last_approval_says_the_training_is_finished_and_says_approved_once(self):
         path = self.started()
-        for name in ('research-plan', 'research'):
+        for name in ('research-plan', 'research', 'blueprint', 'document', 'brief'):
             self.approve(path, name)
-        said = self.approve(path, 'blueprint')
-        self.assertEqual(said['said'], f'Approved. {pipeline.LATER}')
+        said = self.approve(path, 'scenario:main')
+        self.assertEqual(said['said'], 'Approved. This training is finished, with 1 thing '
+                         'left out or limited.')
+        self.assertIsNone(said['next'])
         self.assertEqual(self.get('run', path=path)['state'], 'done')
+
+    def test_the_last_approval_before_the_deck_says_the_deck_is_all_that_is_left(self):
+        path = self.started(deck_target='pptx')
+        for name in ('research-plan', 'research', 'blueprint', 'document', 'brief'):
+            self.approve(path, name)
+        said = self.approve(path, 'scenario:main')
+        self.assertEqual(said['said'], f'Approved. {pipeline.DECK_LEFT}')
+        run = self.get('run', path=path)
+        self.assertEqual((run['state'], run['deck']), (
+            'done', {'says': pipeline.DECK_LEFT, 'artifact': 'deck'}))
+        item = self.get('trainings')['trainings'][0]
+        self.assertEqual((item['state'], item['run']['state'], item['sentence']),
+                         ('in-progress', 'done', pipeline.DECK_LEFT))
+        left = [stage['stage'] for stage in item['stages']
+                if stage['state'] not in ('done', 'left-out')]
+        self.assertEqual(left, ['deck', 'package'],
+                         'the deck is the only stage left besides the wrap-up')
+        said = self.post('decide', {'path': path, 'artifact': run['deck']['artifact'],
+                                    'decision': 'skip', 'note': 'No slides for this one.'})
+        self.assertEqual(said['said'], 'This stage is left out. You can bring it back from '
+                         'the training at any time. This training is finished, with 1 thing '
+                         'left out or limited.')
+        item = self.get('trainings')['trainings'][0]
+        self.assertEqual((item['state'], item['run']['state']), ('finished', 'done'))
+        self.assertEqual(self.get('run', path=path)['finished']['index'], 'README.md')
 
     def test_a_decision_made_through_the_desks_own_address_wakes_the_run(self):
         path = self.started()
@@ -899,14 +939,187 @@ class DecideTests(PageCase):
         self.assertEqual(workspace.status(Path(path))['approval'], 'page')
         self.assertEqual(self.post('approval', {'path': path, 'mode': 'page'}),
                          {'approval': 'page'})
-        self.to_gate(Path(path), 'blueprint')
-        self.approve(path, 'blueprint')
+        self.to_end(Path(path))
         self.assertEqual(self.get('run', path=path)['state'], 'done')
         self.assertEqual(self.post('approval', {'path': path, 'mode': 'chat'}),
                          {'approval': 'chat'})
         self.assertEqual(self.git('status', '--porcelain'), '')
         self.assertEqual(self.log()[-1],
                          'Rolling restarts: decisions are now made in the conversation')
+
+
+class LaterTests(PageCase):
+    """What milestone 3 adds: the person's documents, the copies, what a gate gains, and
+    the index read as a file."""
+
+    def sent(self, text: str = 'Capacity holds only when more than one instance is '
+             'running.\n') -> str:
+        return base64.b64encode(text.encode('utf-8')).decode('ascii')
+
+    def test_documents_are_added_removed_and_settled_on_the_page(self):
+        path = self.started(source_scope='supplied-only')
+        run = self.post('documents', {'path': path, 'action': 'add', 'name': 'handbook.txt',
+                                      'content': self.sent()})
+        self.assertEqual(sorted(run), RUN_KEYS)
+        self.assertEqual(sorted(run['documents']),
+                         ['added', 'limits', 'note', 'types', 'waiting'])
+        self.assertEqual(run['documents']['added'], [
+            {'name': 'handbook.txt', 'bytes': 60, 'readable': True, 'problem': None}])
+        self.assertEqual((run['documents']['types'][1], run['documents']['limits']),
+                         ('.md', {'bytes': 8_000_000, 'files': 40}))
+        self.post('documents', {'path': path, 'action': 'add', 'name': 'notes.md',
+                                'content': self.sent('Notes.\n')})
+        run = self.post('documents', {'path': path, 'action': 'remove', 'name': 'notes.md'})
+        self.assertEqual([entry['name'] for entry in run['documents']['added']],
+                         ['handbook.txt'])
+        item = self.get('trainings')['trainings'][0]
+        self.assertEqual((item['state'], item['run']['state'], self.get('trainings')['needs']),
+                         ('needs-you', 'waiting', 1),
+                         'a run that waits for documents needs its person')
+        self.assertEqual(self.workers.jobs, [])
+        run = self.post('documents', {'path': path, 'action': 'done'})
+        self.assertEqual((run['documents']['waiting'], run['documents']['added'][0]['name'],
+                          len(self.workers.jobs)), (False, 'handbook.txt', 1))
+        self.assertEqual(self.get('run', path=path)['documents']['waiting'], False,
+                         'the documents stay shown once they are settled')
+
+    def test_what_makes_no_sense_about_a_document_is_refused_in_a_sentence(self):
+        path = self.started(source_scope='both')
+        web = self.started(title='Health checks')
+        add = {'path': path, 'action': 'add', 'name': 'handbook.txt', 'content': self.sent()}
+        for sent, expect, said in (
+                ({**add, 'action': 'replace'}, 400, 'A document can be: add, remove, done.'),
+                ({'path': path}, 400, 'Give action as text.'),
+                ({'action': 'done'}, 400, 'Give path as text.'),
+                ({**add, 'name': None}, 400, 'Give name as text.'),
+                ({**add, 'content': None}, 400, 'Give content as text.'),
+                ({**add, 'content': ['V29yZHMu']}, 400, 'Give content as text.'),
+                ({'path': path, 'action': 'remove'}, 400, 'Give name as text.'),
+                ({**add, 'content': 'not base64!'}, 400, 'That document did not arrive '
+                 'whole. Add it again.'),
+                ({**add, 'name': 'notes.pdf'}, 409, 'notes.pdf is not a kind of document '
+                 'that can be read here. Save it as text or as a Word file.'),
+                ({'path': path, 'action': 'remove', 'name': 'missing.txt'}, 409,
+                 'missing.txt is not one of the documents added.'),
+                ({**add, 'path': web}, 409, 'This training is researched from the public '
+                 'web, so it takes no documents.'),
+                ({**add, 'path': str(self.base / 'elsewhere')}, 403,
+                 'That folder is not a training this computer knows.')):
+            with self.subTest(sent=sent):
+                self.assertEqual(self.post('documents', sent, expect)['error'], said)
+        self.assertEqual(self.get('run', path=path)['documents']['added'], [])
+        chat = self.base / 'started-in-a-chat'
+        chat.mkdir()
+        workspace.init(chat, 'Started in a chat')
+        home.remember(chat, 'Started in a chat', [])
+        for endpoint, sent in (('documents', {**add, 'path': str(chat)}),
+                               ('copies', {'path': str(chat)})):
+            self.assertEqual(self.post(endpoint, sent, 404)['error'],
+                             'No run is driving this training.')
+
+    def test_only_a_document_sent_with_the_key_may_be_larger_than_any_other_change(self):
+        headers = self.headers()
+        self.assertEqual(page.DOCUMENT_LIMIT, 12_000_000)
+        self.assertGreater(page.DOCUMENT_LIMIT, 8_000_000 * 4 // 3,
+                           'the largest document fits once it is in base64')
+        self.assertEqual(self.page.body_limit('/api/documents', headers), 12_000_000)
+        self.assertEqual(self.page.body_limit('/api/documents?x=1', headers), 12_000_000)
+        for token in (False, 'not-the-key'):
+            self.assertEqual(self.page.body_limit('/api/documents', self.headers(token=token)),
+                             desk.BODY_LIMIT, 'a stranger is never read at length')
+        for target in (*desk.WRITES, *(path for path in POSTS if path != '/api/documents'),
+                       '/api/documents/more', '/api/nothing', '/', '//[', ''):
+            self.assertEqual(self.page.body_limit(target, headers), 64_000, target)
+        self.assertEqual(desk.Page(self.PORT).body_limit('/api/documents', headers), 64_000,
+                         'the plain desk takes nothing larger at any address')
+        status, said, _ = self.answer('POST', '/api/documents', None, origin=self.origin,
+                                      kind='application/json')
+        self.assertEqual((status, said['error']), (413, 'A change is at most 12,000,000 '
+                         'bytes, with its length stated.'))
+        status, said, _ = self.answer('POST', '/api/copies', None, origin=self.origin,
+                                      kind='application/json')
+        self.assertEqual((status, said['error']), (413, 'A change is at most 64,000 bytes, '
+                         'with its length stated.'))
+
+    def test_a_document_of_the_largest_size_is_taken(self):
+        path = self.started(source_scope='both')
+        large = 'A line of a long handbook.\n' * 280_000
+        self.assertGreater(len(large), 7_500_000)
+        run = self.post('documents', {'path': path, 'action': 'add', 'name': 'handbook.txt',
+                                      'content': self.sent(large)})
+        self.assertEqual(run['documents']['added'][0]['bytes'], len(large))
+
+    def test_the_copies_are_made_again_on_the_page(self):
+        self.copies.refuse['google'] = 'Google access is not set up on this computer.'
+        path = self.started(copies=['google'])
+        self.to_gate(Path(path), 'brief')
+        shown = self.get('run', path=path)['copies']
+        self.assertEqual(shown[0], {
+            'artifact': 'document', 'label': 'the learner guide', 'kind': 'google',
+            'state': 'not-made', 'link': None,
+            'problem': 'Google access is not set up on this computer.'})
+        self.copies.refuse.clear()
+        run = self.post('copies', {'path': path})
+        self.assertEqual(sorted(run), RUN_KEYS)
+        self.assertEqual([(entry['artifact'], entry['state'], entry['link'], entry['problem'])
+                          for entry in run['copies']], [
+            ('document', 'made', 'https://docs.example.com/d/doc1/edit', None)],
+            'the brief is not approved yet, so there is no copy of it to show')
+        self.assertEqual(self.post('copies', {}, 400)['error'], 'Give path as text.')
+
+    def test_a_scenarios_gate_says_whose_file_it_is(self):
+        path = self.started()
+        root = Path(path)
+        self.to_gate(root, 'blueprint')
+        (root / 'scenarios').mkdir()
+        (root / 'scenarios' / 'objection.md').write_text(SCENARIO)
+        self.to_gate(root, 'scenario:main')
+        self.assertEqual(self.get('gate', path=path, artifact='scenario:main')['whose'],
+                         'runner')
+        theirs = self.get('gate', path=path, artifact='scenario:objection')
+        self.assertEqual((theirs['whose'], theirs['label']),
+                         ('you', 'The practice scenario "objection"'))
+        self.assertNotIn('whose', self.get('gate', path=path, artifact='document'))
+        chat = self.base / 'started-in-a-chat'
+        chat.mkdir()
+        workspace.init(chat, 'Started in a chat')
+        home.remember(chat, 'Started in a chat', [])
+        (chat / 'scenario.md').write_text(SCENARIO)
+        self.assertIsNone(self.get('gate', path=str(chat), artifact='scenario:main')['whose'],
+                          'with no run, nobody recorded who wrote it')
+
+    def test_a_yoodli_scenarios_gate_names_the_scenario_to_show_beside_it(self):
+        path = self.started(yoodli=True, levels=['101'])
+        self.to_gate(Path(path), 'yoodli:main@101')
+        shown = self.get('gate', path=path, artifact='yoodli:main@101')
+        self.assertEqual(shown['beside'], {'artifact': 'scenario:main@101',
+                                           'label': 'The level 101 practice scenario'})
+        self.assertNotIn('whose', shown)
+        beside = self.get('file', path=path, artifact=shown['beside']['artifact'])
+        self.assertEqual((beside['file'], beside['text']), ('101/scenario.md', SCENARIO))
+        self.assertIn('Which goal carries each success criterion', shown['review'])
+
+    def test_the_index_is_read_as_a_file_once_it_is_written(self):
+        path = self.started()
+        said = self.get('file', 404, path=path, artifact='README.md')
+        self.assertEqual(said['error'], 'The index has not been written yet.')
+        self.to_end(Path(path))
+        run = self.get('run', path=path)
+        shown = self.get('file', path=path, artifact=run['finished']['index'])
+        self.assertEqual(sorted(shown), ['artifact', 'binary', 'file', 'size', 'text',
+                                         'truncated'])
+        self.assertEqual((shown['artifact'], shown['file'], shown['binary'],
+                          shown['truncated'], shown['text']),
+                         ('README.md', 'README.md', False, False,
+                          (Path(path) / 'README.md').read_text()))
+        for artifact, expect in (('notes.md', 403), ('../README.md', 403),
+                                 ('reviews/document.md', 403)):
+            self.get('file', expect, path=path, artifact=artifact)
+        said = self.get('file', 403, path=str(self.base / 'elsewhere'), artifact='README.md')
+        self.assertEqual(said['error'], 'That folder is not a training this computer knows.')
+        (Path(path) / 'README.md').unlink()
+        (Path(path) / 'README.md').symlink_to(self.base / 'gitconfig')
+        self.get('file', 403, path=path, artifact='README.md')
 
 
 class WireCase(StudioCase):
@@ -998,8 +1211,39 @@ class WireTests(WireCase):
         status, _, body = self.ask('/api/run', {'path': path, 'action': 'retry'})
         self.assertEqual((status, json.loads(body)), (409, {
             'error': 'Nothing here failed, so there is nothing to try again.'}))
-        status, _, body = self.ask('/api/trainings', {**FORM, 'source_scope': 'both'})
-        self.assertEqual((status, json.loads(body)['error']), (400, pipeline.NOT_YET))
+        status, _, body = self.ask('/api/trainings', {**FORM, 'source_scope': 'the-moon'})
+        self.assertEqual((status, json.loads(body)['error']), (400, 'The source scope is one '
+                         'of: public-web, supplied-only, both'))
+
+    def test_a_document_is_the_only_long_body_and_only_with_the_key(self):
+        path = json.loads(self.ask('/api/trainings', {**FORM, 'source_scope': 'both'})[2])[
+            'path']
+        # Just over what any other change may carry. A body refused unread has to fit in
+        # what the connection holds, or the sender never gets to read the refusal.
+        over = base64.b64encode(b'A line of a long handbook.\n' * 2_000).decode('ascii')
+        self.assertGreater(len(over), desk.BODY_LIMIT)
+        sent = {'path': path, 'action': 'add', 'name': 'handbook.txt', 'content': over}
+        for label, expect, options in (
+                ('no key', 403, {'token': False}),
+                ('another origin', 403, {'Origin': 'http://example.com'}),
+                ('a form', 415, {'Content_Type': 'application/x-www-form-urlencoded'}),
+                ('another host', 403, {'Host': 'example.com'})):
+            with self.subTest(label):
+                status, _, body = self.ask('/api/documents', sent, **options)
+                self.assertEqual(status, expect, body)
+        self.assertEqual(self.documents.listed(Path(path)), [])
+        status, _, body = self.ask('/api/documents', sent)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)['documents']['added'][0]['bytes'], 27 * 2_000)
+        for target in ('/api/answer', '/api/copies', '/api/decide', '/api/run'):
+            status, _, body = self.ask(target, {'path': path, 'id': over, 'answer': over})
+            self.assertEqual((status, json.loads(body)['error']), (413, 'A change is at most '
+                             '64,000 bytes, with its length stated.'), target)
+        large = base64.b64encode(b'A line of a long handbook.\n' * 150_000).decode('ascii')
+        status, _, body = self.ask('/api/documents', {**sent, 'name': 'longer.txt',
+                                                      'content': large})
+        self.assertEqual((status, json.loads(body)['documents']['added'][1]['bytes']),
+                         (200, 27 * 150_000), body[:200])
 
     def test_stopping_the_server_ends_the_engine(self):
         self.server.stop()
@@ -1023,12 +1267,14 @@ class LiveWireTests(WireCase):
             time.sleep(0.05)
         self.fail(f'It did not happen in time: {run}')
 
-    def test_a_training_goes_from_the_form_to_approved_blueprints_on_the_page(self):
+    def test_a_training_goes_from_the_form_to_finished_on_the_page(self):
         status, _, body = self.ask('/api/trainings', {**FORM, 'levels': ['101', '201']})
         self.assertEqual(status, 200, body)
         made = json.loads(body)
         path, root, decided = made['path'], Path(made['path']), 0
-        for gate in ('research-plan', 'research', 'blueprint@101', 'blueprint@201'):
+        for gate in ('research-plan', 'research', 'blueprint@101', 'blueprint@201',
+                     'document@101', 'brief@101', 'scenario:main@101', 'document@201',
+                     'brief@201', 'scenario:main@201'):
             self.until(path, lambda run: run['state'] == 'waiting'
                        and workspace.status(root)['gate'] == gate)
             shown = json.loads(self.ask('/api/gate?' + urlencode(
@@ -1040,13 +1286,17 @@ class LiveWireTests(WireCase):
             self.assertEqual(status, 200, body)
             decided += 1
         done = self.until(path, lambda run: run['state'] == 'done')
-        self.assertEqual((decided, made['gates']), (4, 4))
+        self.assertEqual((decided, made['gates']), (10, 8))
         self.assertEqual({step['status'] for step in done['steps']}, {'done'})
-        self.assertEqual(done['workers'], [])
-        self.assertEqual(len(self.workers.jobs), 7)
+        self.assertEqual((done['workers'], done['finished']['ready']), ([], True))
+        self.assertEqual(len(self.workers.jobs), 13)
         self.until(path, lambda run: self.git('status', '--porcelain') == '')
         approved = [line for line in self.log() if line.endswith('approved on the page.')]
-        self.assertEqual(len(approved), 4)
+        self.assertEqual(len(approved), 10)
+        status, _, body = self.ask('/api/file?' + urlencode(
+            {'path': path, 'artifact': done['finished']['index']}))
+        self.assertEqual((status, json.loads(body)['text'].splitlines()[0]),
+                         (200, '# Rolling restarts'))
 
 
 class PlainDeskTests(unittest.TestCase):

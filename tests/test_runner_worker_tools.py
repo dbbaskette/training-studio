@@ -5,6 +5,7 @@ Nothing here touches the network: pages come from a pretend web.
 import gzip
 import io
 import json
+import re
 import socket
 import subprocess
 import threading
@@ -12,8 +13,10 @@ import unittest
 from unittest import mock
 
 import helpers
-from runner_support import BLUEPRINT, PAGE, PLAN, PUBLIC, JobCase
+from runner_support import (BLUEPRINT, BRIEF, DOCUMENT, PAGE, PLAN, PUBLIC, SCENARIO, YOODLI,
+                            JobCase)
 
+import checks
 from runner import worker_tools
 from workspace import WorkspaceError
 
@@ -21,6 +24,8 @@ DOCS = 'https://docs.example.com/restarts'
 BLUEPRINTS = {'blueprint': {'kind': 'blueprint', 'findings': helpers.FINDINGS}}
 PLANS = {'research-plan': {'kind': 'research-plan', 'scope': 'public-web'}}
 QUOTE = 'Capacity holds only when more than one instance is running.'
+COMPETITIVE = (helpers.EXAMPLES / 'competitive-brief.md').read_text(encoding='utf-8')
+PROFILE = json.loads((helpers.SKILL / 'assets' / 'profiles' / 'yoodli.json').read_text())
 
 
 class PrepareTests(JobCase):
@@ -44,6 +49,12 @@ class PrepareTests(JobCase):
         with self.assertRaisesRegex(WorkspaceError, 'scope is one of'):
             worker_tools.prepare(self.job, artifacts={'p': {'kind': 'research-plan',
                                                             'scope': 'anything'}})
+        with self.assertRaisesRegex(WorkspaceError, 'the kind of brief is one of product, '
+                                    'competitive'):
+            worker_tools.prepare(self.job, artifacts={'brief': {'kind': 'brief',
+                                                                'brief_kind': 'sales'}})
+        self.assertEqual(list(worker_tools.VALIDATORS), [
+            'research-plan', 'blueprint', 'document', 'brief', 'scenario', 'yoodli'])
 
     def test_a_finding_needs_a_question_id(self):
         with self.assertRaisesRegex(WorkspaceError, 'not a research question ID'):
@@ -303,6 +314,220 @@ class BlueprintTests(JobCase):
         found = worker_tools.collect(self.job)
         self.assertEqual(found['artifacts'], {})
         self.assertIn('No modules found.', found['problems']['blueprint'])
+
+
+class DraftCase(JobCase):
+    """A job that hands back one draft of one kind."""
+    KIND = ''
+
+    def drafting(self, **spec) -> worker_tools.WorkerTools:
+        return self.tools(artifacts={self.KIND: {'kind': self.KIND, **spec}})
+
+    def kept(self) -> dict:
+        return worker_tools.collect(self.job)['artifacts'][self.KIND]
+
+    def statuses(self) -> dict:
+        return {check['check']: check['status'] for check in self.kept()['checks']}
+
+
+class GuideTests(DraftCase):
+    KIND = 'document'
+
+    def test_the_example_guide_is_accepted_against_the_example_blueprint(self):
+        tools = self.drafting(blueprint=BLUEPRINT)
+        self.assertEqual(self.ok(tools.submit_artifact('document', DOCUMENT)),
+                         'Accepted: document.')
+        kept = self.kept()
+        self.assertEqual((kept['text'], kept['warnings'], kept['path'].name),
+                         (DOCUMENT, [], 'document.md'))
+        self.assertEqual(self.statuses(), {'document.coverage': 'passed'})
+        self.assertEqual(kept['checks'][0]['basis'], 'declared')
+
+    def test_a_guide_that_leaves_something_out_comes_back_with_what_is_missing(self):
+        tools = self.drafting(blueprint=BLUEPRINT)
+        thin = DOCUMENT.replace('<!-- covers: O2 K1.2 -->', '<!-- covers: K1.2 -->')
+        said = self.refused(tools.submit_artifact('document', thin))
+        self.assertIn('- O2 is not covered by any section.', said)
+        self.assertEqual(worker_tools.collect(self.job)['artifacts'], {})
+        self.ok(tools.submit_artifact('document', DOCUMENT))
+
+    def test_a_guide_may_not_teach_what_the_research_could_not_support(self):
+        tools = self.drafting(blueprint=BLUEPRINT)
+        wrong = DOCUMENT.replace('<!-- covers: O1 K1.1 K1.3 -->',
+                                 '<!-- covers: O1 K1.1 K1.3 K1.4 K9.9 -->')
+        said = self.refused(tools.submit_artifact('document', wrong))
+        self.assertIn('- K1.4 is [unsupported] and must not be taught.', said)
+        self.assertIn('- K9.9 is not in the blueprint.', said)
+
+    def test_without_its_blueprint_the_check_cannot_run_which_is_not_held_against_it(self):
+        self.ok(self.drafting().submit_artifact('document', '# A guide\n\nWords.\n'))
+        check, = self.kept()['checks']
+        self.assertEqual((check['check'], check['status'], check['problems']), (
+            'document.coverage', 'unavailable',
+            ['The blueprint was not given, so coverage could not be checked.']))
+
+
+class BriefDraftTests(DraftCase):
+    KIND = 'brief'
+
+    def test_the_example_briefs_are_accepted_each_as_its_own_kind(self):
+        for kind, text in (('product', BRIEF), ('competitive', COMPETITIVE)):
+            with self.subTest(kind):
+                self.job = self.base / kind
+                tools = self.drafting(brief_kind=kind, findings=helpers.FINDINGS)
+                self.ok(tools.submit_artifact('brief', text))
+                self.assertEqual(self.statuses(), {'brief.sections': 'passed',
+                                                   'brief.findings': 'passed'})
+                self.assertEqual(self.kept()['text'], text)
+
+    def test_a_brief_of_the_wrong_kind_or_shape_comes_back_with_the_checks_own_words(self):
+        tools = self.drafting(brief_kind='competitive', findings=helpers.FINDINGS)
+        said = self.refused(tools.submit_artifact('brief', BRIEF))
+        self.assertIn('- The title must start with "# Competitive brief:".', said)
+        self.assertIn('- Section "Comparison" is missing.', said)
+        swapped = COMPETITIVE.replace('## 3. Differentiators', '## 3. Limitations', 1) \
+            .replace('## 4. Limitations', '## 4. Differentiators', 1)
+        self.assertIn('- Sections are out of order; expected: Executive summary, Comparison',
+                      self.refused(tools.submit_artifact('brief', swapped)))
+
+    def test_a_section_may_rest_only_on_findings_that_exist_and_are_supported(self):
+        tools = self.drafting(brief_kind='product', findings=helpers.FINDINGS)
+        for old, new, said in (
+                ('<!-- findings: availability -->', '<!-- findings: made-up -->',
+                 'Section "What it is and where it fits" names unknown finding made-up.'),
+                ('<!-- findings: availability health-checks -->',
+                 '<!-- findings: vendor-claim -->',
+                 'Section "Capabilities" rests on vendor-claim, which is insufficient.'),
+                ('<!-- findings: instance-min -->\n\n- A single', '- A single',
+                 'Section "Limitations" names no findings.')):
+            with self.subTest(said):
+                self.assertIn(old, BRIEF)
+                self.assertIn(f'- {said}', self.refused(tools.submit_artifact(
+                    'brief', BRIEF.replace(old, new, 1))))
+        self.ok(tools.submit_artifact('brief', BRIEF))
+
+    def test_without_the_findings_that_check_cannot_run_and_the_brief_is_still_taken(self):
+        self.ok(self.drafting(brief_kind='product').submit_artifact('brief', BRIEF))
+        self.assertEqual(self.statuses(), {'brief.sections': 'passed',
+                                           'brief.findings': 'unavailable'})
+        self.job = self.base / 'unnamed'
+        self.ok(self.drafting(findings=helpers.FINDINGS).submit_artifact('brief', BRIEF))
+        self.assertEqual(self.statuses()['brief.sections'], 'passed',
+                         'a brief with no kind named is a product brief')
+
+
+class ScenarioDraftTests(DraftCase):
+    KIND = 'scenario'
+
+    def test_the_example_scenario_is_accepted(self):
+        tools = self.drafting(label='scenario:main', mode='roleplay')
+        self.assertEqual(self.ok(tools.submit_artifact('scenario', SCENARIO)),
+                         'Accepted: scenario.')
+        self.assertEqual((self.statuses(), self.kept()['warnings'], self.kept()['text']),
+                         ({'scenario:main.sections': 'passed'}, [], SCENARIO))
+
+    def test_a_scenario_that_is_not_in_shape_comes_back_with_what_it_lacks(self):
+        tools = self.drafting(label='scenario:objection')
+        said = self.refused(tools.submit_artifact('scenario', 'A lead rings after a restart '
+                                                  'dropped requests.\n'))
+        for problem in ('The file must start with "# Scenario: <name>".',
+                        'Section "Opening" is missing or empty.',
+                        'Section "Success criteria" is missing or empty.'):
+            self.assertIn(f'- {problem}', said)
+        prose = SCENARIO.replace('- Describes what a rolling restart does.\n- Explains that '
+                                 'capacity holds only with more than one instance.\n- '
+                                 'Corrects the zero-downtime belief without dismissing the '
+                                 'customer.\n- Leaves with an agreed next step.',
+                                 'The learner explains it well.')
+        self.assertNotEqual(prose, SCENARIO)
+        self.assertIn('- Success criteria must be a list, one criterion per item.',
+                      self.refused(tools.submit_artifact('scenario', prose)))
+        unknown = SCENARIO.replace('## Mode\n\nroleplay', '## Mode\n\ndebate')
+        self.assertIn('- Mode "debate" is not one of: roleplay, pitch, tutor, questionnaire',
+                      self.refused(tools.submit_artifact('scenario', unknown)))
+        self.ok(tools.submit_artifact('scenario', SCENARIO))
+        self.assertEqual(self.statuses(), {'scenario:objection.sections': 'passed'})
+
+    def test_a_mode_other_than_the_practice_plans_is_noted_and_does_not_refuse(self):
+        tools = self.drafting(label='scenario:main', mode='pitch')
+        said = self.ok(tools.submit_artifact('scenario', SCENARIO))
+        self.assertIn('Noted for the person who reviews it:\n- The practice plan lists this '
+                      'scenario as pitch; the file says roleplay. The scenario file decides.',
+                      said)
+        self.assertEqual(len(self.kept()['warnings']), 1)
+
+
+class YoodliDraftTests(DraftCase):
+    KIND = 'yoodli'
+    SPEC = {'label': 'yoodli:main', 'profile': PROFILE, 'scenario': SCENARIO,
+            'objectives': ['O1', 'O2', 'O3']}
+
+    def test_the_example_yoodli_scenario_is_accepted(self):
+        tools = self.drafting(**self.SPEC)
+        self.assertEqual(self.ok(tools.submit_artifact('yoodli', YOODLI)), 'Accepted: yoodli.')
+        self.assertEqual(self.statuses(), {'yoodli:main.fields': 'passed',
+                                           'yoodli:main.limits': 'passed',
+                                           'yoodli:main.mapping': 'passed'})
+        limits = self.kept()['checks'][1]
+        self.assertEqual((limits['counts']['Context'], limits['provisional'],
+                          self.kept()['text']), (666, True, YOODLI))
+
+    def test_the_real_length_of_each_field_is_put_in_for_the_worker(self):
+        zeroed = re.sub(r'\b[\d,]+ of ', '0 of ', YOODLI)
+        self.assertEqual((zeroed.count('0 of '), worker_tools.counted(zeroed)), (10, YOODLI))
+        self.assertEqual(worker_tools.counted(YOODLI), YOODLI)
+        guessed = YOODLI.replace('666 of 10,000 characters', '1,234 of 10,000 characters')
+        tools = self.drafting(**self.SPEC)
+        self.ok(tools.submit_artifact('yoodli', guessed))
+        self.assertEqual(self.kept()['text'], YOODLI)
+        self.assertEqual(checks.stated_counts(self.kept()['text'])[('Context',)], 666)
+        block = '```text\n12 of 99 characters\n```\n'
+        self.assertEqual(worker_tools.counted(f'## Context\n\n{block}'),
+                         f'## Context\n\n{block}', 'what is to be pasted is never changed')
+
+    def test_a_field_over_its_limit_is_refused_and_nothing_is_cut(self):
+        tools = self.drafting(**self.SPEC)
+        long = YOODLI.replace('You are Priya Nair, the platform lead',
+                              'You are Priya Nair, the platform lead' + ' and so on' * 1000)
+        said = self.refused(tools.submit_artifact('yoodli', long))
+        self.assertIn('- Context is 10666 characters; the limit is 10000.', said)
+        self.assertEqual(worker_tools.collect(self.job)['artifacts'], {})
+
+    def test_a_layout_that_does_not_fit_yoodli_or_its_scenario_comes_back(self):
+        tools = self.drafting(**self.SPEC)
+        for old, new, said in (
+                ('```text\nObjection Handling\n```', '```text\nPitch\n```',
+                 'Type "Pitch" does not match the scenario mode roleplay; expected '
+                 '"Objection Handling".'),
+                ('<!-- criterion: 3 4 -->', '<!-- criterion: 3 -->',
+                 'Success criterion 4 is not carried by any goal: "Leaves with an agreed '
+                 'next step."'),
+                ('<!-- assesses: O3 -->', '<!-- assesses: O7 -->',
+                 'Goal 3 assesses unknown objective O7.'),
+                ('<!-- scenario: main -->', '<!-- scenario: other -->',
+                 'The file must name its scenario with <!-- scenario: main -->.'),
+                ('#### Role\n\n```text\nPlatform lead\n```\n', '',
+                 'Persona 1: field "Role" is missing or empty.'),
+                ('```text\nBinary\n```', '```text\nPass or fail\n```',
+                 'Goal 1: type "Pass or fail" is not one of: Binary, Rated')):
+            with self.subTest(said):
+                self.assertIn(old, YOODLI)
+                self.assertIn(f'- {said}', self.refused(tools.submit_artifact(
+                    'yoodli', YOODLI.replace(old, new, 1))))
+
+    def test_what_cannot_be_checked_is_recorded_and_not_held_against_the_worker(self):
+        self.ok(self.drafting(label='yoodli:main', profile=PROFILE)
+                .submit_artifact('yoodli', YOODLI))
+        self.assertEqual(self.statuses(), {'yoodli:main.fields': 'passed',
+                                           'yoodli:main.limits': 'passed',
+                                           'yoodli:main.mapping': 'unavailable'})
+        self.assertEqual(self.kept()['checks'][2]['problems'],
+                         ['The scenario file is missing.'])
+        self.job = self.base / 'no-profile'
+        self.ok(self.drafting(label='yoodli:main').submit_artifact('yoodli', YOODLI))
+        self.assertEqual(set(self.statuses().values()), {'unavailable'})
+        self.assertEqual(self.kept()['checks'][0]['problems'],
+                         ['The Yoodli profile was not given, so this could not be checked.'])
 
 
 class ReviewTests(JobCase):
