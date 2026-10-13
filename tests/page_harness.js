@@ -5,6 +5,11 @@
 //   node page_harness.js app FILE        runs app.js against the answers in FILE, follows its
 //                                        steps, and prints what was on the page at each one
 //
+// A step is one of: {snapshot: name}, {click: the name of a control}, {fill: the label of a
+// box, value: what is typed}, {type: text} for the note in the sheet, {poll: true} for the
+// page's own refresh, and {key: 'Escape'}. A box that is filled is left as a person leaves
+// it, unless the step says {stay: true}: then they are still typing in it.
+//
 // The document here has no HTML parser at all. A script that tried to set innerHTML would
 // throw, so anything that reaches the page as markup fails the test that runs this.
 'use strict';
@@ -15,7 +20,7 @@ const vm = require('vm');
 
 const PAGE = path.join(__dirname, '..', 'skills', 'training-studio', 'scripts', 'desk');
 const NATIVE = ['BUTTON', 'A', 'SUMMARY', 'INPUT', 'TEXTAREA', 'SELECT'];
-const report = { errors: [], requests: [], notifications: [], strayListeners: [] };
+const report = { errors: [], requests: [], notifications: [], strayListeners: [], paces: [] };
 
 // --- a document with no parser -------------------------------------------------------
 
@@ -35,6 +40,12 @@ class FakeNode {
   contains(node) {
     for (let at = node; at; at = at.parentNode) if (at === this) return true;
     return false;
+  }
+
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const held = this.parentNode.childNodes;
+    return held[held.indexOf(this) + 1] || null;
   }
 }
 
@@ -64,7 +75,8 @@ class FakeElement extends FakeNode {
     this.listeners = {};
     this.style = {};
     this.hidden = false;
-    this.disabled = false;
+    this.off = false;
+    this.readOnly = false;
     this.open = false;
     this.value = '';
     const owner = this;
@@ -79,6 +91,16 @@ class FakeElement extends FakeNode {
 
   classes() {
     return (this.attributes.class || '').split(/\s+/).filter(Boolean);
+  }
+
+  get disabled() {
+    return this.off;
+  }
+
+  // A control that is switched off while it has the focus loses it, as it does in a browser.
+  set disabled(value) {
+    this.off = Boolean(value);
+    if (this.off && document.activeElement === this) document.activeElement = document.body;
   }
 
   get className() {
@@ -133,6 +155,21 @@ class FakeElement extends FakeNode {
     this.replaceChildren(node, ...held);
   }
 
+  get firstChild() {
+    return this.childNodes[0] || null;
+  }
+
+  insertBefore(node, before) {
+    if (!before) {
+      this.append(node);
+      return node;
+    }
+    node.remove();
+    node.parentNode = this;
+    this.childNodes.splice(this.childNodes.indexOf(before), 0, node);
+    return node;
+  }
+
   replaceChildren(...nodes) {
     for (const child of this.childNodes.slice()) child.remove();
     this.append(...nodes);
@@ -161,9 +198,11 @@ class FakeElement extends FakeNode {
     for (const listener of this.listeners[type] || []) listener(event);
   }
 
-  // What a click, or Enter or Space on a native control, does.
+  // What a click, or Enter or Space on a native control, does. The control has the focus,
+  // as it does for anyone who reached it with the keyboard.
   click() {
     if (this.disabled) return;
+    document.activeElement = this;
     const event = { target: this, preventDefault() {} };
     this.dispatch('click', event);
     if (this.tagName === 'SUMMARY' && this.parentNode) this.parentNode.open = !this.parentNode.open;
@@ -226,6 +265,7 @@ function matches(node, selector) {
 }
 
 const documentListeners = {};
+const windowListeners = {};
 const document = {
   body: new FakeElement('body'),
   activeElement: null,
@@ -292,6 +332,24 @@ function words(node) {
   return node.childNodes.map(words).join(inline.includes(node.tagName) ? '' : '\n');
 }
 
+// The boxes a person can type in, each under the words of its label.
+function boxes() {
+  const found = [];
+  for (const label of document.body.querySelectorAll('label').filter(visible)) {
+    const box = label.htmlFor ? document.getElementById(label.htmlFor) : null;
+    if (box && visible(box)) found.push([name(label), box]);
+  }
+  return found;
+}
+
+function box(label) {
+  const all = boxes();
+  const exact = all.filter(([words]) => words === label);
+  const found = exact.length ? exact : all.filter(([words]) => words.startsWith(label));
+  if (!found.length) throw new Error('No box on the page is labelled "' + label + '".');
+  return found[0][1];
+}
+
 function snapshot() {
   const controls = document.body.querySelectorAll('button, a, summary, textarea, input');
   const unnamed = [];
@@ -320,13 +378,23 @@ function snapshot() {
       .filter((node) => !name(node.parentNode)).length,
     unnamed,
     foreign: document.body.querySelectorAll('img, script, iframe, object, embed').length,
-    focus: document.activeElement ? (document.activeElement.id || name(document.activeElement)) : '',
+    focus: document.activeElement === document.body ? '(nowhere)'
+      : document.activeElement ? (document.activeElement.id || name(document.activeElement)) : '',
     notice: document.getElementById('notice').hidden ? '' : document.getElementById('notice').textContent,
     current: document.body.querySelectorAll('[aria-current]').map(name),
     sheet: sheet.hidden ? '' : words(sheet).replace(/\n+/g, '\n'),
     toasts: document.body.querySelectorAll('.toast').map((node) => node.textContent),
     posts: report.requests.filter((request) => request.method === 'POST').length,
     badge: badge.hidden ? '' : badge.textContent,
+    fields: Object.fromEntries(boxes().map(([label, held]) => [label, held.value])),
+    locked: boxes().filter(([, held]) => held.readOnly).map(([label]) => label),
+    invalid: boxes().filter(([, held]) => held.getAttribute('aria-invalid') === 'true')
+      .map(([label]) => label),
+    chosen: document.body.querySelectorAll('.chip').filter(visible)
+      .filter((node) => node.getAttribute('aria-pressed') === 'true').map(name),
+    working: document.body.querySelectorAll('.working').filter(visible).length,
+    sidebar: !document.getElementById('sidebar').hidden,
+    pace: report.paces[report.paces.length - 1] || 0,
   };
 }
 
@@ -388,15 +456,30 @@ async function app(file) {
     location: { hash: plan.hash === undefined ? '#token=the-test-key' : plan.hash },
     history: {
       state: null,
-      pushState(state) { this.state = state; },
+      earlier: [],
+      pushState(state) {
+        this.earlier.push(this.state);
+        this.state = state;
+      },
       replaceState(state) { this.state = state; },
+      // The browser's own way back: the state before this one, announced to the page.
+      back() {
+        if (!this.earlier.length) return;
+        this.state = this.earlier.pop();
+        for (const listener of windowListeners.popstate || []) listener({ state: this.state });
+      },
     },
     navigator: { clipboard: { writeText: () => Promise.resolve() } },
-    addEventListener() {},
+    addEventListener: (type, listener) => {
+      (windowListeners[type] = windowListeners[type] || []).push(listener);
+    },
     scrollTo() {},
     focus() {},
     matchMedia: () => ({ matches: false }),
-    setTimeout: (callback) => timers.push(callback),
+    setTimeout: (callback, delay) => {
+      if (callback.name === 'refresh') report.paces.push(delay);
+      return timers.push(callback);
+    },
     clearTimeout() {},
     URLSearchParams,
     console,
@@ -405,7 +488,8 @@ async function app(file) {
       const key = method + ' ' + address.split('?')[0];
       report.requests.push({ method, address, headers: (options && options.headers) || {},
         body: options && options.body ? JSON.parse(options.body) : null });
-      const held = answers[key];
+      // An answer can be kept for one address, query and all, or for every query of it.
+      const held = answers[method + ' ' + address] || answers[key];
       if (!held) return { ok: false, status: 404, json: async () => ({ error: 'No answer for ' + key }) };
       const answer = held.length > 1 ? held.shift() : held[0];
       return { ok: answer.status === 200, status: answer.status, json: async () => answer.body };
@@ -425,6 +509,13 @@ async function app(file) {
       if (step.snapshot) shots[step.snapshot] = snapshot();
       if (step.click) control(step.click).click();
       if (step.type !== undefined) document.getElementById('note-text').value = step.type;
+      if (step.fill !== undefined) {
+        const held = box(step.fill);
+        held.focus();
+        held.value = step.value;
+        held.dispatch('input', { target: held });
+        if (!step.stay) held.dispatch('change', { target: held });
+      }
       if (step.poll) await timers.filter((timer) => timer.name === 'refresh').pop()();
       if (step.key) for (const listener of documentListeners.keydown || []) listener({ key: step.key });
     } catch (failure) {

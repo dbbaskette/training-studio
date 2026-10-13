@@ -1,4 +1,5 @@
-// The page: home, trainings, status, settings, one training, and a gate.
+// The page: home, trainings, status, settings, one training, and a gate. With the runner
+// behind it there are three more: set-up, a new training, and a run.
 // It draws what the server says and sends back only what the person decides. Every value
 // from the server is placed as text, so nothing in a training's files or its record can
 // ever be read as markup. Documents are drawn by markdown.js, which keeps the same rule.
@@ -7,7 +8,8 @@
 const TOKEN_HEADER = 'X-Training-Studio-Token';
 const POLL_SHOWN = 5000;
 const POLL_HIDDEN = 20000;
-const WORKING = 3 * 60000; // a training that changed this recently is shown as working
+const POLL_RUN = 2000; // while a run is working and its own screen is open
+const WORKING = 3 * 60000; // with no run to ask, a training that changed this recently is working
 const DRAWING = 'http://www.w3.org/2000/svg'; // the name of the SVG language; nothing is fetched
 const COUNTED = ['Nothing needs', 'One thing needs', 'Two things need', 'Three things need',
   'Four things need', 'Five things need', 'Six things need', 'Seven things need',
@@ -99,13 +101,57 @@ const COMPUTER_WORDS = {
 };
 const NAV = [['go-home', 'home', 'home'], ['go-trainings', 'trainings', 'trainings'],
   ['go-status', 'status', 'status'], ['go-settings', 'settings', 'settings']];
+// The screen in the sidebar that each other screen belongs to.
+const PARENTS = { training: 'trainings', gate: 'trainings', run: 'trainings', new: 'trainings',
+  setup: 'settings' };
+
+// What the runner adds. A run and each of its steps say where they are in these words.
+const RUN_WORDS = {
+  working: ['current', 'Working on its own'],
+  waiting: ['review', 'Waiting for you'],
+  paused: ['out', 'Paused'],
+  stopped: ['off', 'Stopped'],
+  failed: ['late', 'Stopped: something went wrong'],
+  done: ['done', 'Finished here'],
+};
+const STEP_WORDS = {
+  done: ['done', 'Done'], working: ['current', 'Working'], waiting: ['review', 'Waiting for you'],
+  failed: ['late', 'Failed'], 'to-do': ['none', 'To do'],
+};
+const STEERED = {
+  pause: 'Paused. Nothing more is started until you resume it.',
+  resume: 'Carrying on.',
+  stop: 'Stopped. Everything made so far is kept.',
+  retry: 'Trying again.',
+};
+const AGENTS = ['claude', 'codex'];
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
+const SHARE = ['each-decision', 'when-asked'];
+const SHARE_SAYS = [
+  'After each decision: your team sees the drafts, your answers and each review as soon as '
+    + 'you decide a stage, finished or not.',
+  'Only when I ask: everything stays on this computer, and your team sees nothing new, '
+    + 'until you press “Share now”.',
+];
+const PURPOSES = ['Field enablement', 'Technical upskilling', 'General knowledge'];
+const LEVELS = ['101', '201', '301', '401'];
+const DECKS = [['pptx', 'PowerPoint'], ['google', 'Google Slides'], [null, 'No deck']];
+const COPIES = [['google', 'Google Docs'], ['word', 'Word']];
+const STEPS = ['The topic and who it is for', 'Its shape', 'The sources, the agent and the limits'];
 
 const view = {
   token: '', screen: 'home', path: null, artifact: null,
   listing: null, needs: 0, computer: undefined, known: null,
   gate: null, newer: null, training: null, after: null, sheet: '', opener: '', pane: 0,
   drawn: '', named: '', pushed: 0, timer: 0, turn: 0, busy: false, checking: false,
+  // What the runner adds. `runner` is undefined until it has been asked for, and false on the
+  // plain desk, where nothing below is ever used.
+  runner: undefined, setup: null, form: null, draft: null, run: null, promised: null,
+  asks: {}, answers: {}, agents: null, looking: false, unlooked: '', sharing: false,
+  steered: '', barred: '',
 };
+// Each part of a screen that is drawn in parts, and what it was drawn from.
+const PARTS = new WeakMap();
 
 const byId = (id) => document.getElementById(id);
 const main = () => byId('main');
@@ -247,12 +293,13 @@ function beads(stages, small) {
   return add(document.createDocumentFragment(), row, caption);
 }
 
-// A control with two answers. Its glass thumb slides to the one that is chosen.
+// A control with two answers, or three. Its glass thumb slides to the one that is chosen.
 function segmented(label, options, at, choose, key) {
   const node = make('div', 'segmented');
   node.setAttribute('role', 'group');
   node.setAttribute('aria-label', label);
   node.dataset.at = String(at);
+  node.dataset.count = String(options.length);
   const thumb = make('span', 'seg-thumb');
   thumb.setAttribute('aria-hidden', 'true');
   node.append(thumb);
@@ -273,12 +320,106 @@ function slide(node, at) {
   });
 }
 
+// A line beside a control that says why it was refused. It is read out when it appears.
+function alertLine(id) {
+  const node = make('p', 'problem');
+  node.id = id;
+  node.setAttribute('role', 'alert');
+  node.hidden = true;
+  return node;
+}
+
+function say(problem, text) {
+  problem.textContent = text;
+  problem.hidden = !text;
+}
+
+// A labelled box to type in. What is typed is kept in `held[name]` as it is typed, so a
+// screen that is drawn again still has it.
+function field(id, label, held, name, about) {
+  const spec = about || {};
+  const title = make('label', 'field-label', label);
+  title.htmlFor = id;
+  const input = make(spec.long ? 'textarea' : 'input',
+    'input' + (spec.short ? ' input-short' : ''));
+  input.id = id;
+  if (spec.long) input.rows = 3;
+  else input.type = 'text';
+  input.value = held[name] || '';
+  input.maxLength = spec.long ? 4000 : 400;
+  input.autocomplete = 'off';
+  input.spellcheck = Boolean(spec.long);
+  if (spec.mode) input.inputMode = spec.mode;
+  input.dataset.key = id;
+  const hint = spec.hint ? make('p', 'quiet field-hint', spec.hint) : null;
+  if (hint) hint.id = id + '-hint';
+  input.setAttribute('aria-describedby', (hint ? id + '-hint ' : '') + id + '-problem');
+  input.addEventListener('input', () => {
+    held[name] = input.value;
+    if (spec.typed) spec.typed();
+  });
+  if (spec.changed) input.addEventListener('change', spec.changed);
+  return add(make('div', 'field'), title, input, hint, alertLine(id + '-problem'));
+}
+
+// Refuse what is in a field, beside it, before anything is sent. Returns the field.
+function refuse(id, text) {
+  const input = byId(id);
+  say(byId(id + '-problem'), text);
+  if (text) input.setAttribute('aria-invalid', 'true');
+  else input.removeAttribute('aria-invalid');
+  return input;
+}
+
+// One choice among two or three, with its name above it and what it means below.
+function choice(label, options, at, choose, key, hint) {
+  const control = segmented(label, options, at, (index, node) => {
+    slide(node, index);
+    choose(index);
+  }, key);
+  return add(make('div', 'field'), make('p', 'field-label', label), control,
+    hint ? make('p', 'quiet field-hint', hint) : null);
+}
+
+// A capsule that is on or off. A tick says it is on, so it does not rest on colour.
+function chip(label, on, flip, key) {
+  const node = button('', 'chip', () => {
+    const now = node.getAttribute('aria-pressed') !== 'true';
+    node.setAttribute('aria-pressed', String(now));
+    flip(now);
+  }, key);
+  node.setAttribute('aria-pressed', String(Boolean(on)));
+  return add(node, icon('check'), make('span', '', label));
+}
+
+function money(dollars) {
+  return '$' + Number(dollars).toFixed(2);
+}
+
+function lasted(seconds) {
+  const whole = Math.round(Number(seconds));
+  if (whole < 60) return count(whole, 'second', 'seconds');
+  const minutes = Math.round(whole / 60);
+  if (minutes < 60) return count(minutes, 'minute', 'minutes');
+  return count(Math.floor(minutes / 60), 'hour', 'hours') + ' '
+    + count(minutes % 60, 'minute', 'minutes');
+}
+
+function lower(text) {
+  return String(text).charAt(0).toLowerCase() + String(text).slice(1);
+}
+
+function given(value) {
+  return value !== null && value !== undefined;
+}
+
 // --- talking to the server ---------------------------------------------------------
 
 class PageError extends Error {
-  constructor(kind, message) {
+  constructor(kind, message, status) {
     super(message);
     this.kind = kind;
+    this.status = status || 0;
   }
 }
 
@@ -298,7 +439,7 @@ async function call(endpoint, options) {
   if (response.ok && body) return body;
   const said = body && body.error ? String(body.error)
     : 'Training Studio gave no answer this page can read.';
-  throw new PageError(response.status === 403 ? 'refused' : 'failed', said);
+  throw new PageError(response.status === 403 ? 'refused' : 'failed', said, response.status);
 }
 
 function ask(endpoint, params) {
@@ -384,8 +525,12 @@ function show(screen, where, replace) {
 }
 
 function back() {
-  if (view.pushed > 0) window.history.back();
-  else show(view.screen === 'gate' ? 'training' : 'trainings', { path: view.path }, true);
+  if (view.pushed > 0) {
+    window.history.back();
+    return;
+  }
+  const up = { gate: homeOf(view.path), new: 'home', setup: 'settings' };
+  show(up[view.screen] || 'trainings', { path: view.path }, true);
 }
 
 // Change screens with the browser's own transition where it has one, and a fade where not.
@@ -405,7 +550,7 @@ function swap(update) {
 }
 
 function open(next) {
-  view.screen = next.screen || 'home';
+  view.screen = unset() ? 'setup' : next.screen || 'home';
   view.path = next.path || null;
   view.artifact = next.artifact || null;
   view.gate = null;
@@ -415,9 +560,13 @@ function open(next) {
   view.sheet = '';
   view.pane = 0;
   view.drawn = '';
+  view.run = null;
+  view.form = null;
+  view.steered = '';
+  view.barred = '';
   view.turn += 1;
-  const current = view.screen === 'training' || view.screen === 'gate' ? 'trainings'
-    : view.screen;
+  frame();
+  const current = PARENTS[view.screen] || view.screen;
   for (const [id, screen] of NAV) {
     if (current === screen) byId(id).setAttribute('aria-current', 'page');
     else byId(id).removeAttribute('aria-current');
@@ -485,16 +634,31 @@ function setTitle(name) {
   badge.hidden = !view.needs;
 }
 
+// Everything a list screen is drawn from. When none of it has changed, nothing is redrawn.
+function signature() {
+  return JSON.stringify([view.listing, view.computer, view.checking, alerts(), view.setup,
+    view.asks, view.sharing]);
+}
+
 function draw(fresh) {
   if (view.screen === 'gate') return drawGate(fresh);
   if (view.screen === 'training') return drawTraining(fresh);
-  const titles = { home: 'Home', trainings: 'Trainings', status: 'Status', settings: 'Settings' };
+  if (view.screen === 'run') return drawRun(fresh);
+  if (view.screen === 'setup' && view.setup) return drawSetup(fresh);
+  const titles = { home: 'Home', trainings: 'Trainings', status: 'Status', settings: 'Settings',
+    setup: 'Set-up', new: 'New training' };
   if (!view.listing) {
     place({ title: titles[view.screen] || 'Home' },
       [make('p', 'quiet', 'Reading your trainings.')], fresh);
     return undefined;
   }
-  view.drawn = JSON.stringify([view.listing, view.computer, view.checking, alerts()]);
+  // Only the runner has these two screens. On the plain desk a stray visit lands on home.
+  if (view.screen === 'setup' || (view.screen === 'new' && !view.runner)) {
+    show('home', null, true);
+    return undefined;
+  }
+  if (view.screen === 'new') return drawNew(fresh);
+  view.drawn = signature();
   if (view.screen === 'trainings') return drawTrainings(fresh);
   if (view.screen === 'status') return drawStatus(fresh);
   if (view.screen === 'settings') return drawSettings(fresh);
@@ -586,18 +750,21 @@ function afterSheet() {
   const done = view.after;
   const next = done.next;
   const nodes = [sheetTitle('Done'), make('p', '', done.said)];
+  // A training that runs on its own carries on from here, and its run is the place to watch.
+  const watch = runOf(view.path) ? capsule('Watch it carry on', '',
+    () => show('run', { path: view.path }), 'watch') : null;
   if (next) {
     nodes.push(make('p', 'quiet', 'Next: ' + next.title + '. ' + next.sentence));
     nodes.push(add(make('div', 'bar'),
       capsule(next.artifact ? 'Review the next one' : 'Open the next one', 'filled',
-        () => show(next.artifact ? 'gate' : 'training',
+        () => show(next.artifact ? 'gate' : homeOf(next.path),
           { path: next.path, artifact: next.artifact }), 'next'),
-      capsule('Stay here', 'quiet', closeSheet, 'cancel')));
+      watch, capsule('Stay here', 'quiet', closeSheet, 'cancel')));
   } else {
     nodes.push(make('p', 'quiet', 'Nothing else needs you right now.'));
     nodes.push(add(make('div', 'bar'),
       capsule('Back to home', 'filled', () => show('home'), 'next'),
-      capsule('Stay here', 'quiet', closeSheet, 'cancel')));
+      watch, capsule('Stay here', 'quiet', closeSheet, 'cancel')));
   }
   return nodes;
 }
@@ -690,8 +857,9 @@ function greeting() {
   return hello + ' ' + things + ' you' + (view.needs ? '.' : ' right now.');
 }
 
+// A training that runs on its own opens on its run; any other opens on its own view.
 function openTraining(training) {
-  return () => show('training', { path: training.path });
+  return () => show(training.run ? 'run' : 'training', { path: training.path });
 }
 
 function reviewAction(training) {
@@ -701,31 +869,52 @@ function reviewAction(training) {
     : openTraining(training);
 }
 
+// A run says whether it is working. Only where there is no run is it guessed, from how
+// lately the training changed.
 function working(training) {
+  if (training.run) return training.run.state === 'working';
   return training.state === 'in-progress'
     && Date.now() - Date.parse(training.touched_at) < WORKING;
 }
 
-function needsRow(training) {
+// One sentence for a training in a list. A run says what it is doing now; a gate says what
+// is waiting.
+function saysOf(training) {
+  const atGate = training.state === 'needs-you' && (training.waiting || {}).artifact;
+  return (training.run && !atGate && training.run.sentence) || training.sentence;
+}
+
+function needsRow(training, index) {
   const waiting = training.waiting || {};
-  const text = add(make('div', 'row-text'),
-    make('h3', 'row-title', training.title || 'Untitled'),
-    make('p', 'row-says', training.sentence));
-  if (waiting.artifact && waiting.question) {
-    add(text, make('p', 'row-quote', 'Your assistant asks: ' + waiting.question));
+  const asked = view.asks[training.path] || {};
+  const title = training.title || 'Untitled';
+  const text = add(make('div', 'row-text'), make('h3', 'row-title', title));
+  const says = asked.problem ? asked.problem.what : saysOf(training);
+  if (asked.question) {
+    add(text, questionBox(training.path, title, asked.question, '', 'answer-' + index));
+  } else {
+    add(text, make('p', 'row-says', says));
+    if (waiting.artifact && waiting.question && !asked.problem) {
+      add(text, make('p', 'row-quote', asker(training.path) + waiting.question));
+    }
   }
-  const go = capsule(waiting.artifact ? 'Review' : 'Open', '', reviewAction(training),
-    'needs ' + training.path);
-  go.setAttribute('aria-label', go.textContent + ': ' + (training.title || 'Untitled') + '. '
-    + training.sentence);
-  return add(make('li', 'row row-needs'), bead('review'), text, go);
+  const review = waiting.artifact && !asked.question && !asked.problem;
+  const go = capsule(review ? 'Review' : 'Open', asked.question ? 'quiet' : '',
+    review ? reviewAction(training) : openTraining(training), 'needs ' + training.path);
+  go.setAttribute('aria-label', go.textContent + ': ' + title + '. '
+    + (asked.question ? asked.question.text : says));
+  return add(make('li', 'row row-needs'), bead(asked.problem ? 'late' : 'review'), text, go);
 }
 
 function quietRow(training, kind) {
   const text = add(make('div', 'row-text'),
     make('h3', 'row-title', training.title || 'Untitled'));
   if (kind === 'in-progress') add(text, beads(training.stages, true));
-  add(text, make('p', 'row-says', training.sentence));
+  // A run that is not working says so: paused, stopped, or finished as far as it goes here.
+  if (training.run && training.run.state !== 'working' && kind === 'in-progress') {
+    add(text, state(...runWords(training.run)));
+  }
+  add(text, make('p', 'row-says', saysOf(training)));
   const go = capsule('Open', 'quiet', openTraining(training), 'open ' + training.path);
   go.setAttribute('aria-label', 'Open ' + (training.title || 'Untitled'));
   const row = make('li', working(training) ? 'row working' : 'row');
@@ -746,12 +935,22 @@ function rows(title, trainings, build, className) {
   if (!trainings.length) return null;
   const node = card(title, className);
   const items = make('ul', 'rows');
-  for (const training of trainings) items.append(build(training));
+  trainings.forEach((training, index) => items.append(build(training, index)));
   return add(node, items);
 }
 
 function invitation() {
   const node = make('section', 'card shine invite');
+  if (view.runner) {
+    return add(node,
+      make('h2', 'invite-title', 'Start your first training'),
+      make('p', '', 'Say what it is about and who it is for. Training Studio drafts the '
+        + 'research questions, does the research and drafts the blueprint on its own, and '
+        + 'stops each time it needs your decision.'),
+      add(make('div', 'bar'), newButton('filled')),
+      make('p', 'quiet', 'It takes three short steps, and this page tells you each time it '
+        + 'needs you.'));
+  }
   return add(node,
     make('h2', 'invite-title', 'Start your first training'),
     make('p', '', 'Make a folder for your topic, start your assistant in that folder, and ask '
@@ -787,8 +986,13 @@ function pick(kind) {
 function drawHome(fresh) {
   const all = view.listing;
   const first = pick('needs-you')[0];
-  const lead = first ? capsule(first.waiting.artifact ? 'Review ' + first.waiting.label
-    : 'Open ' + (first.title || 'Untitled'), 'filled', reviewAction(first), 'lead') : null;
+  const gate = first && (first.waiting || {}).artifact && !view.asks[first.path];
+  const lead = first ? capsule(gate ? 'Review ' + first.waiting.label
+    : 'Open ' + (first.title || 'Untitled'), 'filled',
+  gate ? reviewAction(first) : openTraining(first), 'lead') : null;
+  // With the runner, one button starts a new training. It is the filled one when nothing
+  // needs the person first.
+  const start = view.runner && all.length ? newButton(lead ? '' : 'filled') : null;
   const nodes = [make('p', 'large-title', greeting())];
   if (!all.length) {
     nodes.push(invitation());
@@ -799,8 +1003,8 @@ function drawHome(fresh) {
       rows('Finished', pick('finished'), (training) => quietRow(training, 'finished')),
       rows('Cannot be read', all.filter((training) => training.error), brokenRow));
   }
-  nodes.push(add(make('footer', 'foot'), computerLine()));
-  place({ title: 'Home', name: '', actions: [lead] }, nodes, fresh);
+  nodes.push(add(make('footer', 'foot'), computerLine(), sharingLine()));
+  place({ title: 'Home', name: '', actions: [start, lead] }, nodes, fresh);
 }
 
 // --- trainings ---------------------------------------------------------------------
@@ -814,10 +1018,10 @@ function trainingCard(training) {
     return add(node, state('off', 'Cannot be read'), make('p', 'row-says', training.error),
       add(make('div', 'bar'), add(make('span', 'quiet'), when(training.touched_at)), go));
   }
-  const [shape, words] = STATES[training.state] || STATES['in-progress'];
+  const [shape, words] = standingOf(training);
   if (levelsText(training.levels)) add(node, make('p', 'quiet', levelsText(training.levels)));
   return add(node, beads(training.stages, true), state(shape, words),
-    make('p', 'row-says', training.sentence),
+    make('p', 'row-says', saysOf(training)),
     add(make('div', 'bar'), add(make('span', 'quiet'), 'Changed ', when(training.touched_at)),
       go));
 }
@@ -832,7 +1036,8 @@ function drawTrainings(fresh) {
     nodes.push(make('p', 'intro lede', count(view.listing.length, 'training', 'trainings')
       + ' on this computer, the one that changed last first.'), grid);
   }
-  place({ title: 'Trainings' }, nodes, fresh);
+  place({ title: 'Trainings', actions: [view.runner && view.listing.length
+    ? newButton('filled') : null] }, nodes, fresh);
 }
 
 // --- status -----------------------------------------------------------------------
@@ -856,10 +1061,10 @@ function statusRow(training) {
       cell('Where it is', state('off', 'Cannot be read'), make('p', 'quiet', training.error)),
       cell('Last changed', when(training.touched_at)), cell('In the way', '—'), cell('', go));
   }
-  const [shape, words] = STATES[training.state] || STATES['in-progress'];
+  const [shape, words] = standingOf(training);
   return add(row, name,
     cell('Stage', training.stage_name),
-    cell('Where it is', state(shape, words), make('p', 'quiet', training.sentence)),
+    cell('Where it is', state(shape, words), make('p', 'quiet', saysOf(training))),
     cell('Last changed', when(training.touched_at)),
     cell('In the way', training.blocking ? count(training.blocking, 'thing', 'things')
       : 'Nothing'),
@@ -981,8 +1186,13 @@ function decidedCard() {
   const node = card('Where each training is decided');
   add(node, make('p', '', 'On this page, only you can approve a stage: your assistant is '
     + 'refused if it tries. In the conversation, you approve by telling your assistant.'));
-  const held = view.listing.filter((training) => !training.error);
-  if (!held.length) return add(node, make('p', 'quiet', 'There are no trainings yet.'));
+  // A training that runs on its own is always decided here, so there is nothing to choose.
+  const held = view.listing.filter((training) => !training.error && !training.run);
+  if (!held.length) {
+    return add(node, make('p', 'quiet', view.listing.some((training) => training.run)
+      ? 'Every training here runs from this page, and is decided on it.'
+      : 'There are no trainings yet.'));
+  }
   for (const training of held) {
     add(node, add(make('div', 'setting'), make('p', 'row-title', training.title || 'Untitled'),
       approvalControl(training.path, training.title || 'Untitled', training.approval,
@@ -992,9 +1202,12 @@ function decidedCard() {
 }
 
 function drawSettings(fresh) {
-  place({ title: 'Settings' }, [alertsCard(), decidedCard(), add(card('This page'),
-    make('p', '', 'It runs on this computer and answers only to the link that opened it. '
-      + 'Nothing you read or decide here is sent anywhere else.'))], fresh);
+  place({ title: 'Settings' }, [workspaceCard(), alertsCard(), decidedCard(),
+    add(card('This page'),
+      make('p', '', 'It runs on this computer and answers only to the link that opened it. '
+        + (view.runner ? 'The page sends what you read and decide nowhere else. The agent that '
+          + 'does the drafting is sent what it needs for each step, by its own service.'
+          : 'Nothing you read or decide here is sent anywhere else.')))], fresh);
 }
 
 // --- a gate -----------------------------------------------------------------------
@@ -1133,7 +1346,9 @@ function lookNote(found) {
       request.kind === 'rebuild' ? 'You asked for a rebuild' : 'You asked for changes'),
     when(request.at)),
     request.note ? make('p', 'quote', request.note) : null,
-    make('p', 'quiet', 'Your assistant does this when you go back to the conversation.')));
+    make('p', 'quiet', runOf(found.path)
+      ? 'It is being done on its own now, and comes back here for your review.'
+      : 'Your assistant does this when you go back to the conversation.')));
   }
   if (items.childNodes.length) add(node, items);
   if (found.review) {
@@ -1189,14 +1404,14 @@ function standing(found) {
   }
   if (found.status === 'stale') {
     return callout('late', make('p', '', 'This is out of date. Have it rebuilt, or accept it '
-      + 'as it is.'), found.question ? make('p', 'quiet', 'Your assistant asks: '
+      + 'as it is.'), found.question ? make('p', 'quiet', asker(found.path)
       + found.question) : null);
   }
   if (list(found.first).length) {
     return callout('late', make('p', '', 'This cannot be approved yet. See “Worth a look”.'));
   }
   if (found.question) {
-    return callout('yours', make('p', '', 'Your assistant asks: ' + found.question));
+    return callout('yours', make('p', '', asker(found.path) + found.question));
   }
   return null;
 }
@@ -1274,9 +1489,9 @@ function paintGate(fresh) {
   const aside = add(make('aside', 'aside'), checkedNote(found), lookNote(found),
     changesNote(found.changes));
   aside.setAttribute('aria-label', 'The review');
-  const above = [button(found.title, 'link', () => show('training', { path: found.path }),
-    'training'), levelsText(found.levels) ? make('span', '', ' · ' + levelsText(found.levels))
-    : null];
+  const above = [button(found.title, 'link', () => show(homeOf(found.path),
+    { path: found.path }), 'training'),
+  levelsText(found.levels) ? make('span', '', ' · ' + levelsText(found.levels)) : null];
   place({ title: found.label, name: found.label + ' · ' + found.title, above, back: true,
     actions: gateActions(found) },
   [intro, inChat(found), standing(found), add(make('div', 'gate'), aside, reading(found))],
@@ -1485,12 +1700,18 @@ async function restore(stage, pressed) {
 function decisionsCard(training) {
   const node = card('How this training is decided');
   const onPage = training.approval === 'page';
-  add(node, make('p', '', onPage
-    ? 'Each stage is approved on this page. Your assistant cannot approve anything for you.'
-    : 'Each stage is approved in your conversation with your assistant. You can move that '
-      + 'here, so that only this page can approve.'),
-  approvalControl(training.path, training.title || 'Untitled', training.approval,
-    () => draw(false)));
+  if (training.run) {
+    // One driver for a training: what the page runs, the page decides.
+    add(node, make('p', '', 'This training runs from this page, so each stage is approved '
+      + 'here, by you. Nothing can approve it for you.'));
+  } else {
+    add(node, make('p', '', onPage
+      ? 'Each stage is approved on this page. Your assistant cannot approve anything for you.'
+      : 'Each stage is approved in your conversation with your assistant. You can move that '
+        + 'here, so that only this page can approve.'),
+    approvalControl(training.path, training.title || 'Untitled', training.approval,
+      () => draw(false)));
+  }
   const out = list(training.view.left_out);
   if (out.length) {
     add(node, make('h3', 'row-title', 'Left out'));
@@ -1535,13 +1756,16 @@ function paintTraining(fresh) {
       folderCard(training)], fresh);
     return;
   }
-  const [shape, words] = STATES[training.state] || STATES['in-progress'];
+  const [shape, words] = standingOf(training);
   const waiting = training.waiting;
   const lead = waiting && waiting.artifact ? capsule('Review ' + waiting.label, 'filled',
     () => show('gate', { path: training.path, artifact: waiting.artifact }), 'lead') : null;
-  place({ title: training.title || 'Untitled', above, back: true, actions: [lead] },
+  // A training that runs on its own is watched on its run. This view keeps the detail.
+  const watch = training.run ? capsule('Watch the run', '',
+    () => show('run', { path: training.path }), 'watch') : null;
+  place({ title: training.title || 'Untitled', above, back: true, actions: [watch, lead] },
     [add(make('div', 'intro'), state(shape, words), beads(training.stages, false),
-      make('p', 'lede', training.sentence)),
+      make('p', 'lede', saysOf(training))),
     filesCard(training),
     reasonsCard('In the way', training.view.blocking, 'Nothing is in the way.'),
     checksCard(training.check),
@@ -1576,11 +1800,1161 @@ async function drawTraining(fresh) {
   }
 }
 
+// --- with the runner behind the page ---------------------------------------------------
+// Everything from here to "staying up to date" is offered only when the runner answers. On
+// the plain desk `view.runner` is false, and none of it is ever shown or asked for.
+
+// Ask, once, whether the runner is here. The plain desk answers 404, and that settles it.
+async function discover() {
+  try {
+    const found = await ask('capabilities');
+    view.runner = found.runner === true ? { version: String(found.version || '') } : false;
+  } catch (failure) {
+    if (failure.status === 404) view.runner = false;
+    // No answer at all, or a link that is refused, is not an answer to this: it is asked again.
+    else if (failure.kind !== 'failed') throw failure;
+  }
+}
+
+// The runner is here and nobody has said where the trainings are kept. Until they have,
+// set-up is the only screen there is.
+function unset() {
+  return Boolean(view.runner && view.setup && !view.setup.configured);
+}
+
+function frame() {
+  const alone = unset();
+  byId('sidebar').hidden = alone;
+  if (alone) document.body.classList.add('alone');
+  else document.body.classList.remove('alone');
+}
+
+// The run that is driving a training, or nothing where no run is.
+function runOf(path) {
+  const found = list(view.listing).find((training) => training.path === path);
+  return (found && found.run) || null;
+}
+
+function homeOf(path) {
+  return runOf(path) ? 'run' : 'training';
+}
+
+function asker(path) {
+  return runOf(path) ? 'Training Studio asks: ' : 'Your assistant asks: ';
+}
+
+function runWords(run) {
+  return RUN_WORDS[run.state] || RUN_WORDS.working;
+}
+
+// Where a training stands, as a shape and words. A run knows more than the list does about
+// one that is working, paused or stopped.
+function standingOf(training) {
+  if (training.run && (training.state === 'in-progress' || training.run.state === 'failed')) {
+    return runWords(training.run);
+  }
+  return STATES[training.state] || STATES['in-progress'];
+}
+
+function newButton(kind) {
+  return capsule('New training', kind, () => show('new'), 'new');
+}
+
+// The list says that a run needs its person. What it asks is read from the run itself.
+async function readAsks() {
+  const asking = view.listing.filter((training) => training.run
+    && training.state === 'needs-you');
+  const found = await Promise.all(asking.map((training) => ask('run', { path: training.path })
+    .catch(() => null)));
+  const asks = {};
+  asking.forEach((training, index) => {
+    const run = found[index];
+    if (run && (run.question || run.problem)) {
+      asks[training.path] = { question: run.question || null, problem: run.problem || null };
+    }
+  });
+  view.asks = asks;
+}
+
+// A question from a worker, with a box to answer in. What is typed is kept as it is typed.
+function questionBox(path, title, question, kind, id) {
+  const key = path + '\n' + question.id;
+  const label = add(make('label', 'field-label', 'Your answer'),
+    make('span', 'offscreen', ' for ' + title));
+  label.htmlFor = id;
+  const box = make('textarea', 'input');
+  box.id = id;
+  box.rows = 3;
+  box.maxLength = 10000;
+  box.value = view.answers[key] || '';
+  box.dataset.key = 'answer ' + key;
+  box.setAttribute('aria-describedby', id + '-problem');
+  box.addEventListener('input', () => {
+    view.answers[key] = box.value;
+  });
+  const problem = alertLine(id + '-problem');
+  const go = capsule('Send answer', kind, () => sendAnswer(path, question, box, problem, go),
+    'send ' + key);
+  go.setAttribute('aria-label', 'Send answer for ' + title);
+  return add(make('div', 'answer'),
+    make('p', 'row-says', (question.from || 'A worker') + ' asks:'),
+    make('p', 'row-quote', question.text), label, box, problem, add(make('div', 'bar'), go));
+}
+
+async function sendAnswer(path, question, box, problem, pressed) {
+  const text = box.value.trim();
+  if (!text) {
+    // Refused here, beside the box, before anything is sent.
+    say(problem, 'Write your answer first.');
+    box.setAttribute('aria-invalid', 'true');
+    box.focus();
+    return;
+  }
+  if (view.busy) return;
+  const turn = view.turn;
+  view.busy = true;
+  pressed.disabled = true;
+  try {
+    const run = await send('answer', { path, id: question.id, answer: text });
+    delete view.answers[path + '\n' + question.id];
+    delete view.asks[path];
+    view.busy = false;
+    toast('Your answer is sent. It carries on from here.');
+    if (turn === view.turn && view.screen === 'run' && view.path === path) {
+      // The question is gone from the screen: show the run from the top, as it now stands.
+      view.run = run;
+      paintRun(false);
+      window.scrollTo(0, 0);
+      byId('title').focus({ preventScroll: true });
+    } else if (turn === view.turn && view.screen === 'home') {
+      draw(false);
+      byId('title').focus({ preventScroll: true });
+    }
+    refresh();
+  } catch (failure) {
+    say(problem, failure.message + ' Your answer is still here, and nothing was sent.');
+    pressed.disabled = false;
+  }
+  view.busy = false;
+}
+
+// Whether the team can see the work yet, and the way to share it when they cannot.
+function sharingLine() {
+  const space = view.runner && view.setup ? view.setup.workspace : null;
+  if (!space) return null;
+  const node = make('p', 'foot-line');
+  if (!space.repository) {
+    return add(node, make('span', '', 'Your trainings are kept in a folder on this computer, '
+      + 'and are not shared with anyone.'));
+  }
+  if (space.shared) {
+    return add(node, state('done', 'Shared: your team can see everything decided so far.'));
+  }
+  add(node, state(space.notice ? 'late' : 'none', space.notice
+    ? 'Not shared with your team yet. ' + space.notice
+      + ' The work is kept on this computer until it is.'
+    : 'Not shared with your team yet: the latest work is on this computer only.'));
+  const go = capsule(view.sharing ? 'Sharing…' : 'Share now', '', shareNow, 'share');
+  if (view.sharing) go.setAttribute('aria-busy', 'true');
+  return add(node, go);
+}
+
+async function shareNow() {
+  if (view.sharing) return;
+  view.sharing = true;
+  draw(false);
+  let found;
+  try {
+    found = await send('share', {});
+    toast(found.shared ? 'Shared. Your team can see it now.'
+      : 'It is not shared yet. The work is still kept on this computer.');
+  } catch (failure) {
+    found = { shared: false, notice: failure.message };
+    toast('It could not be shared. The work is still kept on this computer.');
+  }
+  // The set-up may have been read again meanwhile; the answer goes on the one that is held now.
+  if (view.setup && view.setup.workspace) {
+    view.setup.workspace.shared = Boolean(found.shared);
+    view.setup.workspace.notice = found.notice || null;
+  }
+  view.sharing = false;
+  draw(false);
+  if (!focusKey('share')) byId('title').focus({ preventScroll: true });
+}
+
+function about(pairs) {
+  const node = make('dl', 'about');
+  for (const [name, value] of pairs) {
+    if (given(value) && value !== '') add(node, make('dt', '', name), make('dd', '', value));
+  }
+  return node;
+}
+
+function limitsSays(limits) {
+  const says = [];
+  if (limits.step_seconds) says.push('A step may take up to ' + lasted(limits.step_seconds) + '.');
+  if (given(limits.training_dollars)) {
+    says.push('A training stops and asks you once it has spent '
+      + money(limits.training_dollars) + '.');
+  }
+  if (limits.parallel) {
+    says.push(limits.parallel === 1 ? 'One training runs at a time.'
+      : 'Up to ' + limits.parallel + ' trainings run at once.');
+  }
+  return says.join(' ');
+}
+
+// Settings, with the runner: where the trainings are kept, who can see them, and the way in
+// to change any of it.
+function workspaceCard() {
+  const held = view.runner ? view.setup : null;
+  const space = held && held.workspace;
+  if (!space) return null;
+  const node = card('Workspace');
+  const agent = held.agent || {};
+  add(node, make('p', 'row-title', space.name || 'Your trainings'),
+    about([[space.repository ? 'Repository' : 'Folder on this computer',
+      space.repository || space.path],
+    [space.repository ? 'This computer’s copy' : '', space.repository ? space.path : ''],
+    ['Folder inside it', space.folder], ['Branch', space.branch],
+    ['Shared', space.repository ? lower(SHARE_SAYS[space.share_when === 'when-asked' ? 1 : 0])
+      : ''],
+    ['Drafting is done by', (AGENT_NAMES[agent.default] || agent.default || 'no agent yet')
+      + (agent.model ? ', with the model ' + agent.model : ', with the model it chooses itself')],
+    ['Limits', limitsSays(held.limits || {})]]),
+    sharingLine(),
+    add(make('div', 'bar'), capsule('Change the set-up', '', () => show('setup'), 'setup')));
+  return node;
+}
+
+// --- set-up ------------------------------------------------------------------------
+// Shown first where nothing is set up yet, and from Settings afterwards. Each answer about
+// where the trainings are kept is checked as it is given, and nothing is changed until Save.
+
+function setupForm() {
+  const held = view.setup;
+  const space = held.workspace || {};
+  const limits = held.limits || {};
+  const agent = held.agent || {};
+  const local = Boolean(held.workspace) && !space.repository;
+  const seconds = Number(limits.step_seconds) || 0;
+  return {
+    where: local ? 1 : 0,
+    repository: space.repository || '',
+    path: local ? space.path || '' : '',
+    folder: space.folder || '',
+    branch: space.branch || '',
+    name: space.name || '',
+    touched: { folder: Boolean(space.folder), branch: Boolean(space.branch),
+      name: Boolean(space.name) },
+    share: space.share_when === 'when-asked' ? 1 : 0,
+    agent: agent.default === 'codex' ? 'codex' : 'claude',
+    model: agent.model || '',
+    minutes: seconds ? String(Math.round(seconds / 6) / 10) : '', seconds,
+    dollars: given(limits.training_dollars) ? String(limits.training_dollars) : '',
+    parallel: given(limits.parallel) ? String(limits.parallel) : '',
+    check: null, checked: '', checking: false, unchecked: '', existing: false, turn: 0,
+    saving: false,
+  };
+}
+
+// What is asked of the check: exactly where the trainings would be kept, and nothing else.
+// A folder or a branch that nobody has chosen is not asked about: the check says what it found.
+function placeAsked(form) {
+  const text = (value) => String(value).trim() || null;
+  const chosen = (name) => (form.touched[name] || form.existing ? text(form[name]) : null);
+  return { repository: form.where ? null : text(form.repository),
+    path: form.where ? text(form.path) : null,
+    folder: chosen('folder'), branch: chosen('branch') };
+}
+
+// A different place was named. What was found in the last one says nothing about this one.
+function forgetFound(form) {
+  for (const name of ['folder', 'branch', 'name']) {
+    if (!form.existing && form.touched[name]) continue;
+    form[name] = '';
+    form.touched[name] = false;
+  }
+  form.existing = false;
+  form.check = null;
+}
+
+function checkItem(found) {
+  const item = add(make('li', 'check-item'), add(make('p', 'fact'),
+    bead(found.ok ? 'done' : 'late'),
+    make('span', '', found.what + (found.ok ? ': yes' : ': no'))));
+  if (!found.ok && found.fix) add(item, make('p', 'fix', found.fix));
+  return item;
+}
+
+function paintChecks() {
+  const form = view.form;
+  const holder = byId('setup-checks');
+  if (!form || !holder) return;
+  const nodes = [];
+  if (form.checking) {
+    nodes.push(make('p', 'quiet', 'Checking…'));
+  } else if (form.unchecked) {
+    nodes.push(make('p', 'problem', 'This could not be checked. ' + form.unchecked),
+      make('p', 'quiet', 'Nothing was changed. Try “Check again”.'));
+  } else if (form.check) {
+    const checks = list(form.check.checks);
+    const wrong = checks.filter((found) => !found.ok).length;
+    const items = make('ul', 'plain check-items');
+    for (const found of checks) items.append(checkItem(found));
+    nodes.push(items, form.check.ok
+      ? state('done', 'This is ready to use.')
+      : state('late', (wrong ? count(wrong, 'thing needs', 'things need') : 'Something needs')
+        + ' putting right before this can be saved. Then choose “Check again”.'));
+  } else {
+    nodes.push(make('p', 'quiet', form.where
+      ? 'It is checked as soon as you say which folder.'
+      : 'It is checked as soon as you give the address.'));
+  }
+  holder.replaceChildren(...nodes);
+}
+
+// What the check found is filled in. Where the team has already set Training Studio up in
+// the repository, its folder, branch and name are theirs, and are not asked for again.
+function fillFound(found) {
+  const form = view.form;
+  form.existing = Boolean(found.existing);
+  for (const name of ['folder', 'branch', 'name']) {
+    const box = byId('setup-' + name);
+    if (found[name] && (form.existing || !form.touched[name])) form[name] = String(found[name]);
+    if (!box) continue;
+    box.value = form[name];
+    box.readOnly = form.existing;
+  }
+  const note = byId('setup-found');
+  if (!note) return;
+  note.hidden = !form.existing;
+  note.replaceChildren(...(form.existing ? [make('p', '', 'Training Studio is already set up '
+    + 'in this repository' + (found.name ? ', as “' + found.name + '”' : '') + '. Its folder, '
+    + 'branch and name are read from the hub.json your team keeps there, so there is nothing '
+    + 'to choose here.')] : []));
+}
+
+async function checkSetup() {
+  const form = view.form;
+  const asked = placeAsked(form);
+  form.turn += 1;
+  const turn = form.turn;
+  form.unchecked = '';
+  if (!asked.repository && !asked.path) {
+    form.check = null;
+    form.checking = false;
+    fillFound({});
+    paintChecks();
+    return false;
+  }
+  form.checking = true;
+  paintChecks();
+  try {
+    const found = await send('setup/check', asked);
+    if (view.form !== form || turn !== form.turn) return false;
+    form.check = found;
+    fillFound(found.found || {});
+  } catch (failure) {
+    if (view.form !== form || turn !== form.turn) return false;
+    form.check = null;
+    form.unchecked = failure.message;
+  }
+  form.checked = JSON.stringify(placeAsked(form));
+  form.checking = false;
+  paintChecks();
+  return Boolean(form.check && form.check.ok);
+}
+
+// An agent, as the runner found it: installed, signed in, reachable from this network.
+function agentItem(found) {
+  const yes = (value, unknown) => (value === true ? ['ok', ''] : value === false
+    ? ['problem', 'no'] : ['unknown', unknown]);
+  const facts = [{ label: 'Installed', state: found.installed ? 'ok' : 'problem',
+    detail: found.installed ? found.version || '' : 'not found' }];
+  if (found.installed) {
+    const [signed, signedSays] = yes(found.signed_in, 'cannot be asked');
+    const [reached, reachedSays] = yes(found.reachable, 'not known');
+    facts.push({ label: 'Signed in', state: signed, detail: signedSays },
+      { label: 'Reachable from this network', state: reached, detail: reachedSays });
+  }
+  const usable = found.installed && found.signed_in !== false && found.reachable !== false
+    && !found.problem;
+  return computerItem({ name: AGENT_NAMES[found.agent] || found.agent,
+    state: usable ? 'ok' : found.installed ? 'problem' : 'missing', facts,
+    fix: found.problem || '' });
+}
+
+function paintAgents() {
+  const holder = byId('agents');
+  if (!holder) return;
+  const nodes = [];
+  if (view.looking && !view.agents) {
+    nodes.push(make('p', 'quiet', 'Looking for the agents on this computer…'));
+  } else if (view.unlooked) {
+    nodes.push(make('p', 'problem', 'The agents could not be looked for. ' + view.unlooked),
+      make('p', 'quiet', 'Nothing was changed. Try “Look again”.'));
+  } else if (view.agents) {
+    const items = make('ul', 'computer-items');
+    for (const found of view.agents) items.append(agentItem(found));
+    nodes.push(items);
+    if (!view.agents.length) {
+      nodes.push(make('p', 'problem', 'No agent was found on this computer. Install Claude '
+        + 'Code or Codex, sign in to it, then choose “Look again”.'));
+    }
+  }
+  holder.replaceChildren(...nodes);
+}
+
+async function readAgents() {
+  if (view.looking) return;
+  view.looking = true;
+  paintAgents();
+  try {
+    view.agents = list((await ask('agents')).agents);
+    view.unlooked = '';
+  } catch (failure) {
+    view.unlooked = failure.message;
+  }
+  view.looking = false;
+  paintAgents();
+}
+
+// Which agent, and which of its models. The same two questions are asked at set-up, for the
+// default, and at the last step of a new training, for that training.
+function agentFields(held, prefix, label) {
+  const found = make('div', 'agents');
+  found.id = 'agents';
+  found.setAttribute('role', 'status');
+  return [found,
+    add(make('div', 'bar'), capsule('Look again', 'quiet', readAgents, 'agents-again')),
+    choice(label, AGENTS.map((name) => AGENT_NAMES[name]), AGENTS.indexOf(held.agent),
+      (index) => {
+        held.agent = AGENTS[index];
+      }, prefix + '-agent'),
+    field(prefix + '-model', 'Its model (optional)', held, 'model', { hint: 'Leave this empty '
+      + 'to use the model the agent chooses for itself.' })];
+}
+
+function placeCard(form) {
+  const node = card('Where your trainings are kept');
+  const again = () => {
+    checkSetup();
+  };
+  const moved = () => {
+    forgetFound(form);
+    checkSetup();
+  };
+  add(node, choice('Kept in', ['A team repository', 'A folder on this computer'], form.where,
+    (index) => {
+      form.where = index;
+      forgetFound(form);
+      paintSetup(false);
+      checkSetup();
+    }, 'where'));
+  if (form.where) {
+    add(node, field('setup-path', 'The folder', form, 'path', { changed: moved,
+      hint: 'A folder on this computer, for trying things out. Nothing in it is shared with '
+        + 'anyone.' }));
+  } else {
+    add(node, field('setup-repository', 'The repository’s address', form, 'repository', {
+      changed: moved,
+      hint: 'The address you would clone it from. Training Studio keeps a copy of its own on '
+        + 'this computer, and writes inside one folder of the repository and nowhere else.' }));
+  }
+  const found = make('div', 'paper callout');
+  found.id = 'setup-found';
+  found.hidden = true;
+  const touch = (name) => () => {
+    form.touched[name] = true;
+  };
+  add(node, found,
+    field('setup-folder', 'The folder inside it', form, 'folder', { changed: again,
+      typed: touch('folder'), hint: 'Everything Training Studio writes goes in this folder.' }),
+    field('setup-branch', 'The branch', form, 'branch', { changed: again,
+      typed: touch('branch') }),
+    field('setup-name', 'A name for this workspace', form, 'name', { typed: touch('name'),
+      hint: 'What your team calls this collection of trainings.' }));
+  const checks = make('div', 'checks');
+  checks.id = 'setup-checks';
+  checks.setAttribute('role', 'status');
+  return add(node, make('h3', 'row-title', 'Checked for you'), checks,
+    add(make('div', 'bar'), capsule('Check again', 'quiet', again, 'check-again')));
+}
+
+function shareCard(form) {
+  const node = card('When your team sees the work');
+  const meanings = make('ul', 'reasons meanings');
+  SHARE_SAYS.forEach((says, index) => {
+    const item = make('li', '', says);
+    if (index === form.share) item.dataset.chosen = 'true';
+    meanings.append(item);
+  });
+  return add(node, choice('Share', ['After each decision', 'Only when I ask'], form.share,
+    (index) => {
+      form.share = index;
+      Array.from(meanings.children).forEach((item, at) => {
+        if (at === index) item.dataset.chosen = 'true';
+        else delete item.dataset.chosen;
+      });
+    }, 'share-when'), meanings);
+}
+
+function limitsCard(form) {
+  const node = card('Limits');
+  return add(node, make('p', '', 'These keep a training from running away with your time or '
+    + 'your money. A training that reaches one stops and asks you.'),
+  field('setup-minutes', 'The longest a step may take, in minutes', form, 'minutes',
+    { short: true, mode: 'decimal' }),
+  field('setup-dollars', 'The most a training may spend, in dollars', form, 'dollars',
+    { short: true, mode: 'decimal', hint: 'Counted where the agent says what it spends.' }),
+  field('setup-parallel', 'How many trainings may run at once', form, 'parallel',
+    { short: true, mode: 'numeric' }));
+}
+
+function paintSetup(fresh) {
+  const form = view.form;
+  const first = !view.setup.configured;
+  view.drawn = 'setup';
+  const problem = alertLine('setup-problem');
+  const save = capsule(first ? 'Save and go on' : 'Save', 'filled', () => saveSetup(save),
+    'save');
+  const intro = add(make('div', 'intro'),
+    first ? make('p', 'large-title', 'Welcome. Let’s get you set up.') : null,
+    make('p', 'lede', 'Say where your team keeps its trainings and which agent does the '
+      + 'drafting. Each answer is checked as you give it, and nothing is changed until you '
+      + 'save.' + (first ? ' Then you can start your first training.' : '')));
+  const body = add(make('div', 'narrow'), intro, placeCard(form),
+    form.where ? null : shareCard(form),
+    add(card('The agent that does the drafting'),
+      make('p', '', 'An agent is the AI that drafts each stage for you to decide on. It has '
+        + 'to be installed on this computer and signed in.'),
+      ...agentFields(form, 'setup', 'Use by default')),
+    limitsCard(form),
+    add(make('div', 'form-foot'), problem, add(make('div', 'bar'), save,
+      first ? null : capsule('Cancel', 'quiet', back, 'cancel'))));
+  place({ title: first ? 'Set up Training Studio' : 'Set-up', name: 'Set-up',
+    above: first ? [] : [make('span', '', 'Settings')], back: !first }, [body], fresh);
+  fillFound((form.check && form.check.found) || (form.existing ? { existing: true } : {}));
+  paintChecks();
+  paintAgents();
+}
+
+function drawSetup(fresh) {
+  if (!fresh && view.drawn === 'setup') return;
+  if (!view.form) view.form = setupForm();
+  paintSetup(true);
+  checkSetup();
+  readAgents();
+}
+
+// A limit as a number, or nothing when what was typed is not one that can be used.
+function limit(id, text, whole) {
+  const value = Number(String(text).trim());
+  const fine = String(text).trim() !== '' && Number.isFinite(value) && value > 0
+    && (!whole || Number.isInteger(value));
+  refuse(id, fine ? '' : whole ? 'Give a whole number, 1 or more.'
+    : 'Give a number greater than 0.');
+  return fine ? value : null;
+}
+
+async function saveSetup(pressed) {
+  const form = view.form;
+  if (form.saving) return;
+  const problem = byId('setup-problem');
+  say(problem, '');
+  const asked = placeAsked(form);
+  const where = form.where ? 'setup-path' : 'setup-repository';
+  const missing = [];
+  const need = (id, value, text) => {
+    if (!refuse(id, value ? '' : text).getAttribute('aria-invalid')) return;
+    missing.push(id);
+  };
+  need(where, asked.repository || asked.path, form.where ? 'Say which folder first.'
+    : 'Give the repository’s address first.');
+  const minutes = limit('setup-minutes', form.minutes, false);
+  const dollars = limit('setup-dollars', form.dollars, false);
+  const parallel = limit('setup-parallel', form.parallel, true);
+  for (const [id, value] of [['setup-minutes', minutes], ['setup-dollars', dollars],
+    ['setup-parallel', parallel]]) {
+    if (value === null) missing.push(id);
+  }
+  if (missing.length) {
+    say(problem, 'Something above is missing. Nothing was saved.');
+    byId(missing[0]).focus();
+    return;
+  }
+  form.saving = true;
+  pressed.disabled = true;
+  const done = (text) => {
+    form.saving = false;
+    pressed.disabled = false;
+    say(problem, text);
+    if (text) pressed.focus();
+  };
+  // Never save a place that has not been checked as it now stands.
+  if (form.checking || !form.check || form.checked !== JSON.stringify(asked)) await checkSetup();
+  if (view.form !== form) return;
+  if (!form.check || !form.check.ok) {
+    done('Where your trainings are kept needs putting right first: see “Checked for you” '
+      + 'above. Nothing was saved.');
+    return;
+  }
+  for (const [name, text] of [['folder', 'Say which folder inside it.'],
+    ['branch', 'Say which branch.'], ['name', 'Give it a name.']]) {
+    need('setup-' + name, form[name].trim(), text);
+  }
+  if (missing.length) {
+    done('Something above is missing. Nothing was saved.');
+    byId(missing[0]).focus();
+    return;
+  }
+  // Minutes are shown to the nearest tenth. A time nobody changed is saved as it was.
+  const kept = form.seconds && minutes === Math.round(form.seconds / 6) / 10;
+  const body = { folder: form.folder.trim(), branch: form.branch.trim(),
+    name: form.name.trim(), share_when: form.where ? SHARE[1] : SHARE[form.share],
+    agent: form.agent, model: form.model.trim() || null,
+    limits: { step_seconds: kept ? form.seconds : Math.max(1, Math.round(minutes * 60)),
+      training_dollars: dollars, parallel } };
+  if (form.where) body.path = asked.path;
+  else body.repository = asked.repository;
+  const first = !view.setup.configured;
+  try {
+    view.setup = await send('setup', body);
+  } catch (failure) {
+    done(failure.message + ' Nothing was saved, and your answers are still here: change what '
+      + 'it names and save again.');
+    return;
+  }
+  form.saving = false;
+  frame();
+  toast(first ? 'You are set up. Now start your first training.' : 'The set-up is saved.');
+  if (first || view.pushed === 0) show(first ? 'home' : 'settings', null, true);
+  else back();
+}
+
+// --- a new training ------------------------------------------------------------------
+// Three short steps, with a default for every choice. Nothing is sent until the last one.
+
+function newDraft() {
+  const agent = (view.setup && view.setup.agent) || {};
+  return { step: 0, title: '', topic: '', audience: '', purpose: 0, levels: ['101'], brief: 0,
+    time: '', deck: 0, brand: '', copies: [], yoodli: false,
+    agent: agent.default === 'codex' ? 'codex' : 'claude', model: agent.model || '',
+    starting: false };
+}
+
+// How many times a training stops for a decision: at its questions, at its research, and at
+// the blueprint of each level. The runner says the same number back once it has started.
+function gatesFor(draft) {
+  return 2 + Math.max(1, draft.levels.length);
+}
+
+function times(number) {
+  return number === 1 ? 'once' : number === 2 ? 'twice' : number + ' times';
+}
+
+function chips(label, options, chosen, flip, key, hint) {
+  const row = make('div', 'chips');
+  row.setAttribute('role', 'group');
+  row.setAttribute('aria-label', label);
+  for (const [value, text] of options) {
+    row.append(chip(text, chosen(value), (on) => flip(value, on), key + ' ' + value));
+  }
+  return add(make('div', 'field'), make('p', 'field-label', label), row,
+    hint ? make('p', 'quiet field-hint', hint) : null);
+}
+
+function topicStep(draft) {
+  return [add(card('About it'),
+    field('new-title', 'A short title', draft, 'title',
+      { hint: 'What it is called in every list, for example “Rolling restarts”.' }),
+    field('new-topic', 'What should it teach?', draft, 'topic', { long: true,
+      hint: 'A sentence or two is enough. The research questions are drafted from this.' }),
+    field('new-audience', 'Who is it for?', draft, 'audience', { long: true,
+      hint: 'Their role, and what they already know.' }),
+    choice('What it is for', PURPOSES, draft.purpose, (index) => {
+      draft.purpose = index;
+    }, 'purpose'))];
+}
+
+function shapeStep(draft) {
+  const toggle = (held) => (value, on) => {
+    draft[held] = draft[held].filter((other) => other !== value);
+    if (on) draft[held].push(value);
+  };
+  const brand = field('new-brand', 'A brand for the deck (optional)', draft, 'brand',
+    { hint: 'Leave this empty for a plain deck.' });
+  brand.hidden = DECKS[draft.deck][0] === null;
+  return [add(card('The choices'),
+    make('p', '', 'Every choice here has an answer already. Change only what you want to.'),
+    chips('Levels', LEVELS.map((level) => [level, level]),
+      (level) => draft.levels.includes(level), toggle('levels'), 'level',
+      'Each level is a depth of the same subject: 101 is the introduction, 401 the deepest. '
+        + 'Each gets a blueprint of its own. Choose none for one training without levels; '
+        + 'levels cannot be added to that later.'),
+    choice('What the brief is about', ['One product or technology', 'A comparison'],
+      draft.brief, (index) => {
+        draft.brief = index;
+      }, 'brief'),
+    field('new-time', 'How long it should take (optional)', draft, 'time',
+      { hint: 'In your own words: “30 minutes”, “one lesson”, “a full course”.' }),
+    choice('The slide deck', DECKS.map((deck) => deck[1]), draft.deck, (index) => {
+      draft.deck = index;
+      brand.hidden = DECKS[index][0] === null;
+    }, 'deck'),
+    brand,
+    chips('Keep a copy of each guide and brief', COPIES,
+      (kind) => draft.copies.includes(kind), toggle('copies'), 'copy',
+      'Neither is needed. The training keeps its own files either way.'),
+    chips('Practice', [['yoodli', 'Make scenarios for Yoodli']], () => draft.yoodli,
+      (value, on) => {
+        draft.yoodli = on;
+      }, 'practice', 'Off unless your team practises in Yoodli.'))];
+}
+
+function startStep(draft) {
+  const limits = (view.setup && view.setup.limits) || {};
+  const levels = draft.levels.length;
+  const asks = gatesFor(draft);
+  return [add(card('Sources'),
+    make('p', '', 'It researches the public web, and keeps every page it quotes with the '
+      + 'training.'),
+    make('p', 'quiet', 'Using documents of your own is not offered yet.')),
+  add(card('The agent that does the drafting'), ...agentFields(draft, 'new', 'For this training')),
+  add(card('Limits'), make('p', '', limitsSays(limits)
+    || 'No limits are set for this computer.'),
+  make('p', 'quiet', 'A training that reaches a limit stops and asks you. The limits are '
+    + 'changed in Settings.')),
+  add(make('div', 'paper callout'),
+    make('h2', 'aside-title', 'What happens when you start'),
+    make('p', '', 'It starts at once and works on its own. It stops and asks for your '
+      + 'decision ' + times(asks) + ': at the research questions, at the research, and at '
+      + (levels > 1 ? 'the blueprint of each of the ' + levels + ' levels.' : 'the blueprint.')),
+    make('p', 'quiet', 'This page tells you each time. In between, you can close it.'))];
+}
+
+function paintNew(fresh) {
+  const draft = view.draft;
+  view.drawn = 'new';
+  const builders = [topicStep, shapeStep, startStep];
+  const problem = alertLine('new-problem');
+  const last = draft.step === STEPS.length - 1;
+  const go = capsule(last ? 'Start the training' : 'Continue', 'filled',
+    () => (last ? startTraining(go) : nextStep()), 'continue');
+  const earlier = draft.step ? capsule('Back a step', 'quiet', () => {
+    draft.step -= 1;
+    paintNew(true);
+  }, 'earlier') : null;
+  const body = add(make('div', 'narrow'), ...builders[draft.step](draft),
+    add(make('div', 'form-foot'), problem, add(make('div', 'bar'), go, earlier)));
+  place({ title: STEPS[draft.step], name: 'New training', back: true,
+    above: [make('span', '', 'New training · Step ' + (draft.step + 1) + ' of ' + STEPS.length)] },
+  [body], fresh);
+  if (last) paintAgents();
+}
+
+function drawNew(fresh) {
+  if (!fresh && view.drawn === 'new') return;
+  if (!view.draft) view.draft = newDraft();
+  paintNew(true);
+  if (view.draft.step === STEPS.length - 1) readAgents();
+}
+
+function nextStep() {
+  const draft = view.draft;
+  if (draft.step === 0) {
+    const missing = [['new-title', draft.title, 'Give it a title first.'],
+      ['new-topic', draft.topic, 'Say what it should teach first.'],
+      ['new-audience', draft.audience, 'Say who it is for first.']]
+      .filter(([id, value, text]) => refuse(id, value.trim() ? '' : text)
+        .getAttribute('aria-invalid'));
+    say(byId('new-problem'), missing.length ? 'Something above is missing.' : '');
+    if (missing.length) {
+      byId(missing[0][0]).focus();
+      return;
+    }
+  }
+  draft.step += 1;
+  paintNew(true);
+  if (draft.step === STEPS.length - 1) readAgents();
+}
+
+async function startTraining(pressed) {
+  const draft = view.draft;
+  if (draft.starting) return;
+  const problem = byId('new-problem');
+  const deck = DECKS[draft.deck][0];
+  const body = {
+    title: draft.title.trim(), topic: draft.topic.trim(), audience: draft.audience.trim(),
+    purpose: PURPOSES[draft.purpose],
+    levels: LEVELS.filter((level) => draft.levels.includes(level)),
+    brief_kind: draft.brief ? 'competitive' : 'product',
+    time_limit: draft.time.trim() || null,
+    source_scope: 'public-web',
+    deck_target: deck,
+    brand: (deck && draft.brand.trim()) || null,
+    copies: COPIES.map((kind) => kind[0]).filter((kind) => draft.copies.includes(kind)),
+    yoodli: draft.yoodli,
+    agent: draft.agent, model: draft.model.trim() || null,
+  };
+  draft.starting = true;
+  pressed.disabled = true;
+  say(problem, '');
+  let started;
+  try {
+    started = await send('trainings', body);
+  } catch (failure) {
+    draft.starting = false;
+    pressed.disabled = false;
+    say(problem, failure.message + (failure.kind === 'stopped' ? ''
+      : ' Nothing was started.') + ' Your answers are still here.');
+    pressed.focus();
+    return;
+  }
+  view.draft = null;
+  view.promised = { path: started.path, gates: Number(started.gates) || 0 };
+  toast('Started. It is working on its own now.');
+  show('run', { path: started.path }, true);
+  refresh();
+}
+
+// --- a run -------------------------------------------------------------------------
+// One training working on its own: where it is, what it is doing, what it has made and
+// spent, and the three controls. It is drawn in parts, and a part that has not changed is
+// left exactly as it is, so an answer being written stays under the cursor while the rest
+// of the screen keeps up with the run.
+
+function placeParts(spec, parts, fresh) {
+  const holder = main();
+  const active = document.activeElement;
+  const focused = !fresh && active && active.dataset ? active.dataset.key : '';
+  const opened = fresh ? [] : Array.from(holder.querySelectorAll('details'))
+    .filter((node) => node.open).map((node) => node.dataset.key);
+  const bar = JSON.stringify(spec.mark);
+  if (fresh || bar !== view.barred) toolbar(spec);
+  view.barred = bar;
+  const kept = new Map();
+  for (const node of fresh ? [] : Array.from(holder.children)) {
+    if (PARTS.has(node)) kept.set(PARTS.get(node), node);
+  }
+  const nodes = [];
+  for (const [name, from, build] of parts.filter(Boolean)) {
+    const mark = name + '\n' + JSON.stringify(from);
+    let node = kept.get(mark);
+    if (!node) {
+      node = build();
+      PARTS.set(node, mark);
+    }
+    nodes.push(node);
+  }
+  let at = holder.firstChild;
+  for (const node of nodes) {
+    if (node === at) at = at.nextSibling;
+    else holder.insertBefore(node, at);
+  }
+  while (at) {
+    const next = at.nextSibling;
+    at.remove();
+    at = next;
+  }
+  for (const node of holder.querySelectorAll('details')) {
+    if (opened.includes(node.dataset.key)) node.open = true;
+  }
+  if (fresh) {
+    window.scrollTo(0, 0);
+    byId('title').focus({ preventScroll: true });
+  } else if (focused && !document.body.contains(active) && !focusKey(focused)) {
+    byId('title').focus({ preventScroll: true });
+  }
+}
+
+// The next decision a run will ask for, so the person knows what is coming.
+function nextGate(run) {
+  return list(run.steps).find((step) => step.kind === 'gate' && step.status === 'to-do') || null;
+}
+
+function runIntro(run, training, promised) {
+  const node = add(make('div', 'intro'), state(...runWords(run)));
+  if (list(training.stages).length) add(node, beads(training.stages, false));
+  add(node, make('p', 'lede run-says', run.sentence));
+  const next = nextGate(run);
+  if (run.state === 'working') {
+    add(node, make('p', 'quiet', 'Nothing is needed from you right now. It carries on by '
+      + 'itself, and this page tells you when it needs you.'
+      + (next ? ' Next it asks for your decision on ' + lower(next.label) + '.' : '')));
+  } else if (run.state === 'paused') {
+    add(node, make('p', 'quiet', 'Nothing more is started until you resume it. Everything '
+      + 'made so far is kept.'));
+  } else if (run.state === 'stopped' && !run.problem) {
+    add(node, make('p', 'quiet', 'Everything made so far is kept. Resume, and it carries on '
+      + 'from where it stopped.'));
+  }
+  if (promised && run.state !== 'done') {
+    add(node, make('p', 'quiet', 'In all, it stops and asks for your decision '
+      + times(promised) + '.'));
+  }
+  if (view.steered) {
+    const problem = make('p', 'problem', view.steered);
+    problem.setAttribute('role', 'alert');
+    add(node, problem);
+  }
+  return node;
+}
+
+// What went wrong, what was kept, and the one thing to do about it.
+function problemPart(run, lead) {
+  const found = run.problem;
+  const label = found.label || (found.action === 'retry' ? 'Try again' : 'Resume');
+  const go = found.action
+    ? capsule(label, lead ? 'filled' : '', () => steer(found.action, go), 'problem-action')
+    : capsule('See everything it made', '', () => show('training', { path: view.path }),
+      'problem-open');
+  return callout('late', make('h2', 'aside-title', 'It has stopped, and needs you'),
+    add(make('p', ''), make('strong', '', 'What happened: '), found.what),
+    add(make('p', ''), make('strong', '', 'What was kept: '), found.kept),
+    add(make('div', 'bar'), go));
+}
+
+function questionPart(run, title) {
+  const node = card('Needs you', 'card-needs');
+  return add(node, questionBox(view.path, title, run.question, 'filled', 'answer-run'));
+}
+
+function gatePart(training, waiting) {
+  return callout('yours', make('p', '', training.sentence || sentenceOf(waiting.label)),
+    waiting.question ? make('p', 'quiet', asker(training.path) + waiting.question) : null);
+}
+
+function sentenceOf(label) {
+  return String(label).charAt(0).toUpperCase() + String(label).slice(1)
+    + ' is waiting for your review.';
+}
+
+// What a step has taken so far. It moves while the step is working, so it is written into
+// the step that is already on the screen rather than drawing the list again.
+function stepFacts(step) {
+  const facts = [];
+  if (step.kind === 'gate') facts.push('Your decision');
+  if (step.attempts > 1) facts.push(count(step.attempts, 'try', 'tries'));
+  if (given(step.seconds)) facts.push(lasted(step.seconds));
+  if (given(step.dollars)) facts.push(money(step.dollars));
+  return facts.join(' · ');
+}
+
+function stepItem(step) {
+  const [shape, words] = STEP_WORDS[step.status] || STEP_WORDS['to-do'];
+  const facts = make('p', 'quiet step-facts', stepFacts(step));
+  facts.hidden = !facts.textContent;
+  const text = add(make('div', 'row-text'), make('p', 'step-name', step.label), facts);
+  if (step.error) add(text, make('p', step.status === 'failed' ? 'problem' : 'quiet', step.error));
+  const item = make('li', 'row step' + (step.status === 'working' ? ' working' : ''));
+  item.dataset.state = step.status;
+  return add(item, bead(shape), text, make('span', 'step-words', words));
+}
+
+function stepsCard(run) {
+  const node = card('Steps');
+  const steps = list(run.steps);
+  if (!steps.length) return add(node, make('p', 'quiet', 'It is working out what to do first.'));
+  const items = make('ol', 'rows');
+  for (const step of steps) items.append(stepItem(step));
+  return add(node, items);
+}
+
+function tickSteps(run) {
+  const shown = main().querySelectorAll('.step-facts');
+  list(run.steps).forEach((step, index) => {
+    const said = stepFacts(step);
+    if (!shown[index] || shown[index].textContent === said) return;
+    shown[index].textContent = said;
+    shown[index].hidden = !said;
+  });
+}
+
+function workerItem(worker) {
+  const lines = list(worker.lines);
+  const item = add(make('li', 'worker'), add(make('div', 'computer-top'),
+    make('h3', 'row-title', worker.label),
+    add(make('span', 'quiet'), 'Started ', when(worker.started_at))));
+  if (!lines.length) return add(item, make('p', 'quiet', 'Just starting.'));
+  add(item, make('p', 'worker-now', lines[lines.length - 1]));
+  if (lines.length > 1) {
+    const before = make('details', 'worker-before');
+    before.dataset.key = 'worker ' + worker.id;
+    add(item, add(before, make('summary', '', 'What it did just before'),
+      bullets(lines.slice(0, -1).reverse(), 'reasons')));
+  }
+  return item;
+}
+
+function workersCard(run) {
+  const items = make('ul', 'plain workers');
+  for (const worker of list(run.workers)) items.append(workerItem(worker));
+  return add(card('Working now'), items);
+}
+
+function madeCard(training) {
+  const node = card('Made so far');
+  const made = list(training.view && training.view.files).filter((file) => !['not-started',
+    'skipped', 'unavailable'].includes(file.status));
+  if (!made.length) {
+    add(node, make('p', 'quiet', 'Nothing yet. Each thing it makes appears here, ready to '
+      + 'open.'));
+  } else {
+    const items = make('ul', 'rows');
+    for (const file of made) {
+      const words = file.waiting ? 'waiting for your review'
+        : file.asked ? file.words + ', changes asked for' : file.words;
+      const go = capsule(file.waiting ? 'Review' : 'Open', 'quiet',
+        () => show('gate', { path: training.path, artifact: file.artifact }),
+        'file ' + file.artifact);
+      go.setAttribute('aria-label', (file.waiting ? 'Review ' : 'Open ') + lower(file.label));
+      add(items, add(make('li', 'row'), bead(file.waiting ? 'review' : FILE_BEADS[file.status]),
+        add(make('div', 'row-text'), make('p', 'step-name', file.label),
+          make('p', 'quiet', words.charAt(0).toUpperCase() + words.slice(1))), go));
+    }
+    add(node, items);
+  }
+  return add(node, add(make('div', 'bar'), capsule('Everything about this training', 'quiet',
+    () => show('training', { path: view.path }), 'detail')));
+}
+
+function costCard(run) {
+  const node = card('What it has cost');
+  const spent = run.spent || {};
+  const limits = (view.setup && view.setup.limits) || {};
+  const agent = AGENT_NAMES[run.agent] || run.agent || 'an agent';
+  add(node, make('p', 'cost', given(spent.dollars) ? money(spent.dollars) : 'Not reported'));
+  const says = [];
+  if (!given(spent.dollars)) says.push('This agent does not say what it spends.');
+  else says.push('So far.');
+  if (given(spent.tokens)) says.push(Number(spent.tokens).toLocaleString() + ' tokens used.');
+  if (given(limits.training_dollars)) {
+    says.push('It stops and asks you at ' + money(limits.training_dollars) + '.');
+  }
+  return add(node, make('p', 'quiet', says.join(' ')),
+    make('p', 'quiet', 'Drafted by ' + agent + (run.model ? ', with the model ' + run.model
+      : '') + '.'));
+}
+
+async function steer(action, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  const key = pressed.dataset.key;
+  view.busy = true;
+  pressed.disabled = true;
+  try {
+    const run = await send('run', { path: view.path, action });
+    view.busy = false;
+    if (turn !== view.turn) return;
+    view.run = run;
+    view.steered = '';
+    toast(STEERED[action]);
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    view.steered = failure.message + ' Nothing was changed.';
+  }
+  view.barred = '';
+  paintRun(false);
+  // The control that was pressed may be gone. Focus goes to the one that undoes it, or to
+  // the head of the screen, never to nowhere.
+  const undo = { pause: 'resume', resume: 'pause', stop: 'resume' }[action];
+  if (!focusKey(key) && !(undo && focusKey(undo))) byId('title').focus({ preventScroll: true });
+  refresh();
+}
+
+// The toolbar's side of a run: pause, resume and stop, and one filled button for whatever
+// is needed first.
+function runActions(run, waiting, lead) {
+  const actions = [];
+  const press = (label, kind, action) => {
+    const node = capsule(label, kind, () => steer(action, node), action);
+    actions.push(node);
+  };
+  const offered = run.problem && run.problem.action;
+  if (run.state === 'working') press('Pause', '', 'pause');
+  if (['working', 'waiting', 'paused'].includes(run.state)) press('Stop', 'quiet', 'stop');
+  if (['paused', 'stopped'].includes(run.state) && offered !== 'resume') {
+    press('Resume', lead === 'resume' ? 'filled' : '', 'resume');
+  }
+  // A run that failed and says nothing more is still not a dead end.
+  if (lead === 'retry') press('Try again', 'filled', 'retry');
+  if (waiting && !run.question) {
+    actions.push(capsule('Review ' + waiting.label, lead === 'review' ? 'filled' : '',
+      () => show('gate', { path: view.path, artifact: waiting.artifact }), 'lead'));
+  }
+  return actions;
+}
+
+function paintRun(fresh) {
+  const run = view.run;
+  const training = view.training
+    || list(view.listing).find((found) => found.path === view.path) || {};
+  const title = training.title || 'Untitled';
+  const waiting = training.waiting && training.waiting.artifact ? training.waiting : null;
+  const promised = view.promised && view.promised.path === view.path ? view.promised.gates : 0;
+  const offered = run.problem && run.problem.action;
+  // One filled button on the screen, for the first thing that is needed.
+  const lead = run.question ? 'answer' : offered ? 'problem' : waiting ? 'review'
+    : ['paused', 'stopped'].includes(run.state) ? 'resume'
+      : run.state === 'failed' && !run.problem ? 'retry' : '';
+  const limits = (view.setup && view.setup.limits) || {};
+  const above = [make('span', '', [levelsText(training.levels), 'Runs on this page']
+    .filter(Boolean).join(' · '))];
+  placeParts({ title, above, back: true, actions: runActions(run, waiting, lead),
+    mark: [title, training.levels, run.state, lead, offered, waiting] }, [
+    ['intro', [run.state, run.sentence, training.stages, promised, view.steered,
+      nextGate(run), Boolean(run.problem)], () => runIntro(run, training, promised)],
+    run.problem ? ['problem', [run.problem, lead], () => problemPart(run, lead === 'problem')]
+      : null,
+    run.question ? ['question', [run.question, title], () => questionPart(run, title)] : null,
+    waiting && !run.question ? ['gate', [waiting, training.sentence],
+      () => gatePart(training, waiting)] : null,
+    ['steps', list(run.steps).map((step) => [step.id, step.label, step.kind, step.status,
+      step.attempts > 1, step.error]), () => stepsCard(run)],
+    list(run.workers).length ? ['workers', run.workers, () => workersCard(run)] : null,
+    ['made', [training.path, training.view && training.view.files], () => madeCard(training)],
+    ['cost', [run.spent, run.agent, run.model, limits.training_dollars], () => costCard(run)],
+  ], fresh);
+  tickSteps(run);
+}
+
+async function drawRun(fresh) {
+  const turn = view.turn;
+  if (fresh) {
+    place({ title: 'Opening', back: true }, [make('p', 'quiet', 'Reading the run.')], true);
+  }
+  try {
+    const [run, training] = await Promise.all([ask('run', { path: view.path }),
+      ask('training', { path: view.path }).catch(() => null)]);
+    if (turn !== view.turn) return;
+    const first = fresh || !view.run;
+    view.run = run;
+    if (training) view.training = training;
+    if (!view.busy) paintRun(first);
+    // A run just opened is read again at its own pace, not at the list's.
+    if (first) later();
+  } catch (failure) {
+    if (turn !== view.turn) return;
+    if (failure.kind === 'stopped') notify(failure.message);
+    if (fresh || !view.run) {
+      place({ title: 'This cannot be opened', back: true },
+        [make('p', 'problem', failure.message),
+          make('p', 'quiet', 'Nothing was changed. The training itself is as it was.'),
+          capsule('Back to home', 'filled', () => show('home'), 'home')], fresh);
+    }
+  }
+}
+
 // --- staying up to date --------------------------------------------------------------
 
 function waitingKey(training) {
-  return training.path + '\n' + (training.waiting.artifact || '') + '\n'
-    + (training.waiting.question || '');
+  const waiting = training.waiting || {};
+  // What a run needs when it is not at a gate is in its own sentence: a question, a problem.
+  return training.path + '\n' + (waiting.artifact || '') + '\n' + (waiting.question || '')
+    + (training.run && !waiting.artifact ? '\n' + training.run.sentence : '');
 }
 
 // Tell the person, once, about each new thing that needs them.
@@ -1591,7 +2965,7 @@ function took(listing) {
   const keys = waiting.map(waitingKey);
   for (const training of view.known ? waiting : []) {
     if (view.known.includes(waitingKey(training))) continue;
-    const said = (training.title || 'Untitled') + ': ' + training.sentence;
+    const said = (training.title || 'Untitled') + ': ' + saysOf(training);
     toast(said);
     if (alerts() !== 'granted') continue;
     try {
@@ -1605,10 +2979,32 @@ function took(listing) {
   view.known = keys;
 }
 
+// Someone is in the middle of writing in a box: the list is left as it is until they are done.
+function typing() {
+  const active = document.activeElement;
+  return Boolean(active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT')
+    && active.value && main().contains(active));
+}
+
+// A run that is working is read more often, while its own screen is open.
+function pace() {
+  if (document.hidden) return POLL_HIDDEN;
+  return view.screen === 'run' && view.run && view.run.state === 'working' ? POLL_RUN
+    : POLL_SHOWN;
+}
+
+function later() {
+  window.clearTimeout(view.timer);
+  view.timer = window.setTimeout(refresh, pace());
+}
+
 async function refresh() {
   window.clearTimeout(view.timer);
   try {
+    if (view.runner === undefined) await discover();
+    if (view.runner) view.setup = await ask('setup');
     took(await ask('trainings'));
+    await readAsks();
     if (view.computer === undefined) view.computer = (await ask('computer')).computer;
     notify('');
     setTitle();
@@ -1616,17 +3012,22 @@ async function refresh() {
       const then = Date.parse(node.dateTime);
       if (!Number.isNaN(then)) node.textContent = ago(then);
     }
-    if (view.screen === 'gate' || view.screen === 'training') {
+    frame();
+    if (unset() && view.screen !== 'setup') {
+      show('setup', null, true);
+    } else if (view.screen === 'gate' || view.screen === 'training' || view.screen === 'run') {
       await draw(false);
-    } else if (!view.busy && !view.checking && view.drawn
-        !== JSON.stringify([view.listing, view.computer, view.checking, alerts()])) {
+    } else if (view.screen === 'setup' || view.screen === 'new') {
+      // A form is drawn once and never again under the person filling it in.
+      if (!view.drawn) draw(true);
+    } else if (!view.busy && !view.checking && !typing() && view.drawn !== signature()) {
       draw(!view.drawn);
     }
   } catch (failure) {
     // Reading the list needs nothing but the key, so a refusal here is about the link.
     notify(failure.kind === 'refused' ? NOTICES.refused : failure.message);
   }
-  view.timer = window.setTimeout(refresh, document.hidden ? POLL_HIDDEN : POLL_SHOWN);
+  later();
 }
 
 // A highlight on glass that follows the pointer. Not when the person asked for less motion.
