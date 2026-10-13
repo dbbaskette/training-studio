@@ -12,7 +12,7 @@ A program that takes a training from a filled-in form to approved blueprints wit
 
 In: the engine, the worker tools, both agent adapters, the workspace repository, the training pipeline up to and including the blueprint gate, the research pipeline, and the page's additions: starting a training, watching a run, answering a worker's question.
 
-Out: everything after the blueprint, slides, two people driving trainings in one workspace, an installer.
+Out: everything after the blueprint, research from supplied documents, slides, two people driving trainings in one workspace, an installer.
 
 ## Where it lives
 
@@ -92,7 +92,7 @@ After gate 3 the training waits with a sentence saying the later stages are not 
 4. `harness-research status`. A question is done when it has a finding; the gate reports how many are supported, unresolved and unread, and names each unresolved one.
 5. The report is saved through the core for gate 2.
 
-Supplied documents chosen at intake are converted to text by the runner where it can (text, markdown, and PDF when `pdftotext` is present) and offered to workers as sources. One it cannot read is reported at the gate as a gap.
+Supplied documents are not in this milestone. The form offers public web research only, and the runner refuses any other choice with a sentence saying so. They come with milestone 3.
 
 If `harness-research` is not installed, the training stops before research and says so.
 
