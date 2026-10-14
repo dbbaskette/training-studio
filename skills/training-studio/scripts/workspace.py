@@ -62,6 +62,13 @@ LABELS = {'intake': 'intake summary', 'research-plan': 'research plan',
 STAGE_LABELS = {'document': 'the learner guide stage', 'brief': 'the brief stage',
                 'deck': 'the deck stage', 'scenario': 'the practice stage',
                 'yoodli': 'the Yoodli stage'}
+LEVEL_STAGES = ('document', 'brief', 'deck', 'scenario', 'yoodli')
+AHEAD = {'intake': 'Complete intake', 'research-plan': 'Draft the research questions',
+         'research': 'Run the research', 'blueprint': 'Draft the blueprint',
+         'document': 'Write {the} learner guide', 'brief': 'Write {the} brief',
+         'deck': 'Hand {the} deck to harness-slides', 'scenario': 'Prepare {the} scenarios',
+         'yoodli': 'Build {the} Yoodli scenarios', 'package': 'Write the index',
+         'done': 'Nothing pending'}
 
 
 class WorkspaceError(Exception):
@@ -767,6 +774,77 @@ def approve(root: Path, name: str, accept_stale: str | None = None,
     return outcome
 
 
+# --- where the training is ------------------------------------------------------
+
+def steps(session: dict) -> list[tuple[str, str | None]]:
+    """The training's steps in order, as (stage, level): the shared stages, every level's
+    blueprint together, then each level's own stages, lowest level first, then the package."""
+    found = [(stage, None) for stage in ('intake', 'research-plan', 'research', 'blueprint')]
+    for level in session['levels'] or [None]:
+        found += [(stage, level) for stage in LEVEL_STAGES]
+    return found + [('package', None), ('done', None)]
+
+
+def step_of(session: dict, stage: str, level: str | None) -> int:
+    """Where a stage, at a level, comes in the training's steps."""
+    if stage not in LEVEL_STAGES:
+        level = None
+    elif session['levels'] and level not in session['levels']:
+        level = session['levels'][0]
+    return steps(session).index((stage, level))
+
+
+def ahead(session: dict, stage: str, level: str | None) -> str:
+    """What to do at a step, as the next step."""
+    if stage == 'blueprint' and session['levels']:
+        return 'Draft the blueprint for each level'
+    return AHEAD[stage].format(the='the' if level is None else f'the {level}')
+
+
+def left_at(root: Path, session: dict, state: dict, stage: str,
+            level: str | None) -> list[str] | None:
+    """What is still to approve at a step: empty when it is finished or left out, None when
+    it has nothing to approve yet, as with no scenario files, or the package."""
+    if stage in ('package', 'done'):
+        return None
+    if stage in SKIPPABLE and (stage not in session['settings']['stages']
+                               or stage in session['unavailable']):
+        return []
+    names = [name for name in state if artifact(root, session, name)['stage'] == stage
+             and (stage == 'blueprint' or split(name)[1] == level)]
+    if not names:
+        return None
+    return [name for name in names if state[name] not in ('approved', 'skipped', 'unavailable')]
+
+
+def move_on(root: Path, session: dict, after: int) -> str:
+    """Move the training to the first step after `after` that still has work in it, and
+    return what to do there."""
+    state = statuses(root, session)
+    for stage, level in steps(session)[after + 1:]:
+        if left_at(root, session, state, stage, level) != []:
+            break
+    session['stage'] = stage
+    if level is not None:
+        session['level'] = level
+    return ahead(session, stage, level)
+
+
+def after_approval(root: Path, session: dict, name: str, said: str) -> str:
+    """The next step once an artifact is approved, moving the training on if its stage is
+    finished. An artifact from a stage already behind the training moves nothing."""
+    spec, level = artifact(root, session, name), split(name)[1]
+    here = step_of(session, session['stage'], session.get('level'))
+    step = step_of(session, spec['stage'], level)
+    if step < here:
+        next_step = ahead(session, session['stage'], session.get('level'))
+        return f'{said} Next: {next_step[:1].lower()}{next_step[1:]}.'
+    left = left_at(root, session, statuses(root, session), spec['stage'], level)
+    if left:
+        return f'{said} Still to do at this stage: ' + ', '.join(map(label, left)) + '.'
+    return move_on(root, session, step)
+
+
 # --- decisions ------------------------------------------------------------------
 
 def review_file(name: str) -> str:
@@ -821,6 +899,7 @@ def decide(root: Path, target: str, decision: str, note: str | None = None,
     where, brief = WHERE[by], shortened(note or '')
     names = artifact_names(root, session)
     outcome: dict = {}
+    next_step = None
     if decision in ('skip', 'restore'):
         if target in SKIPPABLE:
             stage = target
@@ -837,6 +916,9 @@ def decide(root: Path, target: str, decision: str, note: str | None = None,
         said = (f'{subject} was brought back {where}.' if decision == 'restore'
                 else f'{subject} was left out {where}: {brief}')
         outcome['stage'] = stage
+        if decision == 'skip' and stage == session['stage']:
+            next_step = move_on(root, session,
+                                step_of(session, stage, session.get('level')))
     else:
         if target not in names:
             raise WorkspaceError(f'{target} is not an artifact of this training.')
@@ -854,6 +936,7 @@ def decide(root: Path, target: str, decision: str, note: str | None = None,
                                     note if decision == 'accept' else None, by))
             said = (f'{subject} was approved {where}.' if decision == 'approve'
                     else f'{subject} was accepted as it is {where}: {brief}')
+            next_step = after_approval(root, session, target, sentence(said))
         else:
             on_the_page_only(session, by, f'a request about {subject}')
             state = statuses(root, session)[target]
@@ -871,12 +954,12 @@ def decide(root: Path, target: str, decision: str, note: str | None = None,
                     + (f': {brief}' if note else '.'))
     session['pending_question'] = None
     session['gate'] = None
-    session['next_step'] = sentence(said)
+    session['next_step'] = next_step or sentence(said)
     store(root, session)
     for name in about:
         append_review(root, name, f'Decision: {DECIDED[decision]} {where}, {now()}', note)
-    return {**outcome, 'decision': decision, 'by': by, 'next_step': session['next_step'],
-            'requests': session['requests']}
+    return {**outcome, 'decision': decision, 'by': by, 'said': sentence(said),
+            'next_step': session['next_step'], 'requests': session['requests']}
 
 
 # --- exports --------------------------------------------------------------------
@@ -968,8 +1051,11 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
                deck_target: str | None = None, brand: str | None = None,
                brief_kind: str | None = None, level: str | None = None,
                levels=None, copies=None, approval: str | None = None,
-               gate: str | None = None, by: str = 'chat') -> dict:
-    """Record where the run is and change settings."""
+               gate: str | None = None, by: str = 'chat', add_levels=None) -> dict:
+    """Record where the run is and change settings.
+
+    `levels` sets the levels and never drops one with work in it; `add_levels` adds to them.
+    """
     session = load(root)
     check_choice(stage, STAGES, 'The stage')
     check_choice(deck_target, DECK_TARGETS, 'The deck target')
@@ -982,16 +1068,34 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
                                  f'the page can move it back. {OPEN_THE_PAGE}')
         session['settings']['approval'] = approval
         log(session, 'approval', mode=approval, by=by)
-    if levels is not None:
+    if levels is not None and add_levels is not None:
+        raise WorkspaceError('Give the levels or a level to add, not both.')
+    if levels is not None or add_levels is not None:
         if not session['levels']:
             raise WorkspaceError('A plain training cannot be given levels; start a levelled '
                                  'training in a new directory.')
-        chosen = check_levels(levels)
+        chosen = check_levels(levels if levels is not None
+                              else [*session['levels'], *add_levels])
         if not chosen:
             raise WorkspaceError('A levelled training keeps at least one level.')
+        for dropped in (level for level in session['levels'] if level not in chosen):
+            work = level_work(root, dropped)
+            if work:
+                shown = ', '.join(work[:3]) + (f' and {len(work) - 3} more'
+                                                if len(work) > 3 else '')
+                raise WorkspaceError(
+                    f'Level {dropped} has work in it ({shown}), so it cannot be dropped. To '
+                    'add a level, use `checkpoint --add-level <level>`. To drop '
+                    f'{dropped}, first move its folder {dropped}/ out of this training.')
+        added = [level for level in chosen if level not in session['levels']]
         session['levels'] = chosen
         if session.get('level') not in chosen:
             session['level'] = None
+        if added and STAGES.index(session['stage']) > STAGES.index('blueprint'):
+            # A new level starts at its blueprint, whatever the others have reached.
+            session['stage'], session['level'] = 'blueprint', added[0]
+            session['next_step'] = (f"Draft the {' and '.join(added)} blueprint"
+                                    + ('s' if len(added) > 1 else ''))
     if level is not None:
         if level not in session['levels']:
             raise WorkspaceError('The level is one of: ' + (', '.join(session['levels'])
@@ -1024,7 +1128,18 @@ def checkpoint(root: Path, stage: str | None = None, next_step: str | None = Non
     return {'stage': session['stage'], 'level': session.get('level'),
             'levels': session['levels'], 'next_step': session.get('next_step'),
             'pending_question': session.get('pending_question'),
-            'gate': session.get('gate'), 'settings': session['settings']}
+            'gate': session.get('gate'),
+            'review': review_file(session['gate']) if session.get('gate') else None,
+            'settings': session['settings']}
+
+
+def level_work(root: Path, level: str) -> list[str]:
+    """Every file in a level's folder: the work that keeps the level from being dropped."""
+    folder = root / level
+    if not folder.is_dir():
+        return []
+    return sorted(path.relative_to(root).as_posix() for path in folder.rglob('*')
+                  if path.is_file() or path.is_symlink())
 
 
 @mutating

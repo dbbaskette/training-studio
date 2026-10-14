@@ -260,6 +260,10 @@ const view = {
   // the computer's own notifications while it is being changed.
   status: null, shelf: null, issued: null, adopted: null, noticed: {},
   fetching: false, fetched: null, notifying: false, unnotified: '',
+  // Why moving where a training is decided was refused, by training, and why bringing a stage
+  // back was, by stage: each is said until it is tried again or the screen is left. And what
+  // is typed in a sheet's note, kept until it is sent, so putting the sheet away loses nothing.
+  unmoved: {}, unrestored: {}, notes: {},
 };
 // Each part of a screen that is drawn in parts, and what it was drawn from.
 const PARTS = new WeakMap();
@@ -370,6 +374,26 @@ function button(label, className, action, key) {
 // A capsule of glass. The highlight on it follows the pointer.
 function capsule(label, kind, action, key) {
   return button(label, 'button shine' + (kind ? ' button-' + kind : ''), action, key);
+}
+
+// The filled button of a form. Pressing it, or Enter in one of the form's boxes, sends it.
+function submitButton(label, key) {
+  const node = make('button', 'button shine button-filled', label);
+  node.type = 'submit';
+  node.dataset.key = key;
+  return node;
+}
+
+// A form in the page's narrow column. The browser checks nothing in it: `sent` does, and
+// says what is wrong beside each box.
+function pageForm(sent) {
+  const node = make('form', 'narrow');
+  node.noValidate = true;
+  node.addEventListener('submit', (event) => {
+    event.preventDefault();
+    sent();
+  });
+  return node;
 }
 
 // A bead that says a state by its shape. The words beside it say the same thing.
@@ -667,7 +691,8 @@ function calm() {
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 }
 
-// A short message that slides in at the top right, is read out, and leaves by itself.
+// A short message that slides in at the bottom right, is read out, and leaves by itself.
+// It is kept clear of the toolbar, so it never covers the main thing to do.
 function toast(text) {
   const node = make('p', 'toast glass', text);
   byId('toasts').append(node);
@@ -907,6 +932,8 @@ function open(next) {
   view.uncopied = '';
   view.slide = 0;
   view.viewer = null;
+  view.unmoved = {};
+  view.unrestored = {};
   letGo();
   view.turn += 1;
   frame();
@@ -923,6 +950,8 @@ function open(next) {
 function toolbar(spec) {
   setTitle(spec.name === undefined ? spec.title : spec.name);
   byId('title').textContent = spec.title;
+  // A title too long for two lines is cut there. Its whole text is a pointer away.
+  byId('title').title = spec.title;
   const above = byId('above');
   above.replaceChildren(...list(spec.above).filter(Boolean));
   above.hidden = !above.childNodes.length;
@@ -1073,6 +1102,11 @@ function confirmSheet(kind) {
     .filter(Boolean);
 }
 
+// A note is kept for the training, the file and the decision it was typed for.
+function noteKey(kind) {
+  return [view.path, view.deciding || view.artifact || view.screen, kind].join('\n');
+}
+
 function noteSheet(kind) {
   const spec = FORMS[kind];
   const form = make('form', 'note');
@@ -1085,13 +1119,17 @@ function noteSheet(kind) {
   field.maxLength = 10000;
   field.dataset.key = 'note';
   field.setAttribute('aria-describedby', 'note-hint sheet-problem');
+  // What was typed before the sheet was put away is here again.
+  const key = noteKey(kind);
+  field.value = view.notes[key] || '';
+  field.addEventListener('input', () => {
+    view.notes[key] = field.value;
+  });
   const hint = make('p', 'quiet', runOf(view.path) ? spec.hint.replace('Your assistant makes',
     'Training Studio makes') : spec.hint);
   hint.id = 'note-hint';
   const problem = problemLine();
-  const submit = make('button', 'button shine button-filled', spec.send);
-  submit.type = 'submit';
-  submit.dataset.key = 'send';
+  const submit = submitButton(spec.send, 'send');
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     const text = field.value.trim();
@@ -1142,6 +1180,9 @@ function drawSheet() {
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
+  // And it is the only thing that can be reached: everything behind it is inert until it is
+  // put away, by its own buttons or by Escape.
+  for (const id of ['main', 'sidebar', 'toolbar']) byId(id).inert = Boolean(shown);
   if (!shown) {
     holder.replaceChildren();
     return;
@@ -1157,6 +1198,7 @@ function drawSheet() {
 async function decide(decision, note, problem, pressed) {
   if (view.busy) return;
   const turn = view.turn;
+  const noted = noteKey(decision);
   view.busy = true;
   pressed.disabled = true;
   // At a gate, what is decided is what is being read. A sheet opened from a run names it.
@@ -1172,6 +1214,8 @@ async function decide(decision, note, problem, pressed) {
     view.busy = false;
     return;
   }
+  // A note that was sent is not offered again.
+  delete view.notes[noted];
   view.busy = false;
   if (turn !== view.turn) return;
   view.sheet = '';
@@ -1202,13 +1246,17 @@ async function moveApproval(path, mode) {
 }
 
 // Where a training is decided: a control whose thumb slides before the answer is back,
-// and slides home again if the answer is no.
+// and slides home again if the answer is no. Why it was no is said beside it, and stays.
 function approvalControl(path, title, approval, after) {
+  const problem = alertLine('approval-' + path.replace(/[^\w-]/g, '-') + '-problem');
+  say(problem, view.unmoved[path] || '');
   const control = segmented('Where ' + title + ' is decided',
     ['In the conversation', 'On this page'], approval === 'page' ? 1 : 0,
     async (index, node) => {
       if (view.busy) return;
       view.busy = true;
+      delete view.unmoved[path];
+      say(problem, '');
       slide(node, index);
       try {
         await moveApproval(path, index ? 'page' : 'chat');
@@ -1216,11 +1264,13 @@ function approvalControl(path, title, approval, after) {
         await after();
       } catch (failure) {
         slide(node, index ? 0 : 1);
-        toast(failure.message);
+        view.unmoved[path] = failure.message;
+        say(problem, failure.message);
       }
       view.busy = false;
     }, 'approval ' + path);
-  return control;
+  control.setAttribute('aria-describedby', problem.id);
+  return add(document.createDocumentFragment(), control, problem);
 }
 
 // --- home -------------------------------------------------------------------------
@@ -1740,7 +1790,7 @@ function besidePart(found) {
         { path: found.path, artifact: named.artifact }), 'beside ' + named.artifact))));
   }
   return add(node, documentBody(asDocument(held.read),
-    { label: label.charAt(0).toUpperCase() + label.slice(1), path: found.path }));
+    { label: capital(label), path: found.path }));
 }
 
 function changesNote(changed) {
@@ -1850,15 +1900,20 @@ function callout(kind, ...children) {
   return add(node, ...children);
 }
 
+// What is being read changed under the reader. It is never swapped for them: they say when.
+function changedCallout(see) {
+  return callout('late', make('p', 'problem', 'This changed while you had it open.'),
+    add(make('div', 'bar'), capsule('Show the new version', 'filled', see, 'newer')));
+}
+
 // What the gate says before anything is decided: where it stands and what is asked.
 function standing(found) {
   if (view.newer) {
-    return callout('late', make('p', 'problem', 'This changed while you had it open.'),
-      add(make('div', 'bar'), capsule('Show the new version', 'filled', () => {
-        view.gate = view.newer;
-        view.newer = null;
-        paintGate(false);
-      }, 'newer')));
+    return changedCallout(() => {
+      view.gate = view.newer;
+      view.newer = null;
+      paintGate(false);
+    });
   }
   if (found.status === 'approved' && found.approved) {
     return callout('', add(make('p', ''), 'You approved this '
@@ -1959,7 +2014,7 @@ function paintGate(fresh) {
   const words = found.waiting ? ['review', theirs ? 'Waiting for a decision where it runs'
     : found.status === 'stale'
       ? 'Out of date, and waiting for your decision' : 'Waiting for your review']
-    : [FILE_BEADS[found.status], found.words.charAt(0).toUpperCase() + found.words.slice(1)];
+    : [FILE_BEADS[found.status], capital(found.words)];
   // A practice scenario says whose file it is: the person's own, or a draft made for them.
   // A deck the runner rendered says that its pictures are of the very file being decided.
   const decked = slidesOf(found).length > 0;
@@ -1975,11 +2030,13 @@ function paintGate(fresh) {
   const above = [button(found.title, 'link', () => show(homeOf(found.path),
     { path: found.path }), 'training'),
   levelsText(found.levels) ? make('span', '', ' · ' + levelsText(found.levels)) : null];
+  // The document comes first, so in one column it is read before the review. Where there is
+  // room, each part is put in its place by the stylesheet.
   place({ title: found.label, name: found.label + ' · ' + found.title, above, back: true,
     actions: gateActions(found) },
   [intro, theirs ? readNote(found.path) : null, inChat(found), standing(found),
     add(make('div', found.beside ? 'gate gate-pair'
-      : 'gate'), aside, reading(found), found.beside ? besidePart(found) : null)],
+      : 'gate'), reading(found), found.beside ? besidePart(found) : null, aside)],
   fresh);
   tidyPictures();
   drawSheet();
@@ -2200,6 +2257,18 @@ function coveragePart(found) {
   return add(node, add(table, add(make('thead'), head), body));
 }
 
+// A screen that could not be read says why, and the way back, where it was being opened. One
+// already on the screen stays as it is. Where the page has lost touch, the notice says so too.
+function unopened(failure, shown, fresh, about) {
+  const spec = about || {};
+  if (failure.kind === 'stopped') notify(failure.message);
+  if (shown) return;
+  place({ title: spec.title || 'This cannot be opened', back: true },
+    [make('p', 'problem', failure.message), spec.said ? make('p', 'quiet', spec.said) : null,
+      capsule(spec.back || 'Back to home', 'filled', spec.to || (() => show('home')), 'home')],
+    fresh);
+}
+
 async function drawGate(fresh) {
   const turn = view.turn;
   if (fresh) {
@@ -2227,12 +2296,7 @@ async function drawGate(fresh) {
     paintGate(fresh);
   } catch (failure) {
     if (turn !== view.turn) return;
-    if (failure.kind === 'stopped') notify(failure.message);
-    if (fresh || !view.gate) {
-      place({ title: 'This cannot be opened', back: true },
-        [make('p', 'problem', failure.message),
-          capsule('Back to home', 'filled', () => show('home'), 'home')], fresh);
-    }
+    unopened(failure, !fresh && view.gate, fresh);
   }
 }
 
@@ -2383,10 +2447,13 @@ function guidanceCard(status) {
   return add(node, add(line, '.'));
 }
 
-async function restore(stage, pressed) {
+// Bring a stage back. Why it could not be is said beside its button, and stays.
+async function restore(stage, pressed, problem) {
   if (view.busy) return;
   view.busy = true;
   pressed.disabled = true;
+  delete view.unrestored[stage.stage];
+  say(problem, '');
   try {
     await send('decide', { path: view.path, artifact: stage.stage, decision: 'restore' });
     toast(stage.name + ' is back.');
@@ -2394,8 +2461,10 @@ async function restore(stage, pressed) {
     await draw(false);
     refresh();
   } catch (failure) {
-    toast(failure.message);
+    view.unrestored[stage.stage] = failure.message;
+    say(problem, failure.message);
     pressed.disabled = false;
+    pressed.focus();
   }
   view.busy = false;
 }
@@ -2426,11 +2495,16 @@ function decisionsCard(training) {
     add(node, make('h3', 'row-title', 'Left out'));
     const items = make('ul', 'rows');
     for (const stage of out) {
+      const problem = alertLine('restore-' + stage.stage + '-problem');
+      say(problem, view.unrestored[stage.stage] || '');
       const text = add(make('div', 'row-text'), make('p', '', stage.name
-        + (stage.optional ? ' (optional, and off unless you ask for it)' : '')));
+        + (stage.optional ? ' (optional, and off unless you ask for it)' : '')), problem);
       const again = onPage ? capsule(stage.optional ? 'Turn it on' : 'Bring it back', '',
-        () => restore(stage, again), 'restore ' + stage.stage) : null;
-      if (again) again.setAttribute('aria-label', again.textContent + ': ' + stage.name);
+        () => restore(stage, again, problem), 'restore ' + stage.stage) : null;
+      if (again) {
+        again.setAttribute('aria-label', again.textContent + ': ' + stage.name);
+        again.setAttribute('aria-describedby', problem.id);
+      }
       add(items, add(make('li', 'row'), bead('out'), text, again));
     }
     add(node, items);
@@ -2510,12 +2584,7 @@ async function drawTraining(fresh) {
     paintTraining(fresh);
   } catch (failure) {
     if (turn !== view.turn) return;
-    if (failure.kind === 'stopped') notify(failure.message);
-    if (fresh || !view.training) {
-      place({ title: 'This cannot be opened', back: true },
-        [make('p', 'problem', failure.message),
-          capsule('Back to home', 'filled', () => show('home'), 'home')], fresh);
-    }
+    unopened(failure, !fresh && view.training, fresh);
   }
 }
 
@@ -3197,14 +3266,14 @@ function paintSetup(fresh) {
   const first = !view.setup.configured;
   view.drawn = 'setup';
   const problem = alertLine('setup-problem');
-  const save = capsule(first ? 'Save and go on' : 'Save', 'filled', () => saveSetup(save),
-    'save');
+  const save = submitButton(first ? 'Save and go on' : 'Save', 'save');
   const intro = add(make('div', 'intro'),
     first ? make('p', 'large-title', 'Welcome. Let’s get you set up.') : null,
     make('p', 'lede', 'Say where your team keeps its trainings and which agent does the '
       + 'drafting. Each answer is checked as you give it, and nothing is changed until you '
       + 'save.' + (first ? ' Then you can start your first training.' : '')));
-  const body = add(make('div', 'narrow'), intro, placeCard(form),
+  // The set-up is a form, so Enter in a box saves as the filled button does.
+  const body = add(pageForm(() => saveSetup(save)), intro, placeCard(form),
     form.where ? null : shareCard(form),
     add(card('The agent that does the drafting'),
       make('p', '', 'An agent is the AI that drafts each stage for you to decide on. It has '
@@ -3517,14 +3586,15 @@ function paintNew(fresh) {
   const builders = [topicStep, shapeStep, startStep];
   const problem = alertLine('new-problem');
   const last = draft.step === STEPS.length - 1;
-  const go = capsule(last ? 'Start the training' : 'Continue', 'filled',
-    () => (last ? startTraining(go) : nextStep()), 'continue');
+  const go = submitButton(last ? 'Start the training' : 'Continue', 'continue');
   const earlier = draft.step ? capsule('Back a step', 'quiet', () => {
     draft.step -= 1;
     paintNew(true);
   }, 'earlier') : null;
-  const body = add(make('div', 'narrow'), ...builders[draft.step](draft),
-    add(make('div', 'form-foot'), problem, add(make('div', 'bar'), go, earlier)));
+  // Each step is a form, so Enter in a box goes on as the filled button does.
+  const body = add(pageForm(() => (last ? startTraining(go) : nextStep())),
+    ...builders[draft.step](draft),
+    add(make('div', 'form-foot'), problem, add(make('div', 'bar'), earlier, go)));
   place({ title: STEPS[draft.step], name: 'New training', back: true,
     above: [make('span', '', 'New training · Step ' + (draft.step + 1) + ' of ' + STEPS.length)] },
   [body], fresh);
@@ -3735,8 +3805,7 @@ function gatePart(training, waiting, said) {
 }
 
 function sentenceOf(label) {
-  return String(label).charAt(0).toUpperCase() + String(label).slice(1)
-    + ' is waiting for your review.';
+  return capital(label) + ' is waiting for your review.';
 }
 
 // What a step has taken so far. It moves while the step is working, so it is written into
@@ -3822,7 +3891,7 @@ function madeCard(training, theirs) {
       go.setAttribute('aria-label', (review ? 'Review ' : 'Open ') + lower(file.label));
       add(items, add(make('li', 'row'), bead(file.waiting ? 'review' : FILE_BEADS[file.status]),
         add(make('div', 'row-text'), make('p', 'step-name', file.label),
-          make('p', 'quiet', words.charAt(0).toUpperCase() + words.slice(1))), go));
+          make('p', 'quiet', capital(words))), go));
     }
     add(node, items);
   }
@@ -4095,7 +4164,7 @@ function copyItem(found) {
   const kind = COPY_KINDS[found.kind] || 'copy';
   const what = kind + ' of ' + lower(found.label);
   const text = add(make('div', 'row-text'),
-    make('p', 'step-name', what.charAt(0).toUpperCase() + what.slice(1)));
+    make('p', 'step-name', capital(what)));
   if (found.state === 'out-of-date') {
     add(text, make('p', '', 'Its file has changed since this copy was made.'));
   }
@@ -4433,13 +4502,8 @@ async function drawRun(fresh) {
     if (first) later();
   } catch (failure) {
     if (turn !== view.turn) return;
-    if (failure.kind === 'stopped') notify(failure.message);
-    if (fresh || !view.run) {
-      place({ title: 'This cannot be opened', back: true },
-        [make('p', 'problem', failure.message),
-          make('p', 'quiet', 'Nothing was changed. The training itself is as it was.'),
-          capsule('Back to home', 'filled', () => show('home'), 'home')], fresh);
-    }
+    unopened(failure, !fresh && view.run, fresh,
+      { said: 'Nothing was changed. The training itself is as it was.' });
   }
 }
 
@@ -4519,12 +4583,11 @@ function outlineWorth(outline) {
 // What the screen says before anything is decided: a newer version, or nothing to decide.
 function outlineStanding(run) {
   if (view.newer) {
-    return callout('late', make('p', 'problem', 'This changed while you had it open.'),
-      add(make('div', 'bar'), capsule('Show the new version', 'filled', () => {
-        view.run = view.newer;
-        view.newer = null;
-        paintOutline(false);
-      }, 'newer')));
+    return changedCallout(() => {
+      view.run = view.newer;
+      view.newer = null;
+      paintOutline(false);
+    });
   }
   if (run.outline.waiting) return null;
   return callout('', make('p', '', 'Nothing here is waiting for your decision now.'),
@@ -4576,8 +4639,8 @@ function paintOutline(fresh) {
     capsule('Ask for changes', '', openSheet('revise', 'revise'), 'revise'),
     capsule('Approve', 'filled', openSheet('approve', 'lead'), 'lead')] : [];
   place({ title: label, name: label + ' · ' + title, above, back: true, actions },
-    [intro, outlineStanding(run), add(make('div', 'gate'), aside,
-      add(make('div', 'reading'), doc))], fresh);
+    [intro, outlineStanding(run), add(make('div', 'gate'),
+      add(make('div', 'reading'), doc), aside)], fresh);
   drawSheet();
 }
 
@@ -4609,13 +4672,8 @@ async function drawOutline(fresh) {
     if (outlineDrawn() !== view.drawn) paintOutline(false);
   } catch (failure) {
     if (turn !== view.turn) return;
-    if (failure.kind === 'stopped') notify(failure.message);
-    if (fresh || !view.run) {
-      place({ title: 'This cannot be opened', back: true },
-        [make('p', 'problem', failure.message),
-          make('p', 'quiet', 'Nothing was changed. The training itself is as it was.'),
-          capsule('Back to home', 'filled', () => show('home'), 'home')], fresh);
-    }
+    unopened(failure, !fresh && view.run, fresh,
+      { said: 'Nothing was changed. The training itself is as it was.' });
   }
 }
 
@@ -4640,6 +4698,7 @@ async function decideOutline(decision, note, problem, pressed) {
     return;
   }
   const turn = view.turn;
+  const noted = noteKey(decision);
   view.busy = true;
   pressed.disabled = true;
   let run;
@@ -4655,6 +4714,7 @@ async function decideOutline(decision, note, problem, pressed) {
     view.busy = false;
     return;
   }
+  delete view.notes[noted];
   view.busy = false;
   if (turn !== view.turn) return;
   view.run = run;
@@ -5317,13 +5377,10 @@ async function drawPublished(fresh) {
     paintPublished(first);
   } catch (failure) {
     if (turn !== view.turn) return;
-    if (failure.kind === 'stopped') notify(failure.message);
-    if (view.shelf) return;
-    view.drawn = 'unread';
-    place({ title: 'What is published cannot be read', back: true },
-      [make('p', 'problem', failure.message),
-        make('p', 'quiet', 'Nothing was changed. Whatever is published is as it was.'),
-        capsule('Back to your trainings', 'filled', () => show('trainings'), 'home')], true);
+    if (!view.shelf) view.drawn = 'unread';
+    unopened(failure, view.shelf, true, { title: 'What is published cannot be read',
+      said: 'Nothing was changed. Whatever is published is as it was.',
+      back: 'Back to your trainings', to: () => show('trainings') });
   }
 }
 
@@ -5348,12 +5405,9 @@ async function drawIndex(fresh) {
       { label: 'The index', path, files: true }))], true);
   } catch (failure) {
     if (turn !== view.turn) return;
-    if (failure.kind === 'stopped') notify(failure.message);
-    place({ title: 'The index cannot be opened', back: true },
-      [make('p', 'problem', failure.message),
-        make('p', 'quiet', 'Nothing was changed. The training and everything it made are as '
-          + 'they were.'),
-        capsule('Back to the training', 'filled', home, 'home')], true);
+    unopened(failure, false, true, { title: 'The index cannot be opened',
+      said: 'Nothing was changed. The training and everything it made are as they were.',
+      back: 'Back to the training', to: home });
   }
 }
 
@@ -5366,7 +5420,22 @@ function waitingKey(training) {
     + (training.run && !waiting.artifact ? '\n' + training.run.sentence : '');
 }
 
-// Tell the person, once, about each new thing that needs them.
+// Open what needs the person, as its row on home would: a gate, what a deck says, or the
+// training, where a question or a problem is answered.
+function needed(training) {
+  const waiting = training.waiting || {};
+  const asked = view.asks[training.path] || {};
+  if (!waiting.artifact && readsOutline(asked)) {
+    show('outline', { path: training.path });
+  } else if (waiting.artifact && !asked.question && !asked.problem) {
+    reviewAction(training)();
+  } else {
+    openTraining(training)();
+  }
+}
+
+// Tell the person, once, about each new thing that needs them. A notification that is
+// clicked opens what it was about.
 function took(listing) {
   view.listing = list(listing.trainings);
   view.needs = Number(listing.needs) || 0;
@@ -5398,7 +5467,11 @@ function took(listing) {
     try {
       const note = new Notification('Training Studio needs you',
         { body: said, tag: waitingKey(training) });
-      note.onclick = () => window.focus();
+      note.onclick = () => {
+        window.focus();
+        note.close();
+        needed(training);
+      };
     } catch (failure) {
       // A browser that will not show one still has the count in the tab title.
     }

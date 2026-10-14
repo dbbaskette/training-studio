@@ -137,7 +137,7 @@ All commands print JSON. A refusal, malformed JSON, a missing or unreadable file
 | `approve ARTIFACT` | `--accept-stale REASON` |
 | `export ARTIFACT` | `--file PATH` or `--unavailable REASON` |
 | `skip STAGE` | `--reason R`, `--unavailable`, `--clear` |
-| `checkpoint` | `--stage`, `--level`, `--next`, `--question` or `--no-question`, `--gate ARTIFACT`, `--approval chat\|page`, `--deck-target`, `--brand`, `--brief-kind`, `--levels` (levelled trainings only) |
+| `checkpoint` | `--stage`, `--level`, `--next`, `--question` or `--no-question`, `--gate ARTIFACT`, `--approval chat\|page`, `--deck-target`, `--brand`, `--brief-kind`, `--levels` or `--add-level` (levelled trainings only). It returns `review`, the review file of the artifact at the gate |
 | `pin SKILL` | `--task`, `--runtime`, `--run`, `--level` (one `harness-slides` task per level) |
 | `check` | `--complete`, `--all`. Exit 1 if any check failed; with `--complete`, exit 1 unless ready. Lists only the checks that did not pass unless `--all` is given |
 
@@ -158,6 +158,8 @@ All commands print JSON. A refusal, malformed JSON, a missing or unreadable file
 ```
 
 `status` returns one status per artifact as a flat map, the stages marked unavailable as `unavailable_stages`, and a `research` summary once research is approved: its approval time, run and the count of findings by status. Neither command returns the session record or its event log. `approve` also returns `failing_checks`, the checks failing at that moment.
+
+A decision moves the training on. When `approve`, `accept` or `skip` finishes the step the training is at, or a later one, the training moves to the next step that still has work: the shared stages, every level's blueprint together, then each level's own stages, lowest level first, then the package. Skipped, unavailable and finished steps are passed over. `stage`, `level` and `next_step` are set, and the decision returns `said`, what was decided, beside `next_step`. A step with more to approve stays, and `next_step` names what is left. Approving an earlier artifact again moves nothing. `--levels` never drops a level with work in it; `--add-level` adds one, and a training past its blueprints goes back to the blueprint stage for it.
 
 Readiness (spec 6.7):
 
@@ -294,7 +296,7 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 42 | Levels 101 and 301, both approved through the document | `301/blueprint.md` edited | `blueprint@301` `draft`; `document@301` `stale`; every 101 artifact unchanged |
 | 43 | Levels 101, approved through the document | `checkpoint --levels 101,301` | the 301 artifacts are listed as `not-started`; every 101 artifact unchanged |
 | 44 | Levels 101 and 301 approved through the brief | the research bundle changes and research is approved again; then `approve blueprint@101 --accept-stale R` and `approve brief@101 --accept-stale R` | `document@101` is `approved` again with no approval of its own; every 301 artifact below research is still `stale` |
-| 45 | A plain training | `checkpoint --levels 101` | refused |
+| 45 | A plain training | `checkpoint --levels 101` or `--add-level 101` | refused |
 | 46 | Any directory | `init --levels 101,501` | refused, naming the valid levels |
 | 47 | Level 101 with `101/scenario.md` and `101/scenarios/exec-cost.md`, and a top-level `scenario.md` | `status` | `scenario:main@101` and `scenario:exec-cost@101` are listed; the top-level file is reported as ignored |
 | 48 | Levels 101 and 301; 101 complete, 301 not started | `check --complete` | `ready` false; blocking names the 301 artifacts |
@@ -337,7 +339,7 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 85 | A draft | decision `rebuild`, with or without a note | nothing approved; a request is opened |
 | 86 | An open request | plain `save`, or an edit pulled from elsewhere; `save --built` or `--from` | still open; closed |
 | 87 | An open request | the artifact is approved | closed |
-| 88 | A question pending and a gate recorded | any decision | `pending_question` and `gate` cleared; `next_step` says what was decided, with a long note shortened |
+| 88 | A question pending and a gate recorded | any decision | `pending_question` and `gate` cleared; `said` says what was decided, with a long note shortened; `next_step` is the same, unless the training moved on (row 99) |
 | 89 | A draft at its gate | any decision, on the page or in chat | a dated entry in `reviews/<artifact>.md`, the note quoted; the file is made if missing and never written through a link |
 | 90 | A draft at its gate on the page | decision `skip` with a reason | the artifact's stage is skipped for every level; without a reason, refused |
 | 91 | A stage left out | decision `restore` on the page | the stage is wanted again |
@@ -348,6 +350,16 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 96 | Approval `page`, a draft at its gate | the page approves it | `approve` from the command line was refused; `status` shows `approved`, the gate and question cleared, `by: page` |
 | 97 | Approval `chat` | any decision sent from the page | refused until approval is moved to the page |
 | 98 | A question recorded and no gate | the page lists the training | the first artifact in pipeline order that is a draft or stale is at the gate; a recorded gate wins; with neither, nothing waits |
+| 99 | A draft at the stage the training is at, or a later one | `approve` or `accept`, finishing its stage | the training moves to the next stage with work in it, passing over skipped, unavailable and finished ones; `next_step` says what to do there; `said` says what was decided |
+| 100 | Two scenario files at the scenario stage | one approved | `stage` unchanged; `next_step` names the one still to approve |
+| 101 | Levels 101 and 301 | each blueprint approved, then each of 101's stages, then 301's | the training stays at `blueprint` until both are approved, then moves through 101, then 301, then to `package` |
+| 102 | The training at the brief | the document approved again after an edit | `stage` unchanged; `next_step` says what was decided and what comes next |
+| 103 | The training at the deck | `skip deck`; then `skip deck --clear`; a request or another stage skipped | moves on to the scenarios; the rest move nothing |
+| 104 | Row 99, or row 101 after the blueprints | the old guidance's `checkpoint --no-question --stage <next> --next "<step>"` | `status` unchanged |
+| 105 | Level 101 with a file in `101/` | `checkpoint --levels 301` | refused, naming the file, `--add-level` and how to drop the level; record unchanged |
+| 106 | Level 101 and 301, no file in `301/` | `checkpoint --levels 101,201` | levels are 101 and 201 |
+| 107 | Levels 101 and 301 | `checkpoint --add-level 201` at research; `--add-level 401` at the package; `--levels` with `--add-level` | levels added, nothing else changes at research; at the package, the training goes back to `blueprint` at 401; refused |
+| 108 | An artifact at the gate | `checkpoint --gate A` | returns `review`, its review file; null with no gate |
 
 ### A8. Guidance
 

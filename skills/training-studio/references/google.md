@@ -34,7 +34,7 @@ Google Docs drops HTML comments. A push holds back each `<!-- covers: … -->` a
 
 ## What a pull does to approval
 
-A pull that brings in edits replaces the file and keeps the old version in history. The artifact becomes `draft`, and what was built from it becomes `stale`, even if both were approved. That is correct: the content changed. An artifact that was already stale stays stale; a pull is an edit, not a rebuild. Tell the user, run `training.py check`, and present the stage's gate again. After approval, export it again and rebuild what is stale, or ask whether to accept it.
+A pull that brings in edits is a hand edit, as the workspace reference describes. It replaces the file and keeps the old version in history. The artifact becomes `draft` and what was built from it `stale`, even if both were approved; one already stale stays stale. Tell the user, run `training.py check`, and present the stage's gate again. After approval, make its copies again and rebuild what is stale, or ask whether to accept it.
 
 Google rewrites markdown on export, so formatting can change where the words did not. Comments and suggestions left in the Doc are not read: ask the user to accept or reject suggestions before a pull.
 

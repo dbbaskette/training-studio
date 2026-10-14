@@ -20,6 +20,7 @@ import helpers
 from runner_support import StudioCase, fails
 
 import cmd_desk
+from runner import engine as engines
 from runner import gitstate, page, studio
 
 VERSION = (helpers.SKILL / 'VERSION').read_text().strip()
@@ -120,6 +121,63 @@ class ServeTests(StudioCase):
                          ['waiting', 'failed'])
         self.assertTrue((root / 'blueprint.md').exists(), 'a training at a gate is left be')
         self.assertEqual(len(self.workers.jobs), 5, 'nothing is done twice')
+
+    def test_the_page_answers_while_the_workspace_is_still_fetched(self):
+        root = self.start()
+        (root / engines.IN_HAND).write_text('research-plan\n')
+        self.engine.close()
+        self.engine = self.make(background=True)
+        fetching, go, fetched, woken = (threading.Event(), threading.Event(),
+                                        threading.Event(), [])
+
+        def slow():
+            fetching.set()
+            go.wait(30)
+            fetched.set()
+            return {'reached': None, 'received': 0, 'notice': None}
+
+        def answering(server):
+            server.did.append('serve while fetching' if fetching.wait(10)
+                              and not fetched.is_set() else 'serve after fetching')
+
+        with mock.patch.object(self.engine, 'fetch', slow), \
+                mock.patch.object(self.engine, 'wake', woken.append), \
+                mock.patch.object(Server, 'serve', answering):
+            self.serve(True)
+            self.assertEqual(Server.made[0].did, ['serve while fetching', 'stop'])
+            self.assertEqual(woken, [], 'nothing carries on before the fetch')
+            self.assertFalse((root / engines.IN_HAND).exists(),
+                             'what a step left behind was tidied before the page answered')
+            go.set()
+            for thread in threading.enumerate():
+                if thread.name == 'resuming':
+                    thread.join(30)
+        self.assertEqual(woken, [root], 'picked up once the fetch is done')
+
+    def test_what_goes_wrong_picking_trainings_up_is_said_and_the_rest_still_carry_on(self):
+        first, second = self.start(), self.start(title='Health checks')
+        self.engine.close()
+        self.engine = self.make(background=True)
+        woken = []
+
+        def broken():
+            raise RuntimeError('the fetch broke')
+
+        def wake(root):
+            if root == first:
+                raise RuntimeError('the run would not start')
+            woken.append(root)
+
+        with mock.patch.object(self.engine, 'fetch', broken), \
+                mock.patch.object(self.engine, 'wake', wake):
+            self.engine.resume(wait=False)
+            for thread in threading.enumerate():
+                if thread.name == 'resuming':
+                    thread.join(30)
+        self.assertEqual(woken, [second], 'the others are still picked up')
+        self.assertIn('Something went wrong while the runner picked its trainings up (the '
+                      'run would not start)', self.view(first)['notice'])
+        self.assertEqual(self.view(second)['notice'], self.view(first)['notice'])
 
     def test_it_refuses_to_start_without_a_git_identity_and_says_the_fix(self):
         helpers.gitconfig(self.base / 'nobody.gitconfig', '[user]\n\tuseConfigOnly = true\n')

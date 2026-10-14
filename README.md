@@ -200,7 +200,7 @@ For each scenario, Training Studio then writes a file under `yoodli/` laid out i
 
 Training Studio is early, so expect rough edges and please [report them](https://github.com/dbbaskette/training-studio/issues).
 
-The programs that track your files, and the runner behind the page, have automated tests, and whole trainings have been made on the page. A full run through every stage in a conversation, a roleplay built in Yoodli, and a team working from two real computers have not been done yet. What has been tried is recorded in [acceptance](docs/acceptance.md).
+The programs that track your files, and the runner behind the page, have automated tests. A whole training has been made on the page, from the form to its finished files, and another as far as its slide deck. A full run through every stage in a conversation, a roleplay built in Yoodli, and a team working from two real computers have not been done yet. [Acceptance](docs/acceptance.md) records what has been tried, both ways.
 
 ## Learn more
 

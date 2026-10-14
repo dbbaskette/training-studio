@@ -36,14 +36,9 @@ This is declared coverage. It proves a section claims to teach something, not th
 
 ## Gate 4
 
-Save with `training.py save document --built` the first time and `--from <file>` after that. Run `training.py check`, fix what fails, and present the gate as the gates reference describes.
+Save the first version with `training.py save document --built`. Run `training.py check`, fix what fails, and present the gate as the gates reference describes.
 
 On approval:
 
 1. `training.py approve document`.
-2. Make the copies `training.py status` asks for, and tell the user what happened. Often there are none.
-   - `google_docs` lists `document`: `training.py google push document`. If it refuses, or to use a connector, read the google reference.
-   - `exports` lists `document`: `pandoc document.md -o document.docx` if `pandoc` is on the path, otherwise the harness's own document capability. Then `training.py export document`, or `training.py export document --unavailable "<why>"`.
-3. `training.py checkpoint --no-question --stage brief --next "Write the brief"`.
-
-Make them again after any later change to `document.md`. A copy is a copy; the markdown is the source.
+2. Make the copies `training.py status` asks for, as the workspace reference describes, and tell the user what happened. Often there are none. `training.py google push document` if `google_docs` lists `document`; a Word copy, then `training.py export document`, if `exports` does.

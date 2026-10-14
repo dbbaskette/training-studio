@@ -1304,6 +1304,63 @@ class BackgroundWorkTests(HubCase):
         self.assertNotIn('gc --auto', traced.stderr)
 
 
+@unittest.skipIf(os.name == 'nt', 'sessions and an ssh on PATH are POSIX here')
+class NoTerminalTests(unittest.TestCase):
+    """git never asks on the terminal: an ssh of the test's own, first on PATH, records how
+    git started it and fails, so nothing leaves this computer."""
+
+    def setUp(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.base = Path(holder.name).resolve()
+        self.log = self.base / 'ssh.log'
+        tools = self.base / 'bin'
+        tools.mkdir()
+        ssh = tools / 'ssh'
+        ssh.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
+                       f'with open({str(self.log)!r}, "a") as log:\n'
+                       '    log.write(json.dumps({"args": sys.argv[1:], '
+                       '"session": os.getsid(0)}) + "\\n")\n'
+                       'sys.exit(255)\n')
+        ssh.chmod(0o755)
+        patcher = mock.patch.dict(os.environ, {'PATH': f"{tools}{os.pathsep}{os.environ['PATH']}"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ('GIT_SSH_COMMAND', 'GIT_SSH'):
+            os.environ.pop(name, None)
+        self.repo = self.base / 'repo'
+        self.repo.mkdir()
+        git(self.repo, 'init', '--quiet')
+
+    def fetched(self) -> dict:
+        done = hub.run(self.repo, 'fetch', '--quiet', 'ssh://example.invalid/team.git')
+        self.assertNotEqual(done.returncode, 0)
+        return json.loads(self.log.read_text().splitlines()[-1])
+
+    def test_ssh_is_told_not_to_ask_and_git_has_no_terminal_to_ask_on(self):
+        started = self.fetched()
+        self.assertIn('BatchMode=yes', started['args'])
+        self.assertNotEqual(started['session'], os.getsid(0), 'git runs in a session of its own')
+
+    def test_an_ssh_command_the_user_chose_is_left_as_they_chose(self):
+        git(self.repo, 'config', 'core.sshCommand', 'ssh -o User=configured')
+        started = self.fetched()
+        self.assertIn('User=configured', started['args'])
+        self.assertNotIn('BatchMode=yes', started['args'])
+        os.environ['GIT_SSH_COMMAND'] = 'ssh -o User=environment'
+        started = self.fetched()
+        self.assertIn('User=environment', started['args'])
+        self.assertNotIn('BatchMode=yes', started['args'])
+
+    def test_only_a_command_that_reaches_a_remote_looks_for_one(self):
+        with mock.patch.object(hub.subprocess, 'run', wraps=subprocess.run) as ran:
+            hub.run(self.repo, 'status', '--porcelain')
+        self.assertEqual(ran.call_count, 1)
+        self.assertNotIn('GIT_SSH_COMMAND', ran.call_args.kwargs['env'])
+        self.assertTrue(ran.call_args.kwargs['start_new_session'])
+        self.assertEqual(hub.subcommand(('-c', 'user.name=Someone', 'push', 'origin')), 'push')
+
+
 class GuidanceTests(unittest.TestCase):
     def test_the_guidance_states_the_boundaries(self):
         text = (helpers.SKILL / 'references' / 'hub.md').read_text()

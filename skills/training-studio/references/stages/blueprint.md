@@ -61,8 +61,8 @@ Every unresolved research question that affects the training, every `[unsupporte
 
 ## Gate 3
 
-Write the first version to `blueprint.md` and run `training.py save blueprint --built`. Save later versions with `--from <file>`. Run `training.py check` and fix what fails.
+Write the first version to `blueprint.md` and run `training.py save blueprint --built`. Run `training.py check` and fix what fails.
 
 Present the gate as the gates reference describes. If a gap matters, offer a research top-up before approval.
 
-On approval: `training.py approve blueprint`, then `training.py checkpoint --no-question --stage document --next "Write the learner guide"`. With levels, approve every level's blueprint first and use the checkpoint in the levels reference.
+On approval: `training.py approve blueprint`. With levels, approve each level's blueprint; the training moves on once all are approved.

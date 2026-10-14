@@ -53,4 +53,4 @@ If the topic needs more than 30 questions, it is too large for one training. Say
 
 `training.py save research-plan --built`, then present the gate as the gates reference describes: the questions as a readable list grouped by the areas above, with the source scope.
 
-On approval: `training.py approve research-plan`, then `training.py checkpoint --no-question --stage research --next "Run the research"`, then read the research-handoff reference.
+On approval: `training.py approve research-plan`, then read the research-handoff reference.

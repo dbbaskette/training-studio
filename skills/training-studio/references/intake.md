@@ -34,8 +34,8 @@ List the files, ignoring dot-directories.
 
 1. `training.py init --title "<title>"`, adding `--levels 101,301`, `--brief-kind competitive`, `--deck-target pptx` or `google`, `--brand "<brand>"`, `--yoodli` and `--copies google word` as they apply. If it refuses, show the user why and stop.
 2. Write `intake.md` with these `##` headings and nothing else: Topic, Levels, Brief, Audience, Purpose, Source scope, Time limit. Settings such as the deck target stay out of it, so changing them later does not mark the research stale.
-3. `training.py save intake --built`, then `training.py approve intake`. The user's answers are the approval for this stage.
+3. `training.py save intake --built`, then `training.py approve intake`. The user's answers are the approval for this stage, and the training moves on to `research-plan`.
 4. For each stage they do not want: `training.py skip <stage> --reason "<their words>"`.
-5. `training.py checkpoint --stage research-plan --next "Draft the research questions"`, adding `--approval page` last of all if they chose the page: from then on only the page skips or approves.
+5. If they chose the page, `training.py checkpoint --approval page`, last of all: from then on only the page skips or approves.
 
 Then read the research-plan reference. If the training has levels, read the levels reference first.
