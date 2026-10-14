@@ -240,6 +240,29 @@ def designed(outline: dict, **slides) -> dict:
     return {'slides': entries}
 
 
+def judgements(packets: list[dict], issues=()) -> list[dict]:
+    """A reviewer's answer to a review against the design: a pass for every criterion of
+    every slide, each with a reason of its own, except those `issues` gives, each as
+    {'slide', 'criterion', 'severity', 'about', 'reason', 'fix'?}."""
+    raised = {(issue['slide'], issue['criterion']): issue for issue in issues}
+    made = []
+    for packet in packets:
+        prompt, checks = packet['slide'], []
+        for criterion in prompt['criteria']:
+            issue = raised.get((prompt['slide'], criterion['id']))
+            cites = list(prompt.get('proseCards') or prompt['objects'])[:1]
+            checks.append({'criterion': criterion['id'], 'status': 'pass',
+                           'reason': f"On {prompt['slide']}, {criterion['id']} holds: "
+                                     f"{prompt['title']}.", 'objects': cites}
+                          if issue is None else {
+                              'criterion': criterion['id'],
+                              'status': issue.get('status', 'issue'), 'objects': cites,
+                              **{key: issue[key] for key in ('severity', 'about', 'reason',
+                                                             'fix') if key in issue}})
+        made.append({'slide': prompt['slide'], 'checks': checks})
+    return made
+
+
 def left(sentence: str, *why: str) -> str:
     """What a training says when its deck is all that is left and cannot be made here.
     Without `why`, the computer has neither the slides tool nor a brand skill."""
@@ -407,7 +430,11 @@ class Workers:
         for slide in review['slides']:
             looked = tools.look_at_slide(slide['number'])
             assert looked[0], looked[1]
-        accepted = tools.submit_assessment(self.found.pop(0) if self.found else [])
+        if review.get('judged'):   # against the design: every criterion of every slide
+            accepted = tools.submit_judgements(judgements(
+                review['judged']['packets'], self.found.pop(0) if self.found else []))
+        else:
+            accepted = tools.submit_assessment(self.found.pop(0) if self.found else [])
         assert accepted[0], accepted[1]
         objectives, most = review['objectives'], len(review['slides'])
         kept = tools.submit_coverage({objective: [min(number, most)] for number, objective
@@ -450,6 +477,9 @@ class Slides:
         # `made` stands in for the provider.
         self.design, self.replies, self.gate = False, [], None
         self.keeps, self.env, self.made = False, {}, None
+        # Whether it reviews a whole build against the approved design, played by the
+        # stand-in's review, which renders with LibreOffice: `have['local']`.
+        self.judges, self.rendered, self.assessed = False, 0, []
 
     def _asked(self, name: str, *given) -> None:
         from runner import slides
@@ -605,19 +635,60 @@ class Slides:
             problems += unresolved
         if problems:
             raise slides.Refused(problems)
-        self._bound(made['slides'], design, section)
+        approved = self._bound(made['slides'], design, section)
         report = {'sceneDigest': hashlib.sha256(text.encode()).hexdigest(),
                   'slides': len(made['slides']), 'room': {}}
         if folder is None:
             return {**report, 'status': 'compiles'}
         self._new(folder).mkdir(parents=True)
+        structure = {'connectors': [], 'icons': [], 'layouts': [
+            {'slide': slide['id'], 'layout': slide['layout']} for slide in made['slides']
+            if 'layout' in slide]}
         (Path(folder) / 'scene.json').write_text(json.dumps({'title': made.get('title'), 'slides': [
-            {key: slide.get(key) for key in ('id', 'title', 'sources', 'notes', 'intent')
-             if key != 'intent' or key in slide} for slide in made['slides']],
+            {**{key: slide.get(key) for key in ('id', 'title', 'sources', 'notes', 'intent')
+                if key != 'intent' or key in slide},
+             'elements': self._elements(slide, structure)} for slide in made['slides']],
             # Each picture is copied into the build, so what it is now is in the deck.
             **({'assets': {use['assetId']: use['sha256'] for use in uses.values()}}
                if uses else {})}))
+        # What a review of the build reads beside its scene.
+        (Path(folder) / 'structure.json').write_text(json.dumps(structure))
+        (Path(folder) / 'brand-contract.json').write_text(Path(brand).read_text()
+                                                          if Path(brand).is_file() else '{}')
+        (Path(folder) / 'compose-report.json').write_text(json.dumps({
+            'inputs': {'assets': []}, **({'designRevision': approved['revision'],
+                                          'designScope': approved['scope']}
+                                         if approved else {})}))
         return {**report, 'output': str(folder)}
+
+    @staticmethod
+    def _elements(slide: dict, structure: dict) -> list[dict]:
+        """What a slide draws, as a scene lists it: its title, then every node of its canvas
+        that shows words, one under the other; its icons and edges go in its structure."""
+        found = [{'id': f"{slide['id']}_title", 'type': 'text', 'role': 'title',
+                  'text': slide.get('title'), 'x': 0, 'y': 0, 'width': 900, 'height': 40}]
+
+        def walk(node) -> None:
+            if isinstance(node, list):
+                for item in node:
+                    walk(item)
+            elif isinstance(node, dict):
+                if node.get('type') == 'icon':
+                    structure['icons'].append({'slide': slide['id'], 'id': node.get('id'),
+                                               'icon': node.get('icon')})
+                elif isinstance(node.get('id'), str) and isinstance(node.get('text'), str):
+                    found.append({'id': node['id'], 'type': 'shape' if node.get('type') == 'box'
+                                  else 'text', 'text': node['text'], 'x': 0,
+                                  'y': 40 * len(found), 'width': 900, 'height': 40})
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        walk(value)
+
+        walk(slide.get('canvas'))
+        structure['connectors'] += [{'slide': slide['id'], 'id': edge.get('id'),
+                                     'from': edge.get('from'), 'to': edge.get('to')}
+                                    for edge in slide.get('connect') or ()]
+        return found
 
     def merge(self, parts, composition) -> dict:
         self._asked('merge', parts, composition)
@@ -816,6 +887,51 @@ class Slides:
                 return kept.generate(project, ident, brief, output, alt, slide, self.env,
                                      self.made)
         return self._manifest('generate_image', act, project, ident, slide)
+
+    def reviews(self) -> bool:
+        return self.judges
+
+    def _reviewing(self, name: str, output, act, *given):
+        """A review command, played by the stand-in's review, which keeps the tool's rules
+        and writes where the tool does. A refusal comes as JSON would."""
+        from runner import slides
+        from stand_ins import design as designs
+        from stand_ins import review as reviewing
+        self._asked(name, output, *given)
+
+        def picture(slide, scene) -> bytes:
+            return png(scene['slides'].index(slide) + 1)
+
+        def written(path, scene) -> None:
+            self.rendered += 1
+            Path(path).write_bytes(b'PK\x03\x04' + json.dumps(scene).encode()
+                                   + str(self.rendered).encode())
+
+        review = reviewing.Review(output, deck=written, picture=picture,
+                                  screens=lambda scene, structure: [],
+                                  local=self.have['local'])
+        try:
+            return act(review)
+        except (designs.Refusal, ValueError) as refused:
+            found = designs.refusal(refused, None)
+            raise slides.Refused([problem['detail'] for problem in found['problems']], found)
+
+    def review_prepare(self, compiled, output, design) -> dict:
+        return self._reviewing('review_prepare', output,
+                               lambda review: review.prepare(compiled, design), compiled)
+
+    def review_slide(self, output, slide) -> dict:
+        return self._reviewing('review_slide', output, lambda review: review.inspect(slide),
+                               slide)
+
+    def review_mark(self, output, revision, numbers, note) -> dict:
+        return self._reviewing('review_mark', output, lambda review: review.mark(
+            revision, list(numbers), note), revision)
+
+    def review_assess(self, output, revision, assessment) -> dict:
+        self.assessed.append(assessment)
+        return self._reviewing('review_assess', output,
+                               lambda review: review.assess(revision, assessment), revision)
 
     def drive_import(self, deck, name) -> dict:
         self._asked('drive_import', deck, name)

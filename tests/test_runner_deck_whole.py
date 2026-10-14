@@ -323,6 +323,60 @@ class AssetDeckTests(WholeCase):
         self.assertEqual(self.asked('design propose')[0][-1], '--json')
 
 
+class JudgedDeckTests(WholeCase):
+    """The same deck through a slides tool that reviews a whole build against the approved
+    design: it renders the deck it reviews, the reviewer answers its own criteria, and that
+    rendered deck is the one kept."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides, self.brand = self.stand_ins(assets=True)
+        self.tool, self.skill = self.slides.run, self.brand.run
+        self.engine.deck_needs(fresh=True)
+        design = runner_support.designed(PARTED)
+        design['slides'][1]['asset']['candidates'][0]['ref'] = 'database'
+        self.workers.design_said = design
+
+    def test_a_deck_is_reviewed_against_its_design_and_the_deck_it_rendered_is_kept(self):
+        root = self.begin()
+        shown = self.to_outline(root)['outline']
+        view = self.engine.outline(root, None, 'approve', seen=shown['sha256'],
+                                   design=shown['design']['revision'])
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'),
+                         view.get('problem'))
+        project, last = str(root / pipeline.DESIGNS), self.built(root)['rounds'][-1]
+        review = root / 'work' / 'deck' / last['preview']
+        reviewed = [call for call in self.tool.calls if call[:1] == ['review']]
+        self.assertEqual(reviewed[0], ['review', '--compiled', str(review.parent / 'compiled'),
+                                       '--output', str(review), '--design-project', project,
+                                       '--json'])
+        self.assertEqual([call[4] for call in reviewed if '--slide' in call][:7],
+                         [slide['id'] for slide in PARTED['slides']])
+        self.assertEqual(sum('--mark' in call for call in reviewed), 1)
+        self.assertEqual(sum('--assessment' in call for call in reviewed), 1)
+        # The whole deck is rendered by the review alone: no preview of it, and no critique.
+        self.assertEqual([call for call in self.asked('compose preview')
+                          if '--section' not in call], [])
+        self.assertEqual(self.asked('compose critique'), [])
+        record = json.loads((review / 'review.json').read_text())
+        self.assertEqual((record['visualReviewComplete'], record['creativeReviewComplete']),
+                         (True, True))
+        saved = (root / 'deck.pptx').read_bytes()
+        self.assertEqual(saved, (review / 'deck.pptx').read_bytes(),
+                         'the deck saved is the one the review rendered')
+        self.assertEqual(workspace.sha256_file(root / 'deck.pptx'), record['source']['sha256'])
+        for number in range(1, 8):
+            self.assertEqual(self.engine.picture(root, number, artifact='deck'),
+                             next(review.glob(f'slide-{number:03d}-*.png')).read_bytes())
+        gate = self.gate(root)
+        self.assertEqual(gate['review']['findings'], [])
+        self.assertEqual([entry['slide'] for entry in gate['review']['direct']],
+                         ['cover-restarts', 'part-two', 'closing-practice'])
+        reviewer = [spec for kind, _, spec in self.workers.jobs if kind == 'review'][-1]
+        self.assertTrue(reviewer['review']['judged']['packets'])
+        self.assertEqual(self.to_end(root), ['deck', 'scenario:main'])
+
+
 class TroubleTests(WholeCase):
     def test_what_a_deck_needs_is_read_from_what_the_two_modules_say(self):
         needs = self.engine.deck_needs(fresh=True)

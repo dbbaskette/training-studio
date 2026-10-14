@@ -216,6 +216,7 @@ def describe(tool: str, given: dict) -> str:
         'submit_section': 'Handing in its slides',
         'look_at_slide': f"Looking at slide {given.get('number', '')}",
         'submit_assessment': 'Handing in what it found on the slides',
+        'submit_judgements': 'Handing in its judgement of every slide',
         'submit_coverage': 'Saying which slides address each objective',
         'web_search': f"Searching the web: {given.get('query', '')}",
     }
@@ -223,7 +224,8 @@ def describe(tool: str, given: dict) -> str:
 
 
 HANDED = {'submit_artifact': 'draft', 'submit_finding': 'finding', 'submit_outline': 'outline',
-          'submit_section': 'section', 'submit_assessment': 'review'}
+          'submit_section': 'section', 'submit_assessment': 'review',
+          'submit_judgements': 'review'}
 
 
 def settled(tool: str | None, refused: bool) -> str | None:
