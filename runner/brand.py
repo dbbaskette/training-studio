@@ -30,8 +30,10 @@ What a caller needs to know
 
 Added to the above
 ------------------
-- `found()` returns [{'name', 'runtime', 'brands'}], `runtime` being the skill's folder as
-  text, with links followed. Give one to `Brand(runtime=...)` to use that skill.
+- `found()` returns [{'name', 'version', 'runtime', 'brands'}], `runtime` being the skill's
+  folder as text, with links followed. Give one to `Brand(runtime=...)` to use that skill.
+  `version` is the number its version line ends with, or None. `brand.version` is the same
+  for a Brand.
 - `found(home=...)` and `locations(home)` look in that folder in place of the person's
   home folder, which is how the installer asks about the home it installs into. The
   override, when set, is still the only place looked.
@@ -67,6 +69,7 @@ VARIABLE = 'BRAND_SKILL_RUNTIME'
 TIMEOUT = 120
 DELIVERIES = ('reading', 'live')
 NAMED = re.compile(r'^[\w.-]{1,80}$')
+NUMBER = re.compile(r'^\d+\.\d+\.\d+$')   # a version, as a version line ends with it
 NOISE = re.compile(r'^\((?:node:\d+\)|Use `node )')   # Node's own warnings, not the skill's
 NOT_WHOLE = ('The brand skill answered with something other than the JSON it should. '
              'Check that it is installed whole.')
@@ -152,18 +155,21 @@ def _asked(run, node: str, script: Path) -> list[dict] | None:
         return None
 
 
-def _named(run, node: str, script: Path, otherwise: str) -> str:
-    """What a skill calls itself: its version line without the number, else its folder."""
+def _named(run, node: str, script: Path, otherwise: str) -> tuple[str, str | None]:
+    """What a skill calls itself, and its version: its version line without the number,
+    else its folder; and that number, else None."""
     try:
         code, out, _ = run([node, str(script), 'version'])
     except WorkspaceError:
         code, out = 1, ''
-    name = out.strip().partition('\n')[0].rpartition(' ')[0].strip() if code == 0 else ''
-    return name[:80] or otherwise
+    name, _, number = (out.strip().partition('\n')[0] if code == 0 else '').rpartition(' ')
+    number = number.removeprefix('v')
+    return name.strip()[:80] or otherwise, number if NUMBER.match(number) else None
 
 
 def _installed(run=None, home: Path | None = None):
-    """Each brand skill on this computer: (its folder, its command, its name, its brands)."""
+    """Each brand skill on this computer: (its folder, its command, (its name, its version),
+    its brands)."""
     node = 'node' if run else shutil.which('node')
     seen = set()
     for place in locations(home) if node else []:
@@ -183,8 +189,8 @@ def _installed(run=None, home: Path | None = None):
 def found(run=None, home: Path | None = None) -> list[dict]:
     """Every brand skill on this computer, for the set-up screen and the installer. With no
     Node there is nothing to ask, so none is found. `home` stands in for the home folder."""
-    return [{'name': name, 'runtime': str(runtime), 'brands': brands}
-            for runtime, _, name, brands in _installed(run, home)]
+    return [{'name': name, 'version': version, 'runtime': str(runtime), 'brands': brands}
+            for runtime, _, (name, version), brands in _installed(run, home)]
 
 
 def _variant(variant: str | None) -> list[str]:
@@ -202,7 +208,8 @@ class Brand:
         if self.node is None:
             raise WorkspaceError(NO_NODE)
         if runtime is None:
-            self.runtime, self.script, self.name, _ = next(_installed(run), [None] * 4)
+            self.runtime, self.script, called, _ = next(_installed(run), [None] * 4)
+            self.name, self.version = called or (None, None)
             if self.runtime is None and os.environ.get(VARIABLE):
                 raise WorkspaceError(f'{VARIABLE} names {os.environ[VARIABLE]}, which does '
                                      'not hold a brand skill. Point it at an installed '
@@ -221,7 +228,7 @@ class Brand:
                                  'command lists its brands. Name the folder of an installed '
                                  'one.')
         self.script = self.script or self.runtime / 'scripts' / f'{hints[0]}.mjs'
-        self.name = _named(self.run, self.node, self.script, hints[0])
+        self.name, self.version = _named(self.run, self.node, self.script, hints[0])
 
     def _answer(self, *args: str, kind=dict, report: bool = False):
         """The command's JSON. An audit or a readiness check that found something ends with

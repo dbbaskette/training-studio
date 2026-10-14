@@ -25,18 +25,26 @@ What a caller needs to know
   notifications, that a training needs a decision while no page is open. Off until they
   turn it on.
 - `look_for_updates` is whether the runner asks, at most once a day, which releases of
-  Training Studio and its companion skills exist. On until they turn it off. See `upkeep`.
+  Training Studio, its companion skills and the brand skill exist. On until they turn it
+  off. See `upkeep`.
+- `brand_repository` is the address of the brand skill's own repository, https, ssh or a
+  folder, from which the page installs and upgrades it; None until the person names one.
+  `brand_release` is the release tag to install from it, None for the newest. Neither is
+  needed to use a brand skill installed by hand. Whether the repository can be reached is
+  `brand_source`'s to say; here only its shape is checked.
 - A value that makes no sense is refused with a sentence, not corrected silently.
 """
 from __future__ import annotations
 
 import functools
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
 import home
+import hub
 from workspace import WorkspaceError
 
 SCHEMA = 1
@@ -52,6 +60,8 @@ EFFORTS = {'claude': ('low', 'medium', 'high', 'xhigh', 'max'), 'codex': LEVELS}
 # Claude Code has no list of its models, so the runner keeps one, with its source and date.
 CLAUDE_MODELS = Path(__file__).resolve().with_name('claude-code-models.json')
 PREVIEWS = ('drive', 'local')   # how a deck's previews are rendered
+ADDRESS = 2000                  # characters in a repository's address
+RELEASE = re.compile(r'^[\w][\w.+-]{0,99}$')   # a release tag's name, as git takes it
 
 
 @dataclass(frozen=True)
@@ -67,6 +77,8 @@ class Settings:
     brand_skill: str | None = None
     notify: bool = False
     look_for_updates: bool = True
+    brand_repository: str | None = None
+    brand_release: str | None = None
 
     @property
     def limits(self) -> dict:
@@ -201,6 +213,34 @@ def check_look(wanted) -> bool:
     return wanted
 
 
+def check_repository(address) -> str | None:
+    """The brand skill's repository as an address git takes, or None for none."""
+    if address is None or address == '':
+        return None
+    if not isinstance(address, str) or not address.strip() or len(address) > ADDRESS \
+            or any(mark.isspace() or ord(mark) < 32 for mark in address.strip()) \
+            or address.strip().startswith('-'):
+        raise WorkspaceError("Give the brand skill's repository as one address, such as "
+                             'https://github.com/your-org/your-brand.git.')
+    if hub.ADDRESS_WITH_SECRET.match(address.strip()):
+        raise WorkspaceError('That address carries a password or token. Give the address '
+                             'without it; git signs in with your own credentials.')
+    return address.strip()
+
+
+def check_release(release, repository: str | None = None) -> str | None:
+    """A release tag's name, or None for the newest. A release needs a repository."""
+    if release is None or release == '':
+        return None
+    if not isinstance(release, str) or not RELEASE.match(release) or '..' in release:
+        raise WorkspaceError('Give the release as its tag, such as v1.4.0, or nothing for '
+                             'the newest.')
+    if repository is None:
+        raise WorkspaceError("A release is chosen from the brand skill's repository: give "
+                             'the repository too.')
+    return release
+
+
 def number(value, label: str, least: float, most: float, whole: bool):
     """A limit a person typed, which must be a number in a sensible range."""
     plain = isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -213,6 +253,7 @@ def number(value, label: str, least: float, most: float, whole: bool):
 def check(chosen: Settings) -> Settings:
     """The same settings, once every one of them makes sense."""
     agent = check_agent(chosen.agent)
+    repository = check_repository(chosen.brand_repository)
     return Settings(
         agent=agent, model=check_model(chosen.model),
         effort=check_effort(chosen.effort, agent, chosen.model),
@@ -223,7 +264,9 @@ def check(chosen: Settings) -> Settings:
         parallel=number(chosen.parallel, 'How many trainings run at once', *PARALLEL, True),
         previews=check_previews(chosen.previews), brand_skill=check_place(chosen.brand_skill),
         notify=check_notify(chosen.notify),
-        look_for_updates=check_look(chosen.look_for_updates))
+        look_for_updates=check_look(chosen.look_for_updates),
+        brand_repository=repository,
+        brand_release=check_release(chosen.brand_release, repository))
 
 
 def load() -> Settings:

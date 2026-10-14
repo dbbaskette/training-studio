@@ -71,6 +71,13 @@ What a caller needs to know
   port with the same key; it is 409 while a training is working. `POST /api/versions` with
   {"dismiss": key} stops Home showing the versions until a newer one is out. The page asks
   for each only after the person said yes.
+- `POST /api/brand` with {"repository", "release"} keeps the brand skill's repository once
+  git can read it as this person, and answers the set-up; it is 400, with a sentence, when
+  it cannot be read or has no such release. An empty repository forgets it. `POST
+  /api/brand/install` with {"release"} installs that release of the brand skill with its own
+  installer, in the background, and answers `upkeep`; it is 409 while a training is working,
+  while anything else is in hand, while a companion waits for Update, and when `release`
+  is not the one shown in `upkeep.versions.brand`.
 - `POST /api/adopt` with {"path"} copies a training this computer knows, started in a
   conversation, into the workspace, and answers {"path", "id"} of the copy.
 - Every request that passes the rules tells the engine a page is open, which is how the
@@ -139,7 +146,8 @@ READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
           '/api/publish', '/api/adopt', '/api/fetch', '/api/delete', '/api/companions',
-          '/api/asset', '/api/upgrade', '/api/restart', '/api/versions')
+          '/api/asset', '/api/upgrade', '/api/restart', '/api/versions', '/api/brand',
+          '/api/brand/install')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 ASSET = '/api/asset'
@@ -407,6 +415,12 @@ class RunnerPage(desk.Page):
         if path == '/api/versions':
             return desk.as_json(HTTPStatus.OK, {'upkeep': self.keeper().dismiss(
                 desk.text(sent, 'dismiss'))})
+        if path == '/api/brand':
+            return desk.as_json(HTTPStatus.OK, shaped(setup.save_brand, self.engine, sent))
+        if path == '/api/brand/install':
+            release = desk.text(sent, 'release')
+            return desk.as_json(HTTPStatus.OK, {'upkeep': self.keeper().install_brand(
+                self.working(), release)})
         if path == '/api/delete':
             title = desk.text(sent, 'title')
             return desk.as_json(HTTPStatus.OK, self.engine.delete(

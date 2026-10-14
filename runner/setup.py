@@ -6,6 +6,7 @@ What a caller needs to know
     setup.describe(engine)        the workspace, the default agent and the limits, as saved,
                                   with what this computer has for previews and for a brand
     setup.check(sent)             whether a repository or a folder can be used; changes nothing
+    setup.save_brand(engine, sent)   the brand skill's repository, once it can be read
     wanted = setup.read(sent)     what the set-up screen sent, once it all makes sense
     setup.apply(engine, wanted)   set the workspace up, save the settings, and describe them
 
@@ -27,7 +28,12 @@ What a caller needs to know
   that was found and the brands it has, with every brand skill found under `skills` as
   {'name', 'path', 'chosen'}; `brand_skill` names one of those paths to use. Both are
   asked of the engine, which looks at this computer and reuses the look, so asking for
-  this again starts nothing while nothing has changed.
+  this again starts nothing while nothing has changed. `brand` also has `repository` and
+  `release`: where the brand skill is installed from, as kept by `save_brand`.
+- `save_brand(engine, {"repository", "release"})` keeps the brand skill's repository once
+  `brand_source.check` can read it with this person's git access, and refuses in a sentence
+  otherwise. An empty repository forgets it. A brand skill installed by hand is used
+  either way.
 - `notify` is {'on', 'can', 'problem'}: whether the runner tells the person through the
   computer's own notifications when no page is open, whether this computer has a way to,
   and a sentence when it has none. It is sent as true or false, and cannot be turned on
@@ -50,7 +56,7 @@ import hub
 import workspace
 from workspace import WorkspaceError
 
-from runner import gitstate, settings
+from runner import brand_source, gitstate, settings
 
 WHEN = {'decision': 'each-decision', 'asked': 'when-asked'}
 SHARE = {said: kept for kept, said in WHEN.items()}
@@ -78,7 +84,32 @@ def describe(engine) -> dict:
             'limits': chosen.limits,
             'previews': {'how': chosen.previews, 'drive': needs['drive'],
                          'local': needs['local'], 'left': engine.previews_left()},
-            'brand': {**needs['brand'], 'skills': engine.brand_skills()}}
+            'brand': {**needs['brand'], 'skills': engine.brand_skills(),
+                      'repository': chosen.brand_repository,
+                      'release': chosen.brand_release}}
+
+
+def save_brand(engine, sent: dict) -> dict:
+    """Keep the brand skill's repository, and the release to install from it, once this
+    person's own git access can read it and the release is one it has. An empty address
+    forgets both. What the check found is kept for the versions, and the set-up described."""
+    repository = _text(sent, 'repository')
+    release = _text(sent, 'release')
+    if repository is None and release is not None:
+        raise WorkspaceError("A release is chosen from the brand skill's repository: give the "
+                             'repository too.')
+    kept = settings.load()
+    if repository is None:
+        settings.save(replace(kept, brand_repository=None, brand_release=None))
+        return describe(engine)
+    found = brand_source.check(repository, release, _anywhere())
+    settings.save(replace(kept, brand_repository=found['repository'],
+                          brand_release=found['release']))
+    keeping = getattr(engine, 'upkeep', None)
+    if keeping is not None:
+        keeping.remember_brand(found['repository'], {entry['tag']: entry
+                                                     for entry in found['releases']})
+    return describe(engine)
 
 
 # --- what was sent -----------------------------------------------------------------------

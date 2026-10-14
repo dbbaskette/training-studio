@@ -1234,8 +1234,10 @@ class StudioCase(unittest.TestCase):
             mock.patch.object(engines.brand_skill, 'Brand', self.the_brand),
             # No test ever reaches the computer's own notifications.
             mock.patch.object(engines.team, 'Notifier', lambda *given, **named: self.notifier),
-            mock.patch.object(engines.brand_skill, 'found', lambda: [] if self.brand is None
+            mock.patch.object(engines.brand_skill, 'found',
+                              lambda *asked, **named: [] if self.brand is None
                               else [{'name': self.brand.name,
+                                     'version': getattr(self.brand, 'version', None),
                                      'runtime': str(self.brand.runtime),
                                      'brands': self.brand.brands()}]),
             # The module's own look at this computer, asked about the programs a test

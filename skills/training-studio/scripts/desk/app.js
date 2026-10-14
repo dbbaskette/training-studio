@@ -280,9 +280,23 @@ const UPDATE_SAYS = 'Each is fetched from its own repository at the one revision
   + 'its own installer is run with Node, and registers the skill for every assistant it knows.';
 const UPDATE_WAITS = 'It takes a few minutes, while you carry on. The Status screen says how '
   + 'it goes.';
-const LOOK_SAYS = 'Once a day, Training Studio asks where it and its two skills are kept which '
+const LOOK_SAYS = 'Once a day, Training Studio asks where it and its skills are kept which '
   + 'releases there are, and says on Home when a newer one is out. It only reads their names: '
   + 'nothing is downloaded or run, and nothing is installed without your yes.';
+const BRAND_SAYS = 'Your organisation’s brand skill is released from a repository of its own. '
+  + 'Name it here, and Training Studio installs and upgrades the brand skill from it, with '
+  + 'your own git access and only after your yes. A brand skill you installed yourself is '
+  + 'still found and used.';
+const BRAND_STEPS = ['The release is fetched with your own access: its ZIP through gh, where '
+  + 'gh is signed in, or else the tag with git.',
+'Its own installer is run, and told to leave harness-research alone. Where it would put in '
+  + 'its own harness-slides in place of the one Training Studio uses, nothing is run, and '
+  + 'you are told.',
+'Then this computer is checked again, so that new decks can use it.'];
+const BRAND_TRUST = 'The repository is your choice, so the release is not checked against '
+  + 'anything Training Studio knows. Install only from a repository you trust.';
+const BRAND_WAITS = 'It takes a few minutes, while you carry on. Nothing is changed while a '
+  + 'training is working.';
 const UPGRADE_KEEPS = 'The version you have now is kept beside it, so trainings carry on where '
   + 'they are, and nothing of yours is touched.';
 const UPGRADE_WAITS = 'It takes a minute or two, while you carry on. Nothing is changed while a '
@@ -325,6 +339,9 @@ const view = {
   leaving: null,
   // Looking online for newer releases, while it is switched, and why switching it was refused.
   turningLook: false, lookRefused: '',
+  // The brand skill's repository as it is typed in Settings, while it is saved, and why
+  // saving it was refused.
+  brandForm: null, savingBrand: false, brandRefused: '',
   // The versions Home last told of, when set-up was last read, and the restart in hand.
   versionsTold: undefined, setupAt: 0, restarting: false, comingBack: null,
   fetching: false, fetched: null, notifying: false, unnotified: '',
@@ -1100,7 +1117,8 @@ function signature() {
 // What a list screen's parts are drawn from, apart from the trainings themselves.
 function around() {
   return [view.computer, view.checking, alerts(), view.setup, view.sharing, view.status,
-    view.unnotified, view.fetching, view.fetched, Boolean(view.runner), view.lookRefused];
+    view.unnotified, view.fetching, view.fetched, Boolean(view.runner), view.lookRefused,
+    view.brandRefused, view.savingBrand];
 }
 
 function draw(fresh) {
@@ -1269,7 +1287,7 @@ function drawSheet() {
   const holder = byId('sheet');
   const shown = view.after || (view.sheet && (view.gate || view.deciding || outlined()
     || TEAM_SHEETS.includes(view.sheet)
-    || ['delete', 'companions', 'upgrade'].includes(view.sheet)));
+    || ['delete', 'companions', 'upgrade', 'brand'].includes(view.sheet)));
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
@@ -1285,6 +1303,7 @@ function drawSheet() {
   else if (view.sheet === 'delete') body = deleteSheet();
   else if (view.sheet === 'companions') body = updateSheet();
   else if (view.sheet === 'upgrade') body = upgradeSheet();
+  else if (view.sheet === 'brand') body = brandSheet();
   else if (TEAM_SHEETS.includes(view.sheet)) body = teamSheet(view.sheet);
   else if (FORMS[view.sheet]) body = noteSheet(view.sheet);
   else body = confirmSheet(view.sheet);
@@ -1793,6 +1812,8 @@ function drawSettings(fresh) {
     ['workspace', around(), workspaceCard], ['left', around(), leftCard],
     ['alerts', [alerts()], alertsCard], ['notify', around(), notifyCard],
     ['look', [view.setup && view.setup.updates, view.lookRefused], lookCard],
+    ['brand-source', [view.setup && view.setup.brand && [view.setup.brand.repository,
+      view.setup.brand.release], view.brandRefused, view.savingBrand], brandSourceCard],
     ['decided', [decided, view.unmoved], decidedCard],
     ['page', [Boolean(view.runner)], () => add(card('This page'),
       make('p', '', 'It runs on this computer and answers only to the link that opened it. '
@@ -5997,17 +6018,29 @@ function upgradeOf(found) {
   return (found && found.upgrade) || {};
 }
 
-// Whether Home tells of the versions: an upgrade in hand or waiting for a restart, or
-// something newer or missing, until it is dismissed.
+// The brand skill's install: what it would install, from where, and how the last one went.
+function brandOf(found) {
+  return (found && found.brand) || {};
+}
+
+// Whether Home tells of the versions: an upgrade or a brand install in hand or how it went,
+// an upgrade waiting for a restart, or something newer or missing, until it is dismissed.
 function versionsNotice() {
   const found = versionsOf();
   if (!found) return false;
   if (['running', 'restart', 'restarting', 'failed'].includes(upgradeOf(found).state)) return true;
+  if (['running', 'failed', 'changed'].includes(brandOf(found).state)) return true;
   return Boolean(found.key && !found.dismissed);
 }
 
 function wantedRows(found) {
   return list(found && found.rows).filter((row) => ['update', 'missing'].includes(row.state));
+}
+
+// The companions among what is wanted: what comes with a newer Training Studio.
+function wantedCompanionRows(found) {
+  return wantedRows(found).filter((row) => row.name !== 'training-studio'
+    && row.kind !== 'brand');
 }
 
 // One row's versions in a few words: from what is here to what it would be.
@@ -6030,6 +6063,18 @@ function upgradeParts(found) {
   return parts;
 }
 
+// What the brand skill's install in hand is doing, or how it went.
+function brandParts(found) {
+  const brand = brandOf(found);
+  if (!brand.state) return [];
+  const shape = { running: 'current', done: 'done' }[brand.state] || 'late';
+  const node = add(make('p', ''), state(shape, brand.says || ''));
+  if (brand.state === 'running' && !Number.isNaN(Date.parse(brand.since))) {
+    add(node, ' Started ', when(brand.since), '.');
+  }
+  return [node];
+}
+
 // The ways on from the versions: upgrade, the companions' own update, or the command a
 // checkout is upgraded with.
 function versionsBar(found, dismiss) {
@@ -6037,12 +6082,17 @@ function versionsBar(found, dismiss) {
   const upgrade = upgradeOf(found);
   const buttons = [];
   if (upgrade.offered) {
-    const companions = wantedRows(found).some((row) => row.name !== 'training-studio');
+    const companions = wantedCompanionRows(found).length > 0;
     buttons.push(capsule(companions ? 'Upgrade everything' : 'Upgrade', '',
       openSheet('upgrade', 'upgrade'), 'upgrade'));
   } else if (!upgrade.state && upkeep && upkeep.update && upkeep.update.offered) {
     buttons.push(capsule('Update the skills', '', openSheet('companions', 'update-skills'),
       'update-skills'));
+  }
+  const brand = brandOf(found);
+  if (brand.offered && brand.state !== 'running') {
+    buttons.push(capsule(brand.action + ' the brand skill', '', openSheet('brand', 'brand'),
+      'brand'));
   }
   if (dismiss && found.key && !upgrade.state) {
     buttons.push(capsule('Dismiss', 'quiet', () => dismissVersions(found.key), 'dismiss'));
@@ -6070,7 +6120,7 @@ function updatesCard() {
         bullets(wanted.map(versionStep)));
       for (const row of wanted) add(node, add(make('p', ''), state('review', row.says)));
     }
-    add(node, ...upgradeParts(found));
+    add(node, ...upgradeParts(found), ...brandParts(found));
   }
   if (updating(upkeep)) add(node, updateLine(upkeep));
   else if (found && versionsNotice()) add(node, ...versionsBar(found, true));
@@ -6110,7 +6160,7 @@ function versionsCard() {
       make('span', '', said)));
     }
   }
-  add(node, facts, ...upgradeParts(found), ...versionsBar(found, false));
+  add(node, facts, ...upgradeParts(found), ...brandParts(found), ...versionsBar(found, false));
   const releases = (upkeepOf() || {}).releases || {};
   const known = (list(found.rows)[0] || {}).known_at;
   add(node, releasesLine(upkeepOf()));
@@ -6130,7 +6180,7 @@ function upgradeSheet() {
       || 'There is nothing to upgrade now.'), add(make('div', 'bar'), cancel)];
   }
   const own = list(found.rows)[0] || {};
-  const companions = wantedRows(found).filter((row) => row.name !== 'training-studio');
+  const companions = wantedCompanionRows(found);
   const problem = problemLine();
   const confirm = capsule('Upgrade now', 'filled', () => settleUpgrade(problem, confirm),
     'send');
@@ -6172,6 +6222,53 @@ async function settleUpgrade(problem, pressed) {
   if (view.setup && answered) view.setup = { ...view.setup, upkeep: answered.upkeep };
   closeSheet();
   toast('Upgrading Training Studio. Home and the Status screen say how it goes.');
+  draw(false);
+}
+
+// The sheet that asks before the brand skill is installed: the repository, the release and
+// its revision, and what happens. Nothing is fetched or run before the yes.
+function brandSheet() {
+  const brand = brandOf(versionsOf());
+  const cancel = capsule('Cancel', 'quiet', closeSheet, 'cancel');
+  if (!brand.offered) {
+    return [sheetTitle('Install the brand skill?'), make('p', '', brand.says
+      || 'There is nothing to install now.'), add(make('div', 'bar'), cancel)];
+  }
+  const problem = problemLine();
+  const confirm = capsule(brand.action + ' it now', 'filled', () => settleBrand(problem,
+    confirm), 'send');
+  return [sheetTitle(brand.action === 'Upgrade'
+    ? 'Upgrade the brand skill from ' + brand.installed + ' to ' + brand.version + '?'
+    : 'Install the brand skill ' + brand.version + '?'),
+  make('h3', 'sheet-part', 'What is installed'),
+  bullets(['Release ' + brand.release + ', at revision ' + brand.commit + '.',
+    'From ' + brand.repository + '.']),
+  make('h3', 'sheet-part', 'What happens'), bullets(BRAND_STEPS),
+  make('p', '', BRAND_TRUST), make('p', 'quiet', BRAND_WAITS), problem,
+  add(make('div', 'bar'), confirm, cancel)];
+}
+
+async function settleBrand(problem, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  view.busy = true;
+  pressed.disabled = true;
+  let answered;
+  try {
+    answered = await send('brand/install', { release: brandOf(versionsOf()).release });
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    say(problem, failure.message + ' Nothing was changed.');
+    pressed.disabled = false;
+    pressed.focus();
+    return;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  if (view.setup && answered) view.setup = { ...view.setup, upkeep: answered.upkeep };
+  closeSheet();
+  toast('Installing the brand skill. Home and the Status screen say how it goes.');
   draw(false);
 }
 
@@ -6381,6 +6478,53 @@ function lookCard() {
   say(problem, view.lookRefused);
   return add(node, problem, add(make('div', 'bar'),
     capsule('See the versions', 'quiet', () => show('status'), 'see-versions')));
+}
+
+// Settings, with the runner: where the brand skill is installed from. What is typed is kept
+// while the screen is drawn again, and is checked by the runner before it is saved.
+function brandSourceCard() {
+  const found = view.runner && view.setup ? view.setup.brand : null;
+  if (!found) return null;
+  if (!view.brandForm) {
+    view.brandForm = { repository: found.repository || '', release: found.release || '' };
+  }
+  const form = view.brandForm;
+  const node = add(card('Brand skill'), make('p', '', BRAND_SAYS),
+    field('brand-repository', 'Its repository', form, 'repository',
+      { hint: 'An https or ssh address, as git clones it. Git reaches it as you, without '
+        + 'asking for anything.' }),
+    field('brand-release', 'Which release', form, 'release',
+      { short: true, hint: 'Empty for the newest, or a release’s tag, such as v1.4.0.' }));
+  if (found.repository) {
+    add(node, make('p', 'quiet', 'Installed from ' + found.repository + ', '
+      + (found.release ? 'release ' + found.release : 'the newest release') + '.'));
+  }
+  const problem = alertLine('brand-problem');
+  say(problem, view.brandRefused);
+  const save = capsule(view.savingBrand ? 'Checking…' : 'Check and save', '',
+    () => saveBrand(save), 'brand-save');
+  save.disabled = view.savingBrand;
+  return add(node, problem, add(make('div', 'bar'), save,
+    capsule('See the versions', 'quiet', () => show('status'), 'brand-versions')));
+}
+
+async function saveBrand(pressed) {
+  if (view.savingBrand) return;
+  const form = view.brandForm;
+  const repository = form.repository.trim();
+  view.savingBrand = true;
+  view.brandRefused = '';
+  pressed.disabled = true;
+  try {
+    view.setup = await send('brand', { repository, release: form.release.trim() });
+    view.brandForm = null;
+    toast(repository ? 'Saved. The Status screen shows which release can be installed.'
+      : 'Forgotten. A brand skill already installed is still used.');
+  } catch (failure) {
+    view.brandRefused = failure.message + ' Nothing was changed.';
+  }
+  view.savingBrand = false;
+  if (view.screen === 'settings') draw(false);
 }
 
 // --- with a team: what is published ------------------------------------------------------
@@ -6629,7 +6773,8 @@ async function catchUp() {
       // A form is drawn once and never again under the person filling it in. So is the
       // index, under the person reading it.
       if (!view.drawn) draw(true);
-    } else if (!view.busy && !view.checking && !view.notifying && !view.turningLook && !typing()
+    } else if (!view.busy && !view.checking && !view.notifying && !view.turningLook
+        && !view.savingBrand && !typing()
         && view.drawn !== signature()) {
       draw(!view.drawn);
     }
