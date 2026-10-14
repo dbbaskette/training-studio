@@ -5,9 +5,9 @@ import json
 import subprocess
 import sys
 
-import gdocs
 import helpers
 from helpers import TrainingCase
+import gdocs
 from test_google import FakeTransport
 import training
 

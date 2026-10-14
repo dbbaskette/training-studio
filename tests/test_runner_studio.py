@@ -122,7 +122,7 @@ class ServeTests(StudioCase):
         self.assertEqual(len(self.workers.jobs), 5, 'nothing is done twice')
 
     def test_it_refuses_to_start_without_a_git_identity_and_says_the_fix(self):
-        (self.base / 'nobody.gitconfig').write_text('[user]\n\tuseConfigOnly = true\n')
+        helpers.gitconfig(self.base / 'nobody.gitconfig', '[user]\n\tuseConfigOnly = true\n')
         out = io.StringIO()
         with mock.patch.dict(os.environ, {'GIT_CONFIG_GLOBAL':
                                           str(self.base / 'nobody.gitconfig')}):

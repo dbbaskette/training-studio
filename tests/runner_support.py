@@ -851,7 +851,8 @@ class StudioCase(unittest.TestCase):
         self.addCleanup(holder.cleanup)
         self.base = Path(holder.name).resolve()
         (self.base / 'no-templates').mkdir()
-        (self.base / 'gitconfig').write_text(
+        helpers.gitconfig(
+            self.base / 'gitconfig',
             '[user]\n\tname = Alex\n\temail = alex@example.com\n[init]\n\tdefaultBranch = '
             f"main\n\ttemplateDir = {self.base / 'no-templates'}\n")
         self.web = Web()
@@ -1041,7 +1042,8 @@ class TeamCase(StudioCase):
         """Someone else, who joins the same repository from a computer of their own."""
         folder = self.base / name.lower()
         folder.mkdir()
-        (folder / 'gitconfig').write_text(
+        helpers.gitconfig(
+            folder / 'gitconfig',
             f'[user]\n\tname = {name}\n\temail = {name.lower()}@example.com\n[init]\n\t'
             f"defaultBranch = main\n\ttemplateDir = {self.base / 'no-templates'}\n")
         made = Person(name, {'TRAINING_STUDIO_DATA': str(folder / 'data'),
