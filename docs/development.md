@@ -184,8 +184,16 @@ No test starts a real agent, the real harness-research, the slides tool or a bra
 
 ## What is not yet verified
 
-The automated suite covers the helper. It does not cover how an assistant follows the guidance. Live acceptance, described in increment 4 of the plan, is a real run through every gate on the harness you intend to use, plus building one roleplay in Yoodli. Its results belong in `docs/acceptance.md`.
+The automated suite covers the helper, the installer and the runner. It does not cover how an assistant follows the guidance. Live acceptance, described in increment 4 of the plan, is a real run through every gate on the harness you intend to use, plus building one roleplay in Yoodli. Its results belong in `docs/acceptance.md`.
 
-## Later phases
+## Phases and milestones
 
-Phase 1 is the core pipeline as a locally linked skill. Packaging with an installer, a Google Docs round-trip, a shared Team Hub and a browsing desk are planned as separate phases, each with its own specification. See section 12 of the design.
+All five phases are built, each from its own specification:
+
+1. [The core pipeline](superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md), as a skill.
+2. [Packaging](superpowers/specs/2026-10-12-phase-2-packaging.md): the installer.
+3. [The Google Docs round-trip](superpowers/specs/2026-10-12-phase-3-google-round-trip.md).
+4. [The team hub](superpowers/specs/2026-10-12-phase-4-team-hub.md).
+5. [The page](superpowers/specs/2026-10-12-phase-5-training-desk.md).
+
+The runner came after them, in milestones from [its design](superpowers/specs/2026-10-13-studio-runner-design.md): [approval on the page](superpowers/specs/2026-10-13-milestone-1-page-approval.md), [the runner's core](superpowers/specs/2026-10-13-milestone-2-runner-core.md), [the rest of a training](superpowers/specs/2026-10-13-milestone-3-rest-of-training.md), [the slide deck](superpowers/specs/2026-10-13-milestone-4-slides.md) and [the team](superpowers/specs/2026-10-13-milestone-5-team.md).
