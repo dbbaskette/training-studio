@@ -39,7 +39,7 @@ LISTED = [{'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
            'levels': ['low', 'medium', 'high']}]
 GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
-         '/api/documents', '/api/copies', '/api/share')
+         '/api/documents', '/api/copies', '/api/share', '/api/companions', '/api/asset')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
 RUN_KEYS = ['agent', 'clash', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'effort',
             'finished', 'kept', 'last_shared', 'mine', 'model', 'notice', 'outline', 'problem',
@@ -168,7 +168,10 @@ class RuleTests(PageCase):
                        '/api/documents': {'path': self.path, 'action': 'add',
                                           'name': 'handbook.txt', 'content': 'V29yZHMu'},
                        '/api/copies': {'path': self.path},
-                       '/api/share': {}}
+                       '/api/share': {}, '/api/companions': {},
+                       '/api/asset': {'path': self.path, 'asset': 'console_view',
+                                      'content': 'iVBORw0KGgo=', 'alt': 'A console',
+                                      'source': 'Course author'}}
         self.before = self.on_disk()
 
     def refused(self, method: str, target: str, expect: int, **options) -> dict:
@@ -255,6 +258,7 @@ class SetUpTests(FirstTimeCase):
             'limits': {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 2},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
             'notify': {'on': False, 'can': True, 'problem': None},
+            'updates': {'look': True}, 'upkeep': None,
             'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
                       'problem': NO_BRAND_SKILL}})
         said = self.post('trainings', FORM, 409)
@@ -278,6 +282,7 @@ class SetUpTests(FirstTimeCase):
             'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
             'notify': {'on': False, 'can': True, 'problem': None},
+            'updates': {'look': True}, 'upkeep': None,
             'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
                       'problem': NO_BRAND_SKILL}})
         self.assertEqual(self.get('setup'), made)
@@ -771,6 +776,82 @@ class StartTests(PageCase):
         self.assertIn('already has a training in trainings/rolling-restarts', said['error'])
 
 
+class Keeper:
+    """A stand-in for what looks after the skills here: it records what it is asked."""
+
+    def __init__(self):
+        self.asked, self.refuse = [], None
+
+    def report(self) -> dict:
+        return {'stand_in': True}
+
+    def again(self) -> None:
+        self.asked.append('again')
+
+    def close(self) -> None:
+        pass
+
+    def update(self, working: bool) -> dict:
+        self.asked.append(('update', working))
+        if self.refuse:
+            raise WorkspaceError(self.refuse)
+        return {'stand_in': True, 'update': {'state': 'running'}}
+
+
+class UpkeepTests(PageCase):
+    """What the runner found of Training Studio and its skills, and the update of the
+    companions, which the page asks for only once the person has said yes."""
+
+    def test_set_up_and_status_say_what_was_found_of_the_skills(self):
+        self.assertEqual((self.get('setup')['upkeep'], self.get('setup')['updates'],
+                          self.get('status')['upkeep']), (None, {'look': True}, None))
+        self.engine.upkeep = Keeper()
+        self.assertEqual((self.get('setup')['upkeep'], self.get('status')['upkeep']),
+                         ({'stand_in': True}, {'stand_in': True}))
+
+    def test_looking_for_updates_is_switched_in_set_up(self):
+        self.assertEqual(self.post('setup', {'look_for_updates': False})['updates'],
+                         {'look': False})
+        self.assertFalse(settings.load().look_for_updates)
+        self.assertEqual(self.post('setup', {'limits': {'parallel': 3}})['updates'],
+                         {'look': False}, 'a change to anything else leaves it as it was')
+        said = self.post('setup', {'look_for_updates': 'yes'}, 400)
+        self.assertEqual(said['error'], 'Looking for updates is on or off: give '
+                         'look_for_updates as true or false.')
+        self.assertTrue(self.post('setup', {'look_for_updates': True})['updates']['look'])
+
+    def test_the_companions_are_brought_only_when_asked_and_not_under_a_working_training(self):
+        said = self.post('companions', {}, 409)
+        self.assertIn('does not look after the skills on this computer', said['error'])
+        keeper = self.engine.upkeep = Keeper()
+        self.assertEqual(self.post('companions', {}),
+                         {'upkeep': {'stand_in': True, 'update': {'state': 'running'}}})
+        keeper.refuse = 'Every companion skill is already as new as this Training Studio ' \
+                        'was made with.'
+        self.assertEqual(self.post('companions', {}, 409)['error'], keeper.refuse)
+        keeper.refuse, seen = None, []
+
+        def looks(tools, job):
+            seen.append(self.post('companions', {}))
+            self.workers.research_plan(tools, job)
+
+        self.workers.then('research-plan', looks)
+        self.started()
+        self.assertEqual(keeper.asked, [('update', False), ('update', False),
+                                        ('update', True)],
+                         'a training working in the background is said to be working')
+
+    def test_checking_this_computer_again_looks_at_the_skills_again(self):
+        keeper = self.engine.upkeep = Keeper()
+        seen = {'checked_at': '2026-10-14T09:00:00Z', 'ready': True, 'assistants': ['Codex'],
+                'wrong': [], 'items': []}
+        with mock.patch.object(computer, 'check', lambda google=False: seen):
+            self.get('computer')
+            self.assertEqual(keeper.asked, [], 'reading the last look looks at nothing')
+            self.post('computer', {})
+        self.assertEqual(keeper.asked, ['again'])
+
+
 class RunTests(PageCase):
     def test_a_run_is_described_field_for_field(self):
         self.workers.cost = 0.5
@@ -1139,17 +1220,20 @@ class LaterTests(PageCase):
             self.assertEqual(self.post(endpoint, sent, 404)['error'],
                              'No run is driving this training.')
 
-    def test_only_a_document_sent_with_the_key_may_be_larger_than_any_other_change(self):
+    def test_only_a_document_or_a_picture_sent_with_the_key_may_be_large(self):
         headers = self.headers()
         self.assertEqual(page.DOCUMENT_LIMIT, 12_000_000)
         self.assertGreater(page.DOCUMENT_LIMIT, 8_000_000 * 4 // 3,
                            'the largest document fits once it is in base64')
         self.assertEqual(self.page.body_limit('/api/documents', headers), 12_000_000)
         self.assertEqual(self.page.body_limit('/api/documents?x=1', headers), 12_000_000)
+        self.assertEqual(self.page.body_limit('/api/asset', headers), 12_000_000)
         for token in (False, 'not-the-key'):
-            self.assertEqual(self.page.body_limit('/api/documents', self.headers(token=token)),
-                             desk.BODY_LIMIT, 'a stranger is never read at length')
-        for target in (*desk.WRITES, *(path for path in POSTS if path != '/api/documents'),
+            for target in ('/api/documents', '/api/asset'):
+                self.assertEqual(self.page.body_limit(target, self.headers(token=token)),
+                                 desk.BODY_LIMIT, 'a stranger is never read at length')
+        for target in (*desk.WRITES, *(path for path in POSTS
+                                       if path not in ('/api/documents', '/api/asset')),
                        '/api/documents/more', '/api/nothing', '/', '//[', ''):
             self.assertEqual(self.page.body_limit(target, headers), 64_000, target)
         self.assertEqual(desk.Page(self.PORT).body_limit('/api/documents', headers), 64_000,

@@ -23,7 +23,8 @@ What a caller needs to know
     engine.fetch()                           # fetch and replay; nothing is sent
     engine.drive(path, 'take')               # take a training, or take it over; 'hand-over'
     engine.hold(path)                        # refuse, saying who has it, if it is not ours
-    engine.standing()                        # every run here, and those driven elsewhere
+    engine.standing()                        # every run here, those driven elsewhere, and
+                                             # what `upkeep` found of the skills here
     engine.publish(path)                     # the next revision of a training, as a tag
     engine.published()                       # each training's latest published revision
     engine.leaving(path)                     # what deleting a training would do
@@ -455,6 +456,7 @@ class Engine:
                  slides=None, brand=None, notifier=None):
         self.adapters = dict(adapters or agents.AGENTS)
         self.notifier = notifier or team.Notifier()
+        self.upkeep = None    # what `studio serve` keeps of the skills here; see `upkeep`
         self._asked: float | None = None    # when a page last asked anything
         self._clash: dict[str, str] = {}    # trainings changed on two computers at once
         self._serving: threading.Thread | None = None
@@ -1011,6 +1013,8 @@ class Engine:
         """End every worker and wait for the runs to notice. Nothing half-made is kept."""
         self._closing = True
         self._ending.set()
+        if self.upkeep is not None:
+            self.upkeep.close()   # an update of the skills in hand is ended too
         with self._lock:
             runs = list(self._runs.values())
         for run in runs:
@@ -3057,7 +3061,8 @@ class Engine:
                 elsewhere.append({**shown, 'last_shared': found.get('last_shared'),
                                   'notice': found.get('notice')})
         return {'limit': settings.load().parallel, 'runs': runs, 'elsewhere': elsewhere,
-                'background': self.went_wrong()}
+                'background': self.went_wrong(),
+                'upkeep': self.upkeep.report() if self.upkeep else None}
 
     def went_wrong(self) -> dict | None:
         """What last went wrong in the work the runner does by itself while it serves, as

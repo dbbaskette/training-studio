@@ -99,7 +99,9 @@ Every version of every file that was saved or approved is kept under `.training-
 What your assistant follows is guidance: instructions, templates and the Yoodli field data. What changes files is a small set of scripts.
 
 - Scripts are installed and never fetched.
-- Guidance is fetched from this repository's `main` branch when a new training starts, and that training is pinned to it. The pin records the exact commit and a hash of every file.
+- Guidance is fetched from this repository's `main` branch when a new training starts, and that training is pinned to it. The pin records the exact commit.
+- Guidance is only ever what the helper fetched from `main` itself. It is kept in the per-user data folder, by commit, and checked against that commit's own files each time it is used. Of a training's pin, only the commit is read: a training copied or brought from elsewhere cannot bring guidance with it. A pin naming a commit that is not on `main` is refused, and nothing is fetched by commit.
+- git runs apart from your own setup: no system or global config, no `GIT_*` variables, no hooks, no replaced history, and only `https` or a local folder to fetch from. The helper's copy of `main` is used only as it made it; anything else is deleted and fetched again.
 - A pinned training needs no network to resume.
 - If guidance cannot be fetched, the guidance installed with the scripts is used, and you are told it may be older.
 

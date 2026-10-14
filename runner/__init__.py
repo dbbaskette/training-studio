@@ -21,6 +21,8 @@ at every gate for a decision on the page, the slide deck included.
     slides         the slides tool's command line, called from Python
     brand          a brand skill on this computer, called from Python
     team           sharing a workspace: who drives a training, notifications, publishing
+    upkeep         whether Training Studio and its skills are in place and current, put
+                   right where that is safe, and the companions brought when asked
 
 Each module's own docstring says what a caller needs to know. Refusals meant for a person
 are raised as the core's WorkspaceError, with a sentence to show as it is.

@@ -54,6 +54,13 @@ What a caller needs to know
   {"deleted", "title", "shared", "notice"}. The title must be the training's own. A
   training a conversation made is 404 here: the runner never deletes a folder it does
   not drive.
+- `GET /api/setup` and `GET /api/status` carry `upkeep`: what `upkeep.Upkeep.report` says
+  of Training Studio and its skills on this computer, or null where the runner does not
+  look. `POST /api/companions`, with {}, brings each companion skill that is missing or
+  older than its pin, in the background, through the installer's own checked install, and
+  answers `upkeep`. It is 409 while a training here is working, while an update is in
+  hand, and when there is nothing to bring. The page asks for it only after the person
+  said yes in its confirmation.
 - `POST /api/adopt` with {"path"} copies a training this computer knows, started in a
   conversation, into the workspace, and answers {"path", "id"} of the copy.
 - Every request that passes the rules tells the engine a page is open, which is how the
@@ -78,7 +85,8 @@ What a caller needs to know
   their deck's approved design, and answers the run. `content` is the picture in base64;
   like a document, it may be up to DOCUMENT_LIMIT bytes. A deck waiting for it carries on.
 - The page's check of this computer gains what a deck needs here. Asking for a new look
-  also lets the trainings that were waiting on what was missing carry on.
+  also lets the trainings that were waiting on what was missing carry on, and looks at the
+  skills again, putting back a link the installer placed that has gone missing.
 - `GET /api/file` also answers for `README.md`, the index at the top of a training this
   computer knows, once it is written. The index is derived and is not one of a training's
   own files, so the desk alone refuses it.
@@ -119,7 +127,8 @@ READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/
          '/api/slide', '/api/status', '/api/published', '/api/delete')
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
-          '/api/publish', '/api/adopt', '/api/fetch', '/api/delete', '/api/asset')
+          '/api/publish', '/api/adopt', '/api/fetch', '/api/delete', '/api/companions',
+          '/api/asset')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 ASSET = '/api/asset'
@@ -233,6 +242,9 @@ class RunnerPage(desk.Page):
         seen = super().computer(look)
         if seen is None:
             return None
+        keep = getattr(self.engine, 'upkeep', None)
+        if look and keep is not None:
+            keep.again()
         needs = self.engine.look_again() if look else self.engine.deck_needs()
         wanted = self.uses_deck()
         items = [{**item, 'optional': not wanted} for item in needs['items']]
@@ -372,6 +384,8 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.adopt(sent))
         if path == '/api/fetch':
             return desk.as_json(HTTPStatus.OK, self.engine.fetch())
+        if path == '/api/companions':
+            return desk.as_json(HTTPStatus.OK, {'upkeep': self.update()})
         if path == '/api/delete':
             title = desk.text(sent, 'title')
             return desk.as_json(HTTPStatus.OK, self.engine.delete(
@@ -399,6 +413,17 @@ class RunnerPage(desk.Page):
         if path == '/api/outline':
             return desk.as_json(HTTPStatus.OK, self.outline(sent))
         return super().write(path, sent)
+
+    def update(self) -> dict:
+        """Bring the companion skills that are missing or older, unless a training here is
+        working: a step in hand keeps using the skill it started with."""
+        keep = getattr(self.engine, 'upkeep', None)
+        if keep is None:
+            raise desk.Refusal(HTTPStatus.CONFLICT, 'This runner does not look after the '
+                               'skills on this computer. Run the installer to update them.')
+        working = any((self.engine.brief(root) or {}).get('state') == 'working'
+                      for root in self.engine.trainings())
+        return keep.update(working)
 
     def known(self, sent: dict) -> str:
         """The training a change names, once this computer knows it and a run drives it."""

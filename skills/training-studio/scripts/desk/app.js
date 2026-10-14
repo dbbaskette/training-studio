@@ -11,7 +11,8 @@ const TOKEN_HEADER = 'X-Training-Studio-Token';
 const POLL_SHOWN = 5000;
 const POLL_HIDDEN = 20000;
 const POLL_RUN = 2000; // while a run is working and its own screen is open
-const SET_UP_SHOWN = ['home', 'settings', 'setup', 'new']; // where set-up is read each time
+// Where set-up is read each time. It carries what was found of the skills, for home and status.
+const SET_UP_SHOWN = ['home', 'status', 'settings', 'setup', 'new'];
 const WORKING = 3 * 60000; // with no run to ask, a training that changed this recently is working
 const DRAWING = 'http://www.w3.org/2000/svg'; // the name of the SVG language; nothing is fetched
 const COUNTED = ['Nothing needs', 'One thing needs', 'Two things need', 'Three things need',
@@ -262,6 +263,14 @@ const DELETE_UNDO = 'This cannot be undone from this page. Its history stays in 
 const DELETE_DRIVE = 'Training Studio never deletes anything in your Google Drive. Remove '
   + 'these yourself if you no longer want them:';
 // Where a finished training's index is, in its folder.
+const UPDATE_SAYS = 'Each is fetched from its own repository at the one revision this '
+  + 'Training Studio was made with, and checked file for file before any of it is run. Then '
+  + 'its own installer is run with Node, and registers the skill for every assistant it knows.';
+const UPDATE_WAITS = 'It takes a few minutes, while you carry on. The Status screen says how '
+  + 'it goes.';
+const LOOK_SAYS = 'Once a day, Training Studio asks where it and its two skills are kept which '
+  + 'releases there are, and says on Home when a newer one is out. It only reads their names: '
+  + 'nothing is downloaded or run, and nothing is installed without your yes.';
 const INDEX = 'README.md';
 const HALTED = 'This training is not running, so nothing more happens until you resume it or '
   + 'try again.';
@@ -293,6 +302,8 @@ const view = {
   status: null, shelf: null, issued: null, adopted: null, noticed: {},
   // What deleting the open training would do, as the runner said when its sheet was opened.
   leaving: null,
+  // Looking online for newer releases, while it is switched, and why switching it was refused.
+  turningLook: false, lookRefused: '',
   fetching: false, fetched: null, notifying: false, unnotified: '',
   // Why moving where a training is decided was refused, by training, and why bringing a stage
   // back was, by stage: each is said until it is tried again or the screen is left. And what
@@ -1055,7 +1066,7 @@ function signature() {
 // What a list screen's parts are drawn from, apart from the trainings themselves.
 function around() {
   return [view.computer, view.checking, alerts(), view.setup, view.sharing, view.status,
-    view.unnotified, view.fetching, view.fetched, Boolean(view.runner)];
+    view.unnotified, view.fetching, view.fetched, Boolean(view.runner), view.lookRefused];
 }
 
 function draw(fresh) {
@@ -1223,7 +1234,7 @@ function afterSheet() {
 function drawSheet() {
   const holder = byId('sheet');
   const shown = view.after || (view.sheet && (view.gate || view.deciding || outlined()
-    || TEAM_SHEETS.includes(view.sheet) || view.sheet === 'delete'));
+    || TEAM_SHEETS.includes(view.sheet) || ['delete', 'companions'].includes(view.sheet)));
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
@@ -1237,6 +1248,7 @@ function drawSheet() {
   let body;
   if (view.after) body = afterSheet();
   else if (view.sheet === 'delete') body = deleteSheet();
+  else if (view.sheet === 'companions') body = updateSheet();
   else if (TEAM_SHEETS.includes(view.sheet)) body = teamSheet(view.sheet);
   else if (FORMS[view.sheet]) body = noteSheet(view.sheet);
   else body = confirmSheet(view.sheet);
@@ -1484,7 +1496,8 @@ function drawHome(fresh) {
   // needs the person first.
   const start = view.runner && all.length ? newButton(lead ? '' : 'filled') : null;
   const said = greeting();
-  const parts = [['greeting', [said], () => make('p', 'large-title', said)]];
+  const parts = [['greeting', [said], () => make('p', 'large-title', said)],
+    ['updates', [upkeepOf()], updatesCard]];
   if (!all.length) {
     parts.push(['invite', [Boolean(view.runner)], invitation]);
   } else {
@@ -1670,6 +1683,7 @@ function drawStatus(fresh) {
     ['teammates', [Boolean(view.runner), Boolean(view.status), theirs, teamSpace(),
       view.fetching, view.fetched], teammatesCard],
     trainingsTable(),
+    ['skills', [upkeepOf()], skillsCard],
     ['computer', [view.computer, Boolean(view.runner)], computerCard]], fresh);
   // With the runner, every run and who runs what is asked for as the screen opens.
   if (fresh && view.runner) {
@@ -1741,6 +1755,7 @@ function drawSettings(fresh) {
   placeParts({ title: 'Settings', mark: ['Settings'] }, [
     ['workspace', around(), workspaceCard], ['left', around(), leftCard],
     ['alerts', [alerts()], alertsCard], ['notify', around(), notifyCard],
+    ['look', [view.setup && view.setup.updates, view.lookRefused], lookCard],
     ['decided', [decided, view.unmoved], decidedCard],
     ['page', [Boolean(view.runner)], () => add(card('This page'),
       make('p', '', 'It runs on this computer and answers only to the link that opened it. '
@@ -5857,6 +5872,203 @@ function notifyCard() {
   return add(node, problem, make('p', 'quiet', NOTIFY_DIFFERS));
 }
 
+// --- Training Studio and its skills --------------------------------------------------------
+// What the runner found when it last looked at its links, the companion skills and the
+// releases. It puts back by itself only what the installer placed. A companion is brought
+// only once the person says yes in the sheet, and a newer release is only ever said.
+
+function upkeepOf() {
+  return view.runner && view.setup ? view.setup.upkeep || null : null;
+}
+
+function wantedCompanions(found) {
+  return list(found && found.companions).filter((one) => ['missing', 'older']
+    .includes(one.state));
+}
+
+function updating(found) {
+  return Boolean(found && found.update && found.update.state === 'running');
+}
+
+// What the update in hand is doing, or how the last one went. None before there was one.
+function updateLine(found) {
+  const update = (found && found.update) || {};
+  if (!update.state) return null;
+  const node = add(make('p', ''), state(update.state === 'running' ? 'current'
+    : update.state === 'done' ? 'done' : 'late', update.says || ''));
+  if (update.state === 'running' && !Number.isNaN(Date.parse(update.since))) {
+    add(node, ' Started ', when(update.since), '.');
+  }
+  return node;
+}
+
+// The way to the sheet that asks before the companions are brought.
+function updateBar(found) {
+  if (!found || !found.update || !found.update.offered) return null;
+  return add(make('div', 'bar'), capsule('Update the skills', '', openSheet('companions',
+    'update-skills'), 'update-skills'));
+}
+
+// A newer release, with the exact command that installs it, or where it is.
+function newerParts(one) {
+  const parts = [add(make('p', ''), state('review', one.says))];
+  if (one.command) {
+    parts.push(make('p', 'sentence', one.command), add(make('div', 'bar'),
+      copyButton('Copy the command', 'Command copied', one.command, 'copy-update ' + one.name)));
+  } else if (one.link && WEB_LINK.test(String(one.link))) {
+    const link = make('a', 'link', one.link);
+    link.href = one.link;
+    link.rel = 'noopener noreferrer';
+    link.target = '_blank';
+    link.setAttribute('aria-label', 'Where ' + one.name + ' is kept, in a new tab');
+    parts.push(add(make('p', 'quiet'), link));
+  } else if (one.link) {
+    parts.push(make('p', 'quiet', one.link));
+  }
+  return parts;
+}
+
+// Home: said only when there is something to do or to know.
+function updatesCard() {
+  const found = upkeepOf();
+  if (!found) return null;
+  const wanted = wantedCompanions(found);
+  const newer = list(found.releases && found.releases.newer);
+  if (!wanted.length && !newer.length && !updating(found)) return null;
+  const node = card('Updates');
+  for (const one of wanted) add(node, add(make('p', ''), state('late', one.says)));
+  add(node, updating(found) ? updateLine(found) : updateBar(found));
+  for (const one of newer) add(node, ...newerParts(one));
+  return node;
+}
+
+function linkWords(link) {
+  if (link.state === 'ok') return ['done', link.assistant + ': Training Studio is linked.'];
+  if (link.state === 'repaired') return ['done', link.says];
+  return [link.state === 'missing' ? 'late' : 'none', link.says];
+}
+
+const COMPANION_BEADS = { ok: 'done', missing: 'late', older: 'late', unread: 'none' };
+
+function releasesLine(found) {
+  const releases = (found && found.releases) || {};
+  if (releases.on === false) {
+    return make('p', 'quiet', 'Looking online for newer releases is turned off, in Settings.');
+  }
+  if (releases.problem) return make('p', 'fix', releases.problem);
+  if (!releases.at || Number.isNaN(Date.parse(releases.at))) {
+    return make('p', 'quiet', 'Newer releases have not been looked for yet.');
+  }
+  return add(make('p', 'quiet'), 'Newer releases were last looked for ', when(releases.at),
+    list(releases.newer).length ? '.' : '. Nothing newer was found.');
+}
+
+// Status: everything that was found, what was put back, and the update.
+function skillsCard() {
+  const found = upkeepOf();
+  if (!found) return null;
+  const node = card('Training Studio and its skills');
+  add(node, make('p', '', 'Training Studio ' + found.version + '.'
+    + (found.guidance && found.guidance.says ? ' ' + found.guidance.says : '')));
+  if (found.checking) {
+    return add(node, make('p', 'quiet', 'Looking at the skills on this computer.'));
+  }
+  if (found.problem) add(node, make('p', 'fix', found.problem));
+  const facts = make('ul', 'facts');
+  for (const link of list(found.links)) {
+    const [shape, words] = linkWords(link);
+    facts.append(add(make('li', 'fact'), bead(shape), make('span', '', words)));
+  }
+  for (const one of list(found.companions)) {
+    facts.append(add(make('li', 'fact'), bead(COMPANION_BEADS[one.state] || 'none'),
+      make('span', '', one.says)));
+  }
+  add(node, facts);
+  for (const said of list(found.repaired)) {
+    if (!list(found.links).some((link) => link.says === said)) {
+      add(node, add(make('p', ''), state('done', said)));
+    }
+  }
+  add(node, updateLine(found), updating(found) ? null : updateBar(found), releasesLine(found));
+  for (const one of list(found.releases && found.releases.newer)) add(node, ...newerParts(one));
+  return node;
+}
+
+// The sheet that asks before the companions are brought: what, from where, and how.
+function updateSheet() {
+  const wanted = wantedCompanions(upkeepOf());
+  const head = sheetTitle('Update the companion skills?');
+  const cancel = capsule('Cancel', 'quiet', closeSheet, 'cancel');
+  if (!wanted.length) {
+    return [head, make('p', '', 'Every companion skill is already as new as this Training '
+      + 'Studio was made with.'), add(make('div', 'bar'), cancel)];
+  }
+  const problem = problemLine();
+  const confirm = capsule('Update them now', 'filled', () => settleUpdate(problem, confirm),
+    'send');
+  return [head, make('h3', 'sheet-part', 'What is brought'),
+    bullets(wanted.map((one) => one.name + ' ' + one.wanted + ', from ' + one.repository
+      + ' at revision ' + one.commit + '.')),
+    make('p', '', UPDATE_SAYS),
+    ...wanted.filter((one) => one.note).map((one) => make('p', '', one.note)),
+    make('p', 'quiet', UPDATE_WAITS), problem,
+    add(make('div', 'bar'), confirm, cancel)];
+}
+
+async function settleUpdate(problem, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  view.busy = true;
+  pressed.disabled = true;
+  let answered;
+  try {
+    answered = await send('companions', {});
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    say(problem, failure.message + ' Nothing was changed.');
+    pressed.disabled = false;
+    pressed.focus();
+    return;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  if (view.setup && answered) view.setup = { ...view.setup, upkeep: answered.upkeep };
+  closeSheet();
+  toast('Updating the skills. The Status screen says how it goes.');
+  draw(false);
+}
+
+async function setLook(index, node) {
+  if (view.turningLook) return;
+  view.turningLook = true;
+  view.lookRefused = '';
+  slide(node, index);
+  try {
+    view.setup = await send('setup', { ...setupAsItIs(), look_for_updates: Boolean(index) });
+    toast(index ? 'On. Training Studio looks for newer releases once a day.'
+      : 'Off. Training Studio no longer looks online for newer releases.');
+  } catch (failure) {
+    slide(node, index ? 0 : 1);
+    view.lookRefused = failure.message + ' Nothing was changed.';
+  }
+  view.turningLook = false;
+  if (view.screen === 'settings') draw(false);
+}
+
+// Settings, with the runner: whether it looks online for newer releases.
+function lookCard() {
+  const found = view.runner && view.setup ? view.setup.updates : null;
+  if (!found) return null;
+  const node = add(card('Updates'), make('p', '', LOOK_SAYS),
+    add(make('div', 'setting'), make('p', 'row-title', 'Look for updates once a day'),
+      segmented('Look for updates once a day', ['Off', 'On'], found.look ? 1 : 0, setLook,
+        'look')));
+  const problem = alertLine('look-problem');
+  say(problem, view.lookRefused);
+  return add(node, problem);
+}
+
 // --- with a team: what is published ------------------------------------------------------
 // Each training the workspace has published, at its latest revision, with its index to read.
 
@@ -6096,7 +6308,7 @@ async function catchUp() {
       // A form is drawn once and never again under the person filling it in. So is the
       // index, under the person reading it.
       if (!view.drawn) draw(true);
-    } else if (!view.busy && !view.checking && !view.notifying && !typing()
+    } else if (!view.busy && !view.checking && !view.notifying && !view.turningLook && !typing()
         && view.drawn !== signature()) {
       draw(!view.drawn);
     }

@@ -6048,6 +6048,198 @@ class DeleteScreenTests(ScriptedPage, PageCase):
         self.assertEqual(self.posts(result), [])
 
 
+def kept(**changes) -> dict:
+    """What the runner found of Training Studio and its skills, in `upkeep.report`'s shape:
+    harness-slides missing for Codex, and a newer Training Studio out."""
+    command = 'cd /Users/pat/training-studio && git pull && sh installer/install.sh'
+    found = {
+        'checking': False, 'checked_at': '2026-10-14T09:00:00Z', 'version': '0.18.0',
+        'mode': 'managed', 'problem': None,
+        'links': [{'assistant': 'Claude Code', 'name': 'training-studio', 'path': '/c',
+                   'state': 'repaired', 'says': 'The link for Claude Code was missing, and '
+                   'was put back: /Users/pat/.claude/skills/training-studio.'},
+                  {'assistant': 'Codex', 'name': 'training-studio', 'path': '/x',
+                   'state': 'ok', 'says': None}],
+        'repaired': ['The link for Claude Code was missing, and was put back: '
+                     '/Users/pat/.claude/skills/training-studio.',
+                     'The link to the installed version was missing, and was put back: '
+                     '/Users/pat/.local/share/training-studio/current.'],
+        'companions': [
+            {'name': 'harness-research', 'wanted': '0.8.0', 'state': 'ok',
+             'says': 'harness-research 0.8.0, for Claude Code and Codex.',
+             'found': {'Claude Code': '0.8.0', 'Codex': '0.8.0'},
+             'repository': 'https://github.com/dbbaskette/harness-research-skill',
+             'commit': '547506e9ba5b', 'note': None},
+            {'name': 'harness-slides', 'wanted': '0.13.1', 'state': 'missing',
+             'says': 'harness-slides is not installed for Codex, and everything is built '
+                     'except the slide deck without it. This Training Studio was made with '
+                     '0.13.1.',
+             'found': {'Claude Code': '0.13.1', 'Codex': None},
+             'repository': 'https://github.com/dbbaskette/harness-slides-skill',
+             'commit': '2ceaf5d8b013',
+             'note': 'Its installer also downloads, from npm, the packages its slide engine '
+                     'needs.'}],
+        'update': {'offered': True, 'state': None, 'since': None, 'says': None},
+        'guidance': {'commit': 'abcdef012345', 'at': '2026-10-14T08:00:00Z',
+                     'says': 'New trainings follow the guidance from revision abcdef012345 of '
+                             'main, the newest when guidance was last fetched.'},
+        'releases': {'on': True, 'at': '2026-10-14T09:00:00Z', 'problem': None, 'newer': [
+            {'name': 'training-studio', 'version': '0.19.0', 'have': '0.18.0',
+             'command': command, 'link': None,
+             'says': 'Training Studio 0.19.0 is out, and this is 0.18.0. Close Training '
+                     'Studio, then run this in a terminal:'}]}}
+    found.update(changes)
+    return found
+
+
+@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
+class UpkeepScreenTests(ScriptedPage, PageCase):
+    """What the runner found of Training Studio and its skills: on Home only when there is
+    something to do or know, all of it on Status, the update of the companions asked for
+    only after a confirmation, and looking online switched in Settings."""
+
+    answers = RunnerScreenTests.answers
+    posts = RunnerScreenTests.posts
+    started = RunnerScreenTests.started
+
+    def test_home_says_what_needs_updating_and_asks_before_anything_is_brought(self):
+        self.started()
+        running = kept(update={'offered': False, 'state': 'running',
+                               'since': '2026-10-14T09:01:00Z',
+                               'says': 'Bringing harness-slides. This can take a few minutes.'})
+        down = 'A training on this computer is working now, and a step in hand keeps using ' \
+               'the skill it started with. Pause it, or wait until it stops for you, then ' \
+               'update.'
+        answers = self.answers(**{
+            'GET /api/setup': [ok({**SET_UP, 'upkeep': kept()})] * 4
+            + [ok({**SET_UP, 'upkeep': running})],
+            'POST /api/companions': [refused(down), ok({'upkeep': running})]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Update the skills'}, {'snapshot': 'asked'},
+            {'click': 'Cancel'}, {'snapshot': 'cancelled'},
+            {'click': 'Update the skills'}, {'click': 'Update them now'},
+            {'snapshot': 'refused'},
+            {'click': 'Update them now'}, {'snapshot': 'updating'},
+        ])
+        shots = result['snapshots']
+        home = shots['home']
+        for said in ('Updates', 'harness-slides is not installed for Codex, and everything is '
+                     'built except the slide deck without it.',
+                     'Training Studio 0.19.0 is out, and this is 0.18.0. Close Training '
+                     'Studio, then run this in a terminal:',
+                     'cd /Users/pat/training-studio && git pull && sh installer/install.sh'):
+            self.assertIn(said, home['text'])
+        self.assertIn('Copy the command', home['buttons'])
+        self.assertNotIn('harness-research 0.8.0', home['text'], 'what is fine is not said')
+        self.assertNotIn('Update the skills', home['filled'])
+
+        asked = shots['asked']
+        for said in ('Update the companion skills?', 'What is brought',
+                     'harness-slides 0.13.1, from '
+                     'https://github.com/dbbaskette/harness-slides-skill at revision '
+                     '2ceaf5d8b013.',
+                     'checked file for file before any of it is run',
+                     'Its installer also downloads, from npm, the packages its slide engine '
+                     'needs.'):
+            self.assertIn(said, asked['sheet'])
+        self.assertNotIn('harness-research', asked['sheet'])
+        self.assertEqual((asked['focus'], asked['inert'], asked['posts']),
+                         ('sheet', ['sidebar', 'toolbar', 'main'], 0))
+        self.assertEqual((shots['cancelled']['sheet'], shots['cancelled']['posts']), ('', 0))
+
+        self.assertIn(down + ' Nothing was changed.', shots['refused']['sheet'])
+        done = shots['updating']
+        self.assertEqual(self.posts(result), [('/api/companions', {}), ('/api/companions', {})])
+        self.assertEqual(done['sheet'], '')
+        self.assertIn('Updating the skills. The Status screen says how it goes.',
+                      done['toasts'])
+        self.assertIn('Bringing harness-slides. This can take a few minutes.', done['text'])
+        self.assertNotIn('Update the skills', done['buttons'], 'one update at a time')
+
+    def test_home_says_nothing_when_everything_is_as_it_should_be(self):
+        self.started()
+        fine = kept(companions=[], update={'offered': False, 'state': None, 'since': None,
+                                           'says': None},
+                    releases={'on': True, 'at': None, 'problem': None, 'newer': []})
+        result = self.run_page(self.answers(setup={**SET_UP, 'upkeep': fine}),
+                               [{'snapshot': 'home'}])
+        self.assertNotIn('Updates', result['snapshots']['home']['text'])
+
+    def test_status_says_what_was_found_put_back_and_looked_for(self):
+        self.started()
+        failed = 'The last look for newer releases did not reach harness-slides (Could not ' \
+                 'resolve host: github.com). It is tried again in a day.'
+        found = kept(releases={'on': True, 'at': '2026-10-14T09:00:00Z', 'problem': failed,
+                               'newer': []},
+                     update={'offered': False, 'state': 'failed', 'since': None,
+                             'says': 'harness-slides 0.13.1 was not installed: its installer '
+                                     'needs Node 20 or newer.'})
+        answers = self.answers(**{'GET /api/setup': [ok({**SET_UP, 'upkeep': found})],
+                                  'GET /api/status': [ok({'limit': 2, 'runs': [],
+                                                          'elsewhere': [], 'background': None,
+                                                          'upkeep': found})]})
+        result = self.run_page(answers, [{'click': 'Status'}, {'snapshot': 'status'}])
+        text = result['snapshots']['status']['text']
+        for said in ('Training Studio and its skills',
+                     'Training Studio 0.18.0. New trainings follow the guidance from revision '
+                     'abcdef012345 of main, the newest when guidance was last fetched.',
+                     'The link for Claude Code was missing, and was put back: '
+                     '/Users/pat/.claude/skills/training-studio.',
+                     'Codex: Training Studio is linked.',
+                     'The link to the installed version was missing, and was put back: '
+                     '/Users/pat/.local/share/training-studio/current.',
+                     'harness-research 0.8.0, for Claude Code and Codex.',
+                     'harness-slides is not installed for Codex',
+                     'harness-slides 0.13.1 was not installed: its installer needs Node 20 or '
+                     'newer.', failed):
+            self.assertIn(said, text)
+        self.assertEqual(text.count('The link for Claude Code was missing'), 1)
+        self.assertNotIn('Update the skills', result['snapshots']['status']['buttons'],
+                         'not offered: the runner said so')
+
+        off = kept(releases={'on': False, 'at': None, 'problem': None, 'newer': []})
+        result = self.run_page(self.answers(setup={**SET_UP, 'upkeep': off}),
+                               [{'click': 'Status'}, {'snapshot': 'status'}])
+        shot = result['snapshots']['status']
+        self.assertIn('Looking online for newer releases is turned off, in Settings.',
+                      shot['text'])
+        self.assertIn('Update the skills', shot['buttons'])
+
+    def test_looking_online_is_switched_in_settings(self):
+        self.started()
+        says = ('Once a day, Training Studio asks where it and its two skills are kept which '
+                'releases there are, and says on Home when a newer one is out. It only reads '
+                'their names: nothing is downloaded or run, and nothing is installed without '
+                'your yes.')
+        on = {**SET_UP, 'updates': {'look': True}}
+        answers = self.answers(**{
+            'GET /api/setup': [ok(on)] * 3 + [ok({**on, 'updates': {'look': False}})],
+            'POST /api/setup': [ok({**on, 'updates': {'look': False}}),
+                                refused('The disk is full.')]})
+        result = self.run_page(answers, [
+            {'click': 'Settings'}, {'snapshot': 'on'},
+            {'click': 'Off'}, {'snapshot': 'off'},
+            {'click': 'On'}, {'snapshot': 'refused'},
+        ])
+        shots = result['snapshots']
+        whole = {'repository': WORKSPACE['repository'], 'folder': 'trainings', 'branch': 'main',
+                 'name': 'Field enablement', 'share_when': 'each-decision', 'agent': 'claude',
+                 'model': None, 'effort': None, 'limits': LIMITS}
+        self.assertEqual(self.posts(result), [('/api/setup', {**whole,
+                                                              'look_for_updates': False}),
+                                              ('/api/setup', {**whole,
+                                                              'look_for_updates': True})])
+        self.assertIn(says, shots['on']['text'])
+        self.assertIn('Look for updates once a day', shots['on']['text'])
+        self.assertIn('On', shots['on']['pressed'])
+        self.assertIn('Off', shots['off']['pressed'])
+        self.assertIn('Off. Training Studio no longer looks online for newer releases.',
+                      shots['off']['toasts'])
+        self.assertIn('The disk is full. Nothing was changed.', shots['refused']['text'])
+        self.assertIn('Off', shots['refused']['pressed'])
+
+
 MARKUP_TITLE = '<img src=x onerror=alert(1)>'
 
 

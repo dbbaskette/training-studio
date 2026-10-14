@@ -36,6 +36,28 @@ The window prints one line with a link, and opens it for you. The part of the li
 
 One runner serves on a computer at a time. The installer will not update, go back a version or remove while it is open: close it first.
 
+## Keeping it current
+
+Each time the runner starts, and each time you press "Check this computer again" on the Status screen, it checks that Training Studio and the two companion skills are in place and current. The page opens at once, and the checks run behind it.
+
+**Links it puts back.** The installer linked Training Studio into each assistant's skill folder. If one of those links has gone, the runner puts it back. It does the same for the link to the installed version and for the `studio` and `training` commands the installer wrote. It puts back only what the installer placed, where the installer placed it. Anything else in the way is left alone: a folder of your own, a link you pointed somewhere else, or an assistant's skill folder that is gone. The Status screen says what was put back and what was left.
+
+**The companion skills.** Each companion is compared with the version this Training Studio was made with. If one is missing or older, Home and the Status screen say so, with "Update the skills".
+- Nothing is fetched until you say yes. The sheet that asks says what would be brought, from where and at which revision.
+- After your yes, the runner runs the installer's own companion install from the installed version: the same pinned and checked install as [the installer's](installation.md#the-companion-skills). It runs in the background while you carry on. The Status screen says how it went.
+- It is refused while a training on this computer is working, because a step in hand keeps using the skill it started with. Pause the training, or wait until it stops for you.
+- A companion's own links belong to its own installer, so the runner does not put those back. A missing one is brought with Update instead.
+
+**Newer releases.** Once a day, the runner asks where Training Studio and each companion are kept which releases there are. It reads only their names, with `git ls-remote`, without a terminal and with a short time limit. Nothing is downloaded or run.
+- When Training Studio has a newer release, Home says so with the command that installs it. Close Training Studio before you run it.
+- A companion released after the version this Training Studio was made with arrives with Update, once a Training Studio made with it is installed.
+- A look that fails is said in one line on the Status screen, and is tried again a day later.
+- **Turning it off.** "Look for updates once a day", in Settings, is on until you turn it off. With it off, the runner asks nothing online. It still puts links back and compares the companions, since neither needs the network.
+
+**Guidance.** Guidance is still fetched from `main` when a training starts. The Status screen says which revision new trainings get.
+
+`studio status` reports the same findings as JSON, under `upkeep`. It changes nothing and asks nothing online.
+
 ## Set it up
 
 The first time, the page opens on set-up. It asks three things.
