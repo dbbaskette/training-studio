@@ -24,6 +24,7 @@ The outline is checked each time you hand it in, and with `check_outline` whenev
 - Every content slide names, under `sources`, the IDs of the blueprint objectives it serves, and nothing else. Every objective is served by at least one slide.
 - The word budget counts what will be seen on a slide: its title, its points, its caveat and its source line together. Speaker notes are not counted.
 - A cover carries a title and one subtitle line, and no more.
+- A closing slide is the brand's own last slide: a title and one subtitle line, ten words at most between them, and nothing under it. What to practise next goes on a content slide before it.
 - Nothing under the blueprint's open gaps is on a slide. A key point the blueprint marks `[unsupported]` is not taught.
 - `direction`, `layouts`, `house` and `approval` are left out. They are added after you.
 
@@ -31,6 +32,7 @@ The outline is checked each time you hand it in, and with `check_outline` whenev
 
 These are yours to get right. The person who approves the outline reads for them.
 
+- **Size the deck to the time it has.** A presenter needs about two minutes a slide. A 15-minute lesson is about 8 slides, a 30-minute one about 14, counting the cover and the closing slide. Each slide is drawn, looked at and reviewed, which costs the person time and money, so a deck that is too long is paid for twice. Combine what belongs together, and say in your notes what you left for the learner guide.
 - **Say only what the sources say.** Take every claim, name and number from the blueprint and the research findings. Add nothing of your own.
 - **The title is the claim.** Write the title of each content slide as the one thing the audience should take from it. Everything else on the slide supports that title. Leave out what the title does not announce.
 - **The focal point is what the title singles out.** It is never one of several peers. A slide that lists equals, such as the objectives or the steps of a process, has a focal that is not one of them: the idea that joins them.

@@ -180,6 +180,21 @@ Where what was built differs from the text above, the code is right and this sec
 
 - One change: the page's Content-Security-Policy is `default-src 'self'; img-src 'self' blob:`, so that a slide fetched with the key in its header can be shown from memory. Nothing else in the policy changed.
 
+## What the first real run showed
+
+Run on 2026-10-13, through the page in a browser, on Claude Code, with the slides tool at 0.13.1 and a brand skill at 0.13.1, previews through Google Drive.
+
+- **A training with a deck ran from the form to the deck's gate with no conversation.** The outline, two sections drawn side by side, a review, one repair round of both sections, a second review, and the deck saved as PowerPoint in the brand's template. The whole training cost $8.73 as Claude Code reported it, of which the deck was about $4.60.
+- **The outline's gate earned its place.** The first outline was 18 slides for a 15-minute lesson. Asked on the page to cut it to eight, the worker did, and said what the cut cost: the recap, the worked examples and the misconceptions moved to speaker notes.
+- **The deck's gate did not flatter the deck.** It showed one critical, one major and seventeen minor findings, each with its slide, with every slide as a picture made from the file being decided on. The critical one was real: the closing slide had a title and an empty body.
+
+Put right because of it:
+
+- The outline writer is told to size a deck to the time it has, about two minutes a slide.
+- A closing slide is the brand's own last slide, which has no body: the runner now holds it to a title and one subtitle line of a few words, and the handoff asks for what to practise next on a drawn content slide before it. A slide the runner makes itself is one no repair round can reach.
+
+Not run for real: a deck as Google Slides, a deck for a training with levels, LibreOffice previews, a second repair round, and a deck on Codex.
+
 ## Appendix: what the page asks the runner
 
 Additions to the earlier contracts. Everything there stands.

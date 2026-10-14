@@ -182,6 +182,22 @@ class RuleTests(JobCase):
                            ({**MAJOR, 'about': 'taste'}, '`about` is one of: drawing')):
             self.assertIn(why, deck.checked(wrong, slides)[1])
 
+    def test_a_closing_slide_holds_a_few_words_and_nothing_to_read(self):
+        blueprint = BLUEPRINT
+        import checks
+        objectives = list(checks.parse_blueprint(blueprint)['objectives'])
+        content = {'id': 'what-it-is', 'kind': 'content', 'title': 'What it is',
+                   'sources': objectives}
+        long = {'id': 'closing-practice', 'kind': 'closing',
+                'title': 'Practice next: probe-quiz, probe-design and manifest-review, in '
+                         'that order, with a partner'}
+        short = {'id': 'closing-practice', 'kind': 'closing', 'title': 'Thank you',
+                 'subtitle': 'Now practise'}
+        told = deck.rules({'slides': [content, long]}, blueprint)
+        self.assertTrue(any('closing slide is the brand' in problem and
+                            'content slide before it' in problem for problem in told), told)
+        self.assertEqual(deck.rules({'slides': [content, short]}, blueprint), [])
+
     def test_the_handoff_has_the_headings_the_skill_gives_it(self):
         text = deck.handoff('Rolling restarts', '301', BLUEPRINT, {}, 'google',
                             ('example-co', 'light'), True, ['main'])
@@ -191,7 +207,7 @@ class RuleTests(JobCase):
             '## Research', '## Output'])
         for told in ('- Describe what a rolling restart does (O1)', 'Duration: 25 min',
                      'no slide may depend on its speaker notes', 'M1, Rolling restarts',
-                     'points to the practice scenarios: main.',
+                     'says what to practise next: main, then a closing slide.',
                      'The blueprint, the learner guide and the research findings.',
                      "Anything under the blueprint's open gaps stays out.",
                      'Google Slides, in the brand example-co (light).'):

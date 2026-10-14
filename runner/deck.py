@@ -55,6 +55,7 @@ KINDS = ('cover', 'section', 'content', 'closing')
 LEADS = ('cover', 'section', 'closing')
 LATER = ('direction', 'layouts', 'house', 'approval')
 COVER = ('id', 'kind', 'title', 'subtitle', 'notes')
+CLOSING_WORDS = 10      # words a closing slide's title and subtitle may hold between them
 NAMED = {'cover': ('title', 'cover'), 'section': ('section', 'divider'),
          'closing': ('closing', 'thank', 'end')}
 SEVERITIES = ('critical', 'major', 'minor')
@@ -119,8 +120,9 @@ def handoff(title: str, level: str | None, blueprint: str, said: dict, target: s
     modules = '; '.join(f"{ident}, {module['title']}"
                         for ident, module in parsed['modules'].items())
     closing = ('A closing slide.' if scenarios is None else
-               'A closing slide that points to the practice scenarios'
-               + (': ' + ', '.join(scenarios) if scenarios else '') + '.')
+               'A last content slide that says what to practise next'
+               + (': ' + ', '.join(scenarios) if scenarios else '')
+               + ', then a closing slide.')
     made = {'google': 'Google Slides', 'pptx': 'PowerPoint'}.get(target, 'not chosen')
     lines = [f'# Deck handoff: {title}' + (f', level {level}' if level else ''), '',
              'Written by the runner from the record of this training. It is written again '
@@ -221,6 +223,16 @@ def rules(outline, blueprint: str, budget: int | None = None) -> list[str]:
                                 'and no more. Leave out ' + ', '.join(extra) + '.')
             if '\n' in str(slide.get('subtitle') or '').strip():
                 problems.append(f'{ident}: the subtitle of a cover is one line.')
+        if kind == 'closing':
+            # A closing slide is the template's own, with room for a few words and no body.
+            said = f"{slide.get('title') or ''} {slide.get('subtitle') or ''}".split()
+            extra = sorted(key for key in slide if key not in COVER)
+            if extra or len(said) > CLOSING_WORDS:
+                problems.append(f'{ident}: a closing slide is the brand\'s own last slide: a '
+                                f'title and one subtitle line, {CLOSING_WORDS} words at most '
+                                'between them, and nothing drawn under it. Put anything the '
+                                'audience should read, such as what to practise next, on a '
+                                'content slide before it.')
         if kind == 'content':
             sources = slide.get('sources')
             sources = sources if isinstance(sources, list) else []
