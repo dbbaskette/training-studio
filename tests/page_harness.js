@@ -6,10 +6,11 @@
 //                                        steps, and prints what was on the page at each one
 //
 // A step is one of: {snapshot: name}, {click: the name of a control}, {fill: the label of a
-// box, value: what is typed}, {type: text} for the note in the sheet, {poll: true} for the
-// page's own refresh, {key: 'Escape'}, and {attach: the label of a file picker, files: what
-// is chosen in it}. A box that is filled is left as a person leaves it, unless the step says
-// {stay: true}: then they are still typing in it. A chosen file is {name, text} or {name,
+// box, value: what is typed}, {type: text} for the note in the sheet, {enter: the label of a
+// box} for Enter pressed in it, {poll: true} for the page's own refresh, {key: 'Escape'},
+// {notification: which one} for a click on a notification the page showed, and {attach: the
+// label of a file picker, files: what is chosen in it}. A box that is filled is left as a
+// person leaves it, unless the step says {stay: true}: then they are still typing in it. A chosen file is {name, text} or {name,
 // bytes}; {size} says how large it claims to be, for one too large to write out here.
 //
 // An answer may be a picture: {status: 200, picture: its bytes in base64}. The page keeps
@@ -31,6 +32,8 @@ const PAGE = path.join(__dirname, '..', 'skills', 'training-studio', 'scripts', 
 const NATIVE = ['BUTTON', 'A', 'SUMMARY', 'INPUT', 'TEXTAREA', 'SELECT'];
 const report = { errors: [], requests: [], notifications: [], strayListeners: [], paces: [],
   released: [] };
+// Each notification the page showed, to be clicked by a step.
+const shown = [];
 // The pictures the page holds in memory: the address it made up for each, and what it is of.
 const kept = new Map();
 const watchers = [];
@@ -90,6 +93,7 @@ class FakeElement extends FakeNode {
     this.hidden = false;
     this.off = false;
     this.readOnly = false;
+    this.inert = false;
     this.open = false;
     this.value = '';
     const owner = this;
@@ -211,10 +215,16 @@ class FakeElement extends FakeNode {
     for (const listener of this.listeners[type] || []) listener(event);
   }
 
+  // Behind an inert part of the page, as everything is behind an open sheet.
+  get behind() {
+    for (let at = this; at; at = at.parentNode) if (at.inert) return true;
+    return false;
+  }
+
   // What a click, or Enter or Space on a native control, does. The control has the focus,
-  // as it does for anyone who reached it with the keyboard.
+  // as it does for anyone who reached it with the keyboard. Nothing inert can be reached.
   click() {
-    if (this.disabled) return;
+    if (this.disabled || this.behind) return;
     document.activeElement = this;
     const event = { target: this, preventDefault() {} };
     this.dispatch('click', event);
@@ -425,6 +435,7 @@ function snapshot() {
   return {
     title: document.title,
     heading: document.getElementById('title').textContent,
+    tip: document.getElementById('title').title || '',
     text: words(document.body).replace(/\n+/g, '\n'),
     buttons: controls.filter((node) => node.tagName !== 'A' && visible(node)).map(name),
     filled: document.body.querySelectorAll('.button-filled').filter(visible).map(name),
@@ -460,6 +471,7 @@ function snapshot() {
       .filter((node) => node.getAttribute('aria-pressed') === 'true').map(name),
     working: document.body.querySelectorAll('.working').filter(visible).length,
     sidebar: !document.getElementById('sidebar').hidden,
+    inert: document.body.all().filter((node) => node.inert).map((node) => node.id),
     pace: report.paces[report.paces.length - 1] || 0,
   };
 }
@@ -481,6 +493,22 @@ class FileReader {
       if (this.onload) this.onload();
     });
   }
+}
+
+// Enter in a box. In a single line of a form it does what a browser does: it clicks the
+// form's first submit button, unless that is switched off, and the form is sent. The focus
+// stays in the box. In a textarea Enter starts a new line, and nothing is sent.
+function enter(held) {
+  held.focus();
+  if (held.tagName !== 'INPUT') return;
+  let form = held.parentNode;
+  while (form && form.tagName !== 'FORM') form = form.parentNode;
+  const first = form ? form.all().find((node) => node.tagName === 'BUTTON'
+    && node.type === 'submit') : null;
+  if (!first || first.disabled || first.behind) return;
+  const event = { target: first, preventDefault() {} };
+  first.dispatch('click', event);
+  form.dispatch('submit', event);
 }
 
 function control(label) {
@@ -526,6 +554,12 @@ async function app(file) {
   class Notification {
     constructor(title, options) {
       report.notifications.push({ title, body: options && options.body });
+      this.onclick = null;
+      shown.push(this);
+    }
+
+    close() {
+      report.notifications[shown.indexOf(this)].closed = true;
     }
 
     static requestPermission() {
@@ -603,7 +637,13 @@ async function app(file) {
     try {
       if (step.snapshot) shots[step.snapshot] = snapshot();
       if (step.click) control(step.click).click();
-      if (step.type !== undefined) document.getElementById('note-text').value = step.type;
+      if (step.type !== undefined) {
+        const held = document.getElementById('note-text');
+        held.value = step.type;
+        held.dispatch('input', { target: held });
+      }
+      if (step.enter !== undefined) enter(box(step.enter));
+      if (step.notification !== undefined) shown[step.notification].onclick({});
       if (step.fill !== undefined) {
         const held = box(step.fill);
         held.focus();

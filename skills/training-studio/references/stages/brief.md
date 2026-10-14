@@ -39,10 +39,10 @@ Keep it to what someone can scan before a meeting. Detail that teaches belongs i
 
 ## Gate 5
 
-Save with `training.py save brief --built` the first time and `--from <file>` after that. Run `training.py check`, fix what fails, and present the gate as the gates reference describes. Say where the brief is weakest.
+Save the first version with `training.py save brief --built`. Run `training.py check`, fix what fails, and present the gate as the gates reference describes. Say where the brief is weakest.
 
 On approval:
 
 1. `training.py approve brief`.
-2. Make the copies `training.py status` asks for, as the workspace reference describes: a push if `google_docs` lists `brief`, a Word copy and `training.py export brief` if `exports` does. With Yoodli on, the brief's copy is the file the user uploads: its Google Doc when `google` is kept, otherwise a Word copy, which `exports` then lists whatever was chosen. Without one the Yoodli handoff is incomplete. Tell the user. If a Google Doc cannot be made, ask whether to drop `google`.
+2. Make the copies `training.py status` asks for, as the workspace reference describes: `training.py google push brief` if `google_docs` lists `brief`; a Word copy, then `training.py export brief`, if `exports` does. With Yoodli on, that reference also says which copy the user uploads.
 3. `training.py checkpoint --no-question --stage deck --next "Hand the deck to harness-slides"`.

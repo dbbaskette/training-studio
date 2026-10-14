@@ -1492,7 +1492,7 @@ class PageFileTests(unittest.TestCase):
         self.assertIn('<nav id="sidebar" class="sidebar glass" aria-label="Screens">', page)
         self.assertIn('id="notice" class="notice" role="alert"', page)
         self.assertIn('id="toasts" class="toasts" role="status" aria-live="polite"', page)
-        self.assertIn('id="sheet" class="sheet glass" role="dialog" '
+        self.assertIn('id="sheet" class="sheet glass" role="dialog" aria-modal="true" '
                       'aria-labelledby="sheet-title"', page)
         self.assertEqual(len(re.findall(r'<h1\b', page)), 1)
         self.assertNotRegex(page, r'tabindex="[1-9]')
@@ -1864,10 +1864,13 @@ class PageScriptTests(ScriptedPage, PageCase):
             {'click': 'Review the learner guide'}, {'snapshot': 'gate'},
             {'click': 'What changed'}, {'snapshot': 'changes'},
             {'click': 'Ask for changes'}, {'snapshot': 'form'},
+            {'click': 'Trainings'}, {'snapshot': 'held'},
             {'click': 'Send for changes'}, {'snapshot': 'refused'},
-            {'type': '  Shorten the opening.  '}, {'click': 'Send for changes'},
-            {'snapshot': 'done'},
+            {'type': '  Shorten the opening.  '}, {'key': 'Escape'}, {'snapshot': 'put away'},
+            {'click': 'Ask for changes'}, {'snapshot': 'again'},
+            {'click': 'Send for changes'}, {'snapshot': 'done'},
             {'click': 'Stay here'}, {'snapshot': 'after'},
+            {'click': 'Ask for changes'}, {'snapshot': 'sent'}, {'key': 'Escape'},
             {'click': 'Rolling restarts'}, {'snapshot': 'training'},
             {'click': 'Trainings'}, {'snapshot': 'trainings'},
         ])
@@ -1898,6 +1901,11 @@ class PageScriptTests(ScriptedPage, PageCase):
                       "A rolling restart replaces an app's instances one batch at a time"):
             self.assertIn(shown, gate_shot['text'])
         self.assertNotIn('covers: O1', gate_shot['text'])
+        # The document is read first, then the review: in one column that is the order shown.
+        self.assertLess(gate_shot['text'].index("A rolling restart replaces an app's instances"),
+                        gate_shot['text'].index('Checked for you'))
+        self.assertEqual(gate_shot['tip'], 'The learner guide')
+        self.assertEqual(gate_shot['inert'], [])
         self.assertEqual(gate_shot['buttons'][1:6], ['Trainings', 'Status', 'Settings', 'Back',
                                                      'Rolling restarts'])
         self.assertEqual(gate_shot['buttons'][6:9], ['Ask for changes', 'More', 'Approve'])
@@ -1915,10 +1923,23 @@ class PageScriptTests(ScriptedPage, PageCase):
         self.assertIn('What should change?', shots['form']['sheet'])
         self.assertNotIn('Approve', shots['form']['buttons'])
         self.assertNotIn('Say what should change first.', shots['form']['sheet'])
+        # The sheet is modal: everything behind it is inert, and a click there does nothing.
+        self.assertEqual(shots['form']['inert'], ['sidebar', 'toolbar', 'main'])
+        self.assertEqual((shots['held']['heading'], shots['held']['current']),
+                         ('The learner guide', ['Trainings']))
+        self.assertIn('What should change?', shots['held']['sheet'])
 
         # A missing note is refused beside the control, and nothing is sent.
         self.assertIn('Say what should change first.', shots['refused']['sheet'])
         self.assertEqual(shots['refused']['focus'], 'note-text')
+        # Put away, the sheet takes nothing with it: the note is there when it is opened again.
+        self.assertEqual((shots['put away']['sheet'], shots['put away']['inert']), ('', []))
+        self.assertEqual(shots['put away']['focus'], 'Ask for changes')
+        self.assertEqual(shots['again']['fields'], {'What should change?':
+                                                    '  Shorten the opening.  '})
+        self.assertEqual(shots['again']['focus'], 'note-text')
+        # Once it is sent, it is not offered again.
+        self.assertEqual(shots['sent']['fields'], {'What should change?': ''})
         posts = [request for request in result['requests'] if request['method'] == 'POST']
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0]['address'], '/api/decide')
@@ -2037,16 +2058,22 @@ class PageScriptTests(ScriptedPage, PageCase):
                                              sentence='Drafting the blueprint.')
         quiet['body']['needs'] = 0
         result_of_check = self.ComputerLook.result
-        answers = {'GET /api/trainings': [quiet, self.read('trainings')],
+        renamed = self.read('trainings')
+        renamed['body']['trainings'][0]['title'] = 'Rolling restarts, renamed'
+        answers = {'GET /api/trainings': [quiet, self.read('trainings'), renamed],
                    'GET /api/computer': [self.read('computer')],
                    'POST /api/computer': [{'status': 200, 'body': {'computer': result_of_check}}],
-                   'POST /api/approval': [{'status': 409, 'body': {'error': 'Not now.'}}]}
+                   'POST /api/approval': [{'status': 409, 'body': {'error': 'Not now.'}}],
+                   'GET /api/gate': [self.read('gate', path=str(self.root),
+                                               artifact='blueprint')]}
         result = self.run_page(answers, [
             {'snapshot': 'quiet'}, {'poll': True}, {'snapshot': 'needed'},
             {'click': 'Status'}, {'snapshot': 'status'},
             {'click': 'Check this computer'}, {'snapshot': 'checked'},
             {'click': 'Settings'}, {'snapshot': 'settings'},
             {'click': 'In the conversation'}, {'snapshot': 'refused'},
+            {'poll': True}, {'snapshot': 'still refused'},
+            {'notification': 0}, {'snapshot': 'opened'},
         ], notifications='granted')
         shots = result['snapshots']
         self.assertIn('Nothing needs you right now.', shots['quiet']['text'])
@@ -2056,7 +2083,7 @@ class PageScriptTests(ScriptedPage, PageCase):
                          ('(1) Training Studio', '1 thing needs you'))
         said = 'Rolling restarts: The blueprint is waiting for your review.'
         self.assertEqual(result['notifications'],
-                         [{'title': 'Training Studio needs you', 'body': said}])
+                         [{'title': 'Training Studio needs you', 'body': said, 'closed': True}])
         self.assertEqual(shots['needed']['toasts'], [said])
 
         status = shots['status']
@@ -2080,9 +2107,20 @@ class PageScriptTests(ScriptedPage, PageCase):
                       'Where each training is decided', 'Nothing you read or decide here is '
                       'sent anywhere else.'):
             self.assertIn(shown, settings['text'])
-        # The thumb slides back when the answer is no, and the reason is said.
+        # The thumb slides back when the answer is no, and the reason is said beside it. It
+        # stays there, where a toast would have gone by itself.
         self.assertEqual(shots['refused']['pressed'], ['On this page'])
-        self.assertIn('Not now.', shots['refused']['toasts'])
+        self.assertIn('Rolling restarts\nIn the conversation\nOn this page\nNot now.',
+                      shots['refused']['text'])
+        self.assertNotIn('Not now.', shots['refused']['toasts'])
+        # Drawn again, because something changed, it still says why.
+        self.assertIn('Rolling restarts, renamed\nIn the conversation\nOn this page\nNot now.',
+                      shots['still refused']['text'])
+
+        # A notification that is clicked opens what it was about.
+        opened = shots['opened']
+        self.assertEqual((opened['heading'], opened['filled']), ('The blueprint', ['Approve']))
+        self.assertNotIn('Not now.', opened['text'])
 
     class ComputerLook:
         result = {'checked_at': '2030-01-02T03:04:05Z', 'ready': False,
@@ -2100,6 +2138,67 @@ class PageScriptTests(ScriptedPage, PageCase):
                       computer.item('pandoc', 'pandoc', 'missing', [
                           computer.fact('Installed', 'problem', 'not found')], 'Optional.',
                           optional=True)]}
+
+    def test_a_stage_that_cannot_be_brought_back_says_why_beside_its_button(self):
+        self.at_the_blueprint_gate()
+        self.decide('skip', 'deck', note='Not needed')
+        detail = self.read('training', path=str(self.root))
+        renamed = self.read('training', path=str(self.root))
+        renamed['body']['title'] = 'Rolling restarts, renamed'
+        answers = {'GET /api/trainings': [self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')],
+                   'GET /api/training': [detail, renamed],
+                   'POST /api/decide': [{'status': 409, 'body': {'error': 'Not now.'}}]}
+        result = self.run_page(answers, [
+            {'click': 'Trainings'}, {'click': 'Open Rolling restarts'}, {'snapshot': 'left out'},
+            {'click': 'Bring it back: The deck stage'}, {'snapshot': 'refused'},
+            {'poll': True}, {'snapshot': 'drawn again'},
+        ])
+        shots = result['snapshots']
+        self.assertNotIn('Not now.', shots['left out']['text'])
+        refused = shots['refused']
+        self.assertIn('The deck stage\nNot now.', refused['text'])
+        self.assertEqual(refused['toasts'], [])
+        self.assertEqual(refused['focus'], 'Bring it back: The deck stage')
+        # Drawn again, because something changed, it still says why.
+        again = shots['drawn again']
+        self.assertEqual(again['heading'], 'Rolling restarts, renamed')
+        self.assertIn('The deck stage\nNot now.', again['text'])
+
+    def test_what_cannot_be_opened_says_why_and_what_changes_waits_to_be_shown(self):
+        self.at_the_blueprint_gate()
+        gate = {'path': str(self.root), 'artifact': 'blueprint'}
+        first = self.read('gate', **gate)
+        newer = self.read('gate', **gate)
+        newer['body']['sha256'] = 'a' * 64
+        missing = {'status': 409, 'body': {'error': 'Its record cannot be read.'}}
+        answers = {'GET /api/trainings': [self.read('trainings')],
+                   'GET /api/computer': [self.read('computer')],
+                   'GET /api/gate': [missing, first, newer],
+                   'GET /api/training': [missing]}
+        result = self.run_page(answers, [
+            {'click': 'Review the blueprint'}, {'snapshot': 'no gate'},
+            {'click': 'Back to home'}, {'click': 'Trainings'},
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'no training'},
+            {'click': 'Back to home'}, {'click': 'Review the blueprint'}, {'snapshot': 'gate'},
+            {'poll': True}, {'snapshot': 'changed'},
+            {'click': 'Show the new version'}, {'snapshot': 'shown'},
+        ])
+        shots = result['snapshots']
+        for name in ('no gate', 'no training'):
+            shot = shots[name]
+            self.assertEqual((shot['heading'], shot['filled']),
+                             ('This cannot be opened', ['Back to home']))
+            self.assertIn('Its record cannot be read.', shot['text'])
+            self.assertIn('Back', shot['buttons'])
+        self.assertEqual(shots['gate']['filled'], ['Approve'])
+        # What changed under the reader is never swapped in: they say when to see it.
+        changed = shots['changed']
+        self.assertEqual(changed['filled'], ['Show the new version'])
+        self.assertIn('This changed while you had it open.', changed['text'])
+        self.assertNotIn('Approve', changed['buttons'])
+        self.assertEqual(shots['shown']['filled'], ['Approve'])
+        self.assertNotIn('This changed while you had it open.', shots['shown']['text'])
 
     def test_no_trainings_is_an_invitation_and_a_link_without_its_key_says_so(self):
         answers = {'GET /api/trainings': [self.read('trainings')],
@@ -2590,7 +2689,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             {'fill': name, 'value': 'Field training'},
             {'click': 'Save and go on'}, {'snapshot': 'refused'},
             {'fill': name, 'value': 'field-training'}, {'snapshot': 'put right'},
-            {'click': 'Save and go on'}, {'snapshot': 'saved'},
+            {'enter': name}, {'snapshot': 'saved'},
         ])
         shots = result['snapshots']
         # A box that is being put right no longer says it is wrong.
@@ -2607,6 +2706,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertEqual([address for address, _ in self.posts(result)],
                          ['/api/setup/check', '/api/setup'])
         self.assertEqual(self.posts(result)[1][1]['name'], 'field-training')
+        # Enter in a box saves, as the filled button does.
         self.assertEqual(shots['saved']['heading'], 'Home')
 
     def test_a_new_training_takes_three_steps_and_lands_on_its_run(self):
@@ -2625,7 +2725,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         result = self.run_page(answers, [
             {'snapshot': 'home'},
             {'click': 'New training'}, {'snapshot': 'one'},
-            {'click': 'Continue'}, {'snapshot': 'missing'},
+            {'enter': 'A short title'}, {'snapshot': 'missing'},
             {'fill': 'A short title', 'value': 'Rolling restarts'},
             {'fill': 'What should it teach?', 'value': 'How a rolling restart works.'},
             {'fill': 'Who is it for?', 'value': 'Platform engineers new to it.'},
@@ -2633,8 +2733,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             {'click': 'Continue'}, {'snapshot': 'two'},
             {'click': '301'}, {'click': 'A comparison'}, {'click': 'Google Slides'},
             {'fill': 'The brand’s variant', 'value': 'dark'}, {'click': 'Google Docs'},
-            {'fill': 'How long it should take', 'value': '30 minutes'},
-            {'click': 'Continue'}, {'snapshot': 'three'},
+            {'fill': 'How long it should take', 'value': '30 minutes', 'stay': True},
+            {'enter': 'How long it should take'}, {'snapshot': 'three'},
             {'click': 'Back a step'}, {'snapshot': 'kept'},
             {'click': 'Continue'}, {'click': 'Start the training'}, {'snapshot': 'run'},
         ])
@@ -2648,6 +2748,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                           ['Continue'], ['Trainings']))
         self.assertIn('New training · Step 1 of 3', one['text'])
         self.assertEqual(one['pressed'], ['Field enablement'])
+        # Enter in a box goes on as the filled button does, and is refused beside each box.
         missing = shots['missing']
         self.assertEqual(missing['invalid'], ['A short title', 'What should it teach?',
                                               'Who is it for?'])
@@ -2670,6 +2771,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         three = shots['three']
         self.assertEqual((three['heading'], three['filled']),
                          ('The sources, the agent and the limits', ['Start the training']))
+        # The way back comes before the way on, as it is read.
+        self.assertEqual(three['buttons'][-2:], ['Back a step', 'Start the training'])
         for shown in ('The public web: it searches for pages anyone can read', 'Claude Code',
                       'A step may take up to 15 minutes.',
                       'It starts at once and works on its own. It stops and asks for your '
@@ -3905,6 +4008,9 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             self.assertIn(shown, gate['text'])
         order = [gate['text'].index(slide['title']) for slide in SAID[1:]]
         self.assertEqual(order, sorted(order))
+        # The words come first, then the review, as at any gate.
+        self.assertLess(gate['text'].index('4 slides, in order'),
+                        gate['text'].index('Checked for you'))
         # The notes are there to open, and not in the way.
         self.assertIn('Speaker notes for slide 2', gate['buttons'])
         self.assertNotIn(NOTES, gate['text'].split('Speaker notes for slide 2')[0])
