@@ -14,7 +14,7 @@ The helper refuses `approve` and `skip` from you, apart from `approve intake` an
 1. Present the gate as the gates reference says, starting what you append to the review with a `## Review` heading, and record `checkpoint --gate <artifact>`.
 2. Tell the user to decide on the page. Do not ask for approval in chat, and a yes in chat is not one.
 3. When they return, or on resume, read `status`:
-   - the artifact is `approved`, or its stage skipped: carry on;
+   - the artifact is `approved`, or its stage skipped: carry on from `stage` and `next_step`;
    - `requests` names it: `revise` means make the change in its note, `rebuild` means build it again. Save with `--built` or `--from`, then present again.
 
 Never edit `session.json` or a review to stand in for the user's decision. `training.py checkpoint --approval page` moves approval to the page; only the page moves it back.

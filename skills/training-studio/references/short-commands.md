@@ -12,7 +12,7 @@
 | "no Yoodli" | `training.py skip yoodli --reason "<their reason>"` |
 | "use Google Slides", "use PowerPoint" | `training.py checkpoint --deck-target google`, or `pptx` |
 | "make it a competitive brief" | `training.py checkpoint --brief-kind competitive`, then rebuild the brief |
-| "add level 301" | `training.py checkpoint --levels 101,301`, then read the levels reference |
+| "add level 301" | `training.py checkpoint --add-level 301`, then read the levels reference |
 | "add a scenario" | Read the scenario stage reference |
 | "more research on X" | The top-up in the research-handoff reference |
 | "what changed", "restore the earlier one" | History, in the workspace reference |

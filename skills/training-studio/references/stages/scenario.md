@@ -32,11 +32,6 @@ The `practice` report in `check` lists which objectives the scenarios exercise, 
 
 Present each scenario as the gates reference describes: whose file it is, its mode, its success criteria, and your judgment of whether the brief supports what it asks of the learner.
 
-On approval: `training.py approve scenario:<id>` for each.
-
-Then look at `settings.stages` in `training.py status`:
-
-- **`yoodli` is listed:** `training.py checkpoint --no-question --stage yoodli --next "Build the Yoodli scenarios"`, and read the Yoodli stage reference.
-- **It is not:** `training.py checkpoint --no-question --stage package --next "Write the index"`. With levels, use the checkpoint in the levels reference: another level may remain.
+On approval: `training.py approve scenario:<id>` for each. The last one moves the training on, to `yoodli` if it is on; read the reference for the new `stage`.
 
 Yoodli scenarios are optional and off unless the user asked for them. Do not offer to build them at every gate. If the user asks, `training.py skip yoodli --clear` turns the stage on.

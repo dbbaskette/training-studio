@@ -45,4 +45,3 @@ On approval:
 
 1. `training.py approve brief`.
 2. Make the copies `training.py status` asks for, as the workspace reference describes: `training.py google push brief` if `google_docs` lists `brief`; a Word copy, then `training.py export brief`, if `exports` does. With Yoodli on, that reference also says which copy the user uploads.
-3. `training.py checkpoint --no-question --stage deck --next "Hand the deck to harness-slides"`.

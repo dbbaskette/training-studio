@@ -256,6 +256,8 @@ class PlainLevelTests(PlainCase):
     def test_row_45_a_plain_training_cannot_gain_levels(self):
         with self.assertRaisesRegex(WorkspaceError, 'plain training'):
             workspace.checkpoint(self.root, levels=['101'])
+        with self.assertRaisesRegex(WorkspaceError, 'plain training'):
+            workspace.checkpoint(self.root, add_levels=['101'])
 
 
 class SaveTests(PlainCase):
@@ -1019,8 +1021,9 @@ class DecisionTests(PlainCase):
                 outcome = workspace.decide(self.root, 'document', decision, note, by='page')
                 report = workspace.status(self.root)
                 self.assertEqual((report['pending_question'], report['gate']), (None, None))
-                self.assertEqual((report['next_step'], outcome['next_step']),
-                                 (sentence, sentence))
+                self.assertEqual(outcome['said'], sentence)
+                ahead = 'Write the brief' if decision == 'approve' else sentence  # row 99
+                self.assertEqual((report['next_step'], outcome['next_step']), (ahead, ahead))
 
     def test_row_88_a_long_note_is_whole_in_the_request_and_short_in_the_sentence(self):
         self.at_the_document_gate()
@@ -1052,8 +1055,7 @@ class DecisionTests(PlainCase):
         self.at_the_document_gate(approval='chat')
         workspace.decide(self.root, 'document', 'approve')
         self.assertIn('## Decision: approved in the conversation, ', self.review())
-        self.assertEqual(workspace.status(self.root)['next_step'],
-                         'The learner guide was approved in the conversation.')
+        self.assertEqual(workspace.status(self.root)['next_step'], 'Write the brief')
 
     @unittest.skipUnless(hasattr(os, 'symlink'), 'needs symbolic links')
     def test_row_89_a_review_is_never_written_through_a_link(self):
@@ -1179,3 +1181,189 @@ class LevelCheckpointTests(LevelCase):
         self.assertEqual(workspace.status(self.root)['level'], '301')
         with self.assertRaisesRegex(WorkspaceError, '101, 301'):
             workspace.checkpoint(self.root, level='201')
+
+
+class MoveOnTests(PlainCase):
+    """Approving moves the training on (matrix rows 99 to 104)."""
+
+    def decided(self, *names: str) -> dict:
+        """Build each named artifact and approve it as the user would, in order."""
+        outcome = {}
+        for name in names:
+            self.build(name)
+            outcome = workspace.decide(self.root, name, 'approve')
+        return outcome
+
+    def where(self) -> tuple:
+        report = workspace.status(self.root)
+        return report['stage'], report['level'], report['next_step']
+
+    def test_row_99_approving_moves_the_training_to_its_next_stage(self):
+        for name, stage, step in (
+                ('intake', 'research-plan', 'Draft the research questions'),
+                ('research-plan', 'research', 'Run the research'),
+                ('research', 'blueprint', 'Draft the blueprint'),
+                ('blueprint', 'document', 'Write the learner guide'),
+                ('document', 'brief', 'Write the brief'),
+                ('brief', 'deck', 'Hand the deck to harness-slides'),
+                ('deck', 'scenario', 'Prepare the scenarios'),
+                ('scenario:main', 'yoodli', 'Build the Yoodli scenarios'),
+                ('yoodli:main', 'package', 'Write the index')):
+            with self.subTest(name):
+                outcome = self.decided(name)
+                self.assertEqual(self.where(), (stage, None, step))
+                self.assertEqual(outcome['next_step'], step)
+                self.assertEqual(outcome['said'], workspace.sentence(
+                    f'{workspace.label(name)} was approved in the conversation.'))
+
+    def test_row_99_skipped_unavailable_and_finished_stages_are_passed_over(self):
+        self.decided(*CHAIN[:-1])
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
+        workspace.skip(self.root, 'deck', reason='No slides')
+        workspace.skip(self.root, 'scenario', reason='No scenarios yet', unavailable=True)
+        self.approved('brief')
+        self.assertEqual(self.where()[:2], ('document', None))
+        self.decided('document')
+        self.assertEqual(self.where(), ('package', None, 'Write the index'))
+
+    def test_row_99_accepting_as_it_is_moves_on_too(self):
+        self.decided(*CHAIN[:-1])
+        self.build('document')
+        self.write('blueprint.md', helpers.CONTENT['blueprint'] + 'edited\n')
+        workspace.approve(self.root, 'blueprint')
+        workspace.decide(self.root, 'document', 'accept', 'Wording only')
+        self.assertEqual(self.where(), ('brief', None, 'Write the brief'))
+
+    def test_row_100_a_stage_with_more_to_approve_stays_where_it_is(self):
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
+        self.decided(*CHAIN, 'brief', 'deck')
+        self.write('scenarios/exec-cost.md', 'scenario:exec-cost v1\n')
+        outcome = self.decided('scenario:main')
+        expected = ('The practice scenario was approved in the conversation. Still to do at '
+                    'this stage: the practice scenario "exec-cost".')
+        self.assertEqual(self.where(), ('scenario', None, expected))
+        self.assertEqual(outcome['next_step'], expected)
+        self.decided('scenario:exec-cost')
+        self.assertEqual(self.where(), ('package', None, 'Write the index'))
+
+    def test_row_102_approving_an_earlier_artifact_again_moves_nothing(self):
+        self.decided(*CHAIN)
+        self.write('document.md', 'a hand edit\n')
+        outcome = workspace.decide(self.root, 'document', 'approve')
+        expected = ('The learner guide was approved in the conversation. '
+                    'Next: write the brief.')
+        self.assertEqual(self.where(), ('brief', None, expected))
+        self.assertEqual(outcome['next_step'], expected)
+
+    def test_row_103_skipping_the_stage_the_training_is_at_moves_it_on(self):
+        self.decided(*CHAIN, 'brief')
+        outcome = workspace.decide(self.root, 'deck', 'skip', 'No slides')
+        self.assertEqual(self.where(), ('scenario', None, 'Prepare the scenarios'))
+        self.assertEqual(outcome['said'],
+                         'The deck stage was left out in the conversation: No slides')
+        workspace.decide(self.root, 'deck', 'restore')
+        self.assertEqual(self.where(), ('scenario', None,
+                                        'The deck stage was brought back in the conversation.'))
+        workspace.decide(self.root, 'yoodli', 'skip', 'Not using it')
+        self.assertEqual(self.where()[:2], ('scenario', None))
+        self.build('scenario:main')
+        workspace.decide(self.root, 'scenario:main', 'revise', 'Harder')
+        workspace.decide(self.root, 'scenario:main', 'rebuild')
+        self.assertEqual(self.where()[:2], ('scenario', None))
+
+    def test_row_104_the_old_checkpoint_after_approval_is_harmless(self):
+        self.decided(*CHAIN[:-1])
+        self.build('document')
+        workspace.checkpoint(self.root, gate='document', question='Approve the guide?',
+                             next_step='Waiting for approval of document')
+        workspace.decide(self.root, 'document', 'approve')
+        before = workspace.status(self.root)
+        workspace.checkpoint(self.root, stage='brief', next_step='Write the brief',
+                             clear_question=True)
+        self.assertEqual(workspace.status(self.root), before)
+
+
+class LevelMoveOnTests(LevelCase):
+    def decided(self, *names: str) -> None:
+        for name in names:
+            self.build(name)
+            workspace.decide(self.root, name, 'approve')
+
+    def where(self) -> tuple:
+        report = workspace.status(self.root)
+        return report['stage'], report['level'], report['next_step']
+
+    def test_row_101_levels_move_on_from_the_blueprints_one_level_at_a_time(self):
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
+        workspace.skip(self.root, 'deck', reason='No slides')
+        self.decided('intake', 'research-plan', 'research')
+        self.assertEqual(self.where(), ('blueprint', None, 'Draft the blueprint for each level'))
+        self.decided('blueprint@101')
+        self.assertEqual(self.where(), (
+            'blueprint', None, 'The level 101 blueprint was approved in the conversation. '
+                               'Still to do at this stage: the level 301 blueprint.'))
+        self.decided('blueprint@301')
+        self.assertEqual(self.where(), ('document', '101', 'Write the 101 learner guide'))
+        before = workspace.status(self.root)
+        workspace.checkpoint(self.root, stage='document', level='101', clear_question=True,
+                             next_step='Write the 101 learner guide')
+        self.assertEqual(workspace.status(self.root), before, 'the old checkpoint is harmless')
+        self.decided('document@101')
+        self.assertEqual(self.where(), ('brief', '101', 'Write the 101 brief'))
+        self.decided('brief@101')
+        self.assertEqual(self.where(), ('scenario', '101', 'Prepare the 101 scenarios'))
+        self.decided('scenario:main@101')
+        self.assertEqual(self.where(), ('document', '301', 'Write the 301 learner guide'))
+        self.decided('document@301', 'brief@301', 'scenario:main@301')
+        self.assertEqual(self.where(), ('package', '301', 'Write the index'))
+
+
+class AddLevelTests(LevelCase):
+    """Levels are added, and a level with work in it is never dropped (rows 105 to 107)."""
+
+    def test_row_105_setting_the_levels_never_drops_a_level_with_work_in_it(self):
+        self.through('blueprint', '101')
+        before = workspace.session_path(self.root).read_text(encoding='utf-8')
+        with self.assertRaisesRegex(WorkspaceError, r'Level 101 has work in it '
+                                    r'\(101/blueprint\.md\).*--add-level.*101/'):
+            workspace.checkpoint(self.root, levels=['301'])
+        self.assertEqual(workspace.session_path(self.root).read_text(encoding='utf-8'), before)
+        self.assertEqual(self.state()['blueprint@101'], 'approved')
+
+    def test_row_106_the_levels_can_be_set_before_a_level_has_work(self):
+        self.through('blueprint', '101')
+        workspace.checkpoint(self.root, levels=['101', '201'])
+        self.assertEqual(workspace.status(self.root)['levels'], ['101', '201'])
+
+    def test_row_107_a_level_is_added_and_the_others_are_kept(self):
+        workspace.skip(self.root, 'yoodli', reason='Not using it')
+        workspace.skip(self.root, 'deck', reason='No slides')
+        workspace.skip(self.root, 'scenario', reason='No scenarios')
+        workspace.checkpoint(self.root, stage='research')
+        workspace.checkpoint(self.root, add_levels=['201'])
+        report = workspace.status(self.root)
+        self.assertEqual((report['levels'], report['stage']), (['101', '201', '301'], 'research'))
+        self.through('brief', '101', '301')
+        workspace.checkpoint(self.root, stage='package', next_step='Write the index')
+        outcome = workspace.checkpoint(self.root, add_levels=['401'])
+        self.assertEqual(outcome['levels'], ['101', '201', '301', '401'])
+        state = self.state()
+        self.assertEqual((state['blueprint@401'], state['brief@101'], state['brief@301']),
+                         ('not-started', 'approved', 'approved'))
+        report = workspace.status(self.root)
+        self.assertEqual((report['stage'], report['level'], report['next_step']),
+                         ('blueprint', '401', 'Draft the 401 blueprint'))
+        workspace.checkpoint(self.root, add_levels=['401'])
+        self.assertEqual(workspace.status(self.root)['levels'], ['101', '201', '301', '401'])
+        with self.assertRaisesRegex(WorkspaceError, 'not both'):
+            workspace.checkpoint(self.root, levels=['101'], add_levels=['201'])
+        with self.assertRaisesRegex(WorkspaceError, 'Levels are chosen from'):
+            workspace.checkpoint(self.root, add_levels=['501'])
+
+
+class GateReviewTests(LevelCase):
+    def test_row_108_the_gate_names_the_file_its_review_goes_in(self):
+        self.through('blueprint', '101')
+        outcome = workspace.checkpoint(self.root, gate='blueprint@101', question='Approve?')
+        self.assertEqual(outcome['review'], 'reviews/blueprint-101.md')
+        self.assertIsNone(workspace.checkpoint(self.root, clear_question=True)['review'])

@@ -745,7 +745,7 @@ class PageApprovalTests(Flow):
         self.assertIn('only the page can move it back', refusal)
         self.assertIn('training.py desk', refusal)
         report = self.cli('status')
-        self.assertEqual((report['approval'], report['stage']), ('page', 'intake'))
+        self.assertEqual((report['approval'], report['stage']), ('page', 'blueprint'))
         self.assertIn('invalid choice', self.cli('checkpoint', '--approval', 'email',
                                                  expect=2)['error'])
 
@@ -783,9 +783,11 @@ class PageApprovalTests(Flow):
                          ('blueprint', 'Approve the blueprint?'))
         approved = self.cli('approve', 'blueprint')
         self.assertEqual((approved['decision'], approved['failing_checks']), ('approve', []))
+        self.assertEqual(approved['said'], 'The blueprint was approved in the conversation.')
         report = self.cli('status')
-        self.assertEqual((report['gate'], report['pending_question'], report['next_step']),
-                         (None, None, 'The blueprint was approved in the conversation.'))
+        self.assertEqual((report['gate'], report['pending_question'], report['stage'],
+                          report['next_step']),
+                         (None, None, 'document', 'Write the learner guide'))
         review = (self.root / 'reviews' / 'blueprint.md').read_text(encoding='utf-8')
         self.assertIn('## Decision: approved in the conversation, ', review)
 
@@ -846,6 +848,27 @@ class LevelCheckTests(Flow):
         self.assertTrue(report['checks_passed'])
         overlap = [text for text in report['warnings'] if text.startswith('Levels 101 and 301')]
         self.assertEqual(len(overlap), 3)
+
+    def test_rows_105_and_107_a_level_is_added_and_never_dropped_with_work_in_it(self):
+        self.research('--levels', '101')
+        self.make('blueprint@101', '101/blueprint.md', levelled(example('blueprint.md'), '101'))
+        refusal = self.cli('checkpoint', '--levels', '301', expect=2)['error']
+        self.assertIn('Level 101 has work in it (101/blueprint.md)', refusal)
+        self.assertIn('checkpoint --add-level', refusal)
+        self.assertEqual(self.cli('status')['levels'], ['101'])
+        added = self.cli('checkpoint', '--add-level', '301')
+        self.assertEqual(added['levels'], ['101', '301'])
+        report = self.cli('status')
+        self.assertEqual((report['artifacts']['blueprint@101'],
+                          report['artifacts']['blueprint@301']), ('approved', 'not-started'))
+        self.assertIn('not allowed with argument', self.cli(
+            'checkpoint', '--levels', '101', '--add-level', '201', expect=2)['error'])
+
+    def test_row_108_the_gate_names_its_review_file(self):
+        self.research('--levels', '101')
+        self.write('101/blueprint.md', levelled(example('blueprint.md'), '101'))
+        gate = self.cli('checkpoint', '--gate', 'blueprint@101', '--question', 'Approve?')
+        self.assertEqual(gate['review'], 'reviews/blueprint-101.md')
 
     def test_row_50_a_blueprint_in_the_wrong_folder_fails(self):
         self.research('--levels', '101,301')

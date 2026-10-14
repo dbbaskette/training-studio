@@ -46,6 +46,6 @@ The review is tied to that exact deck and blueprint. If either changes, `check` 
 
 Present the gate as the gates reference describes: where the deck is, and the reviewed coverage, naming any objective you could not find.
 
-On approval: `training.py approve deck`, then `training.py checkpoint --no-question --stage scenario --next "Prepare the scenarios"`.
+On approval: `training.py approve deck`.
 
 Changing the deck target or the brand makes the deck stale. Edits made to a Google Slides deck after approval are not detected.

@@ -252,8 +252,12 @@ def parser() -> argparse.ArgumentParser:
     checkpoint.add_argument('--deck-target')
     checkpoint.add_argument('--brand')
     checkpoint.add_argument('--brief-kind')
-    checkpoint.add_argument('--levels', type=comma_list,
-                            help='the levels of a levelled training, comma-separated')
+    levels = checkpoint.add_mutually_exclusive_group()
+    levels.add_argument('--levels', type=comma_list,
+                        help='the levels of a levelled training, comma-separated; '
+                             'never drops a level with work in it')
+    levels.add_argument('--add-level', dest='add_levels', type=comma_list, metavar='LEVEL',
+                        help='add a level to a levelled training')
     checkpoint.add_argument('--copies', nargs='*', choices=workspace.COPIES,
                             help='copies to keep of each document and brief; alone, none')
     checkpoint.add_argument('--gate', metavar='ARTIFACT',
@@ -313,7 +317,7 @@ def dispatch(args: argparse.Namespace, root: Path) -> dict:
         return workspace.checkpoint(root, args.stage, args.next_step, args.question,
                                     args.no_question, args.deck_target, args.brand,
                                     args.brief_kind, args.level, args.levels, args.copies,
-                                    args.approval, args.gate)
+                                    args.approval, args.gate, add_levels=args.add_levels)
     if args.command == 'pin':
         return workspace.pin(root, args.skill, args.task, args.runtime, args.run,
                              args.level)
