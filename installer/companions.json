@@ -11,9 +11,9 @@
     },
     "harness-slides": {
       "repository": "https://github.com/dbbaskette/harness-slides-skill.git",
-      "version": "0.13.1",
-      "commit": "2ceaf5d8b013d982ec05589dded9d24d12355680",
-      "sha256": "c8e277fb7e9a02370c14ae0bdb03b6d5f523efd068d17118e0e78d4e69942365",
+      "version": "0.14.0",
+      "commit": "616832e1187ed96225f095beedc695cfc77cc3e4",
+      "sha256": "9f6d9b335cf1f85d463cd3267f2707f398307ac8ccbc59d910220c3804b6065a",
       "stub": "bootstrap/SKILL.md",
       "installer": "scripts/install.mjs",
       "note": "Its installer also downloads, from npm, the packages its slide engine needs."
