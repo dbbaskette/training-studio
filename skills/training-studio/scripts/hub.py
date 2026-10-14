@@ -244,8 +244,7 @@ def resolve(root: Path, name: str | None = None) -> str:
         if len(hubs) > 1:
             raise WorkspaceError('Several hubs are joined: ' + ', '.join(sorted(hubs))
                                  + '. Choose one for this training with hub use NAME, or name '
-                                 'one: hub sync NAME, or --hub NAME on find, get and share '
-                                 'audience.')
+                                 'one with --hub NAME on sync, find, get and share audience.')
         wanted = next(iter(hubs))
     if wanted not in hubs or not (clone_of(wanted) / '.git').exists():
         raise WorkspaceError(f'No hub called "{wanted}" is joined on this computer. hub list '

@@ -269,6 +269,8 @@ class ChoosingTests(HubCase):
         choose = self.hub('publish', expect=2)['error']
         self.assertIn('Several hubs are joined: field, team', choose)
         self.assertIn('hub use', choose)
+        self.assertIn('--hub NAME', choose)
+        self.assertNotIn('hub sync NAME', choose)
         self.assertEqual(self.hub('use', 'field'), {'hub': 'field',
                                                     'training': 'rolling-restarts'})
         self.assertEqual(json.loads((self.root / '.training-studio' / 'hub.json').read_text()),
@@ -845,6 +847,15 @@ class SyncTests(HubCase):
         self.founded()
         self.assertEqual(self.hub('sync')['hub'], 'team')
         self.assertIn('No hub called "field"', self.hub('sync', 'field', expect=2)['error'])
+
+    def test_sync_names_its_hub_with_hub_like_every_other_command(self):
+        self.founded()
+        self.assertEqual(self.hub('sync', '--hub', 'team')['hub'], 'team')
+        self.assertIn('No hub called "field"',
+                      self.hub('sync', '--hub', 'field', expect=2)['error'])
+        self.assertEqual(self.hub('sync', 'team', '--hub', 'team')['hub'], 'team')
+        self.assertIn('Name the hub once, with --hub',
+                      self.hub('sync', 'team', '--hub', 'field', expect=2)['error'])
 
 
 class StatusTests(HubCase):

@@ -360,6 +360,10 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 106 | Level 101 and 301, no file in `301/` | `checkpoint --levels 101,201` | levels are 101 and 201 |
 | 107 | Levels 101 and 301 | `checkpoint --add-level 201` at research; `--add-level 401` at the package; `--levels` with `--add-level` | levels added, nothing else changes at research; at the package, the training goes back to `blueprint` at 401; refused |
 | 108 | An artifact at the gate | `checkpoint --gate A` | returns `review`, its review file; null with no gate |
+| 109 | Word copies wanted, pandoc on the path | `export A`; then the source is edited and `export A` again | pandoc is run with `--sandbox` into a scratch folder; the `.docx` is written beside the source and recorded; export `current` each time |
+| 110 | Word copies wanted | `export A` with no pandoc, a pandoc that fails or never finishes, or one without `--sandbox` and a source that names a picture | export `unavailable`, with a plain reason; no `.docx` left behind. A `.docx` made another way is recorded instead, unless it is the copy already recorded against an older source |
+| 111 | The home folder; a folder holding `skills/training-studio/SKILL.md`, or inside one | `init` | refused, each in words of its own; no record written |
+| 112 | A stale artifact; a missing reason; an upstream not approved | `approve A`; `approve A --accept-stale` or `skip S` with no `--reason`; `approve A` | refused, naming what changed and `--accept-stale --reason`, then `--reason`, then the artifact to approve first. On the page the same refusals name no flag |
 
 ### A8. Guidance
 

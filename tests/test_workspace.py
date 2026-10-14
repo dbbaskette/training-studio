@@ -1367,3 +1367,170 @@ class GateReviewTests(LevelCase):
         outcome = workspace.checkpoint(self.root, gate='blueprint@101', question='Approve?')
         self.assertEqual(outcome['review'], 'reviews/blueprint-101.md')
         self.assertIsNone(workspace.checkpoint(self.root, clear_question=True)['review'])
+
+
+class WhereNotToStartTests(TrainingCase):
+    """Folders a training is never started in, each refused in words of its own (row 111)."""
+
+    def test_row_111_init_refuses_the_home_folder(self):
+        with mock.patch.dict(os.environ, {'HOME': str(self.root),
+                                          'USERPROFILE': str(self.root)}):
+            with self.assertRaisesRegex(WorkspaceError, 'your home folder') as refused:
+                workspace.init(self.root, 'Topic')
+        self.assertIn('make a folder for this training', str(refused.exception))
+        self.assertFalse((self.root / '.training-studio').exists())
+
+    def test_row_111_init_refuses_a_checkout_of_this_repository_by_its_skill(self):
+        self.write('skills/training-studio/SKILL.md', '---\nname: training-studio\n---\n')
+        (self.root / 'docs').mkdir()
+        for folder in (self.root, self.root / 'docs'):
+            with self.assertRaisesRegex(WorkspaceError,
+                                        'a copy of the Training Studio repository'):
+                workspace.init(folder, 'Topic')
+        self.assertEqual(list(self.root.rglob('session.json')), [])
+
+    def test_row_111_a_folder_beside_a_checkout_is_not_one(self):
+        self.write('skills/other/SKILL.md', 'another skill\n')
+        self.assertEqual(workspace.init(self.root, 'Topic')['title'], 'Topic')
+
+
+class RefusalTests(PlainCase):
+    """Every refusal names what puts it right (row 112)."""
+
+    def stale_document(self) -> None:
+        self.approved(*CHAIN)
+        self.write('blueprint.md', helpers.CONTENT['blueprint'] + 'edited\n')
+        workspace.approve(self.root, 'blueprint')
+
+    def test_row_112_a_stale_approval_names_what_changed_and_the_flag(self):
+        self.stale_document()
+        with self.assertRaises(WorkspaceError) as refused:
+            workspace.approve(self.root, 'document')
+        said = str(refused.exception)
+        self.assertIn('older version of the blueprint', said)
+        self.assertIn('--accept-stale --reason', said)
+        self.assertEqual(self.state()['document'], 'stale')
+
+    def test_row_112_a_changed_setting_is_named_too(self):
+        self.approved(*CHAIN, 'deck')
+        workspace.checkpoint(self.root, brand='Acme')
+        with self.assertRaisesRegex(WorkspaceError, 'older version of the brand setting'):
+            workspace.approve(self.root, 'deck')
+
+    def test_row_112_the_page_is_not_told_about_flags(self):
+        self.stale_document()
+        workspace.checkpoint(self.root, approval='page')
+        for decision, note in (('approve', None), ('accept', '  ')):
+            with self.assertRaises(WorkspaceError) as refused:
+                workspace.decide(self.root, 'document', decision, note, by='page')
+            self.assertNotIn('--', str(refused.exception))
+        with self.assertRaises(WorkspaceError) as refused:
+            workspace.decide(self.root, 'deck', 'skip', '  ', by='page')
+        self.assertEqual(str(refused.exception), 'Give a reason.')
+
+    def test_row_112_a_missing_reason_names_reason(self):
+        self.stale_document()
+        with self.assertRaisesRegex(WorkspaceError, '--reason'):
+            workspace.decide(self.root, 'document', 'accept')
+        for unavailable in (False, True):
+            with self.assertRaisesRegex(WorkspaceError, 'Give a reason: add `--reason'):
+                workspace.skip(self.root, 'deck', unavailable=unavailable)
+
+    def test_row_112_an_upstream_not_approved_is_named_as_the_next_step(self):
+        self.build('intake', 'research-plan')
+        with self.assertRaisesRegex(WorkspaceError, 'intake is draft. Approve intake first.'):
+            workspace.approve(self.root, 'research-plan')
+
+
+class WordCopyTests(PlainCase):
+    """`export` makes the Word copy itself when pandoc is on the path (rows 109 and 110)."""
+
+    def setUp(self):
+        super().setUp()
+        self.approved(*CHAIN)
+        self.tools = self.root.parent / 'tools'
+        self.tools.mkdir()
+        patcher = mock.patch.dict(os.environ, {'PATH': str(self.tools)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def export(self, **options) -> dict:
+        return workspace.export(self.root, 'document', convert=workspace.pandoc, **options)
+
+    def exports(self) -> dict:
+        return workspace.status(self.root)['exports']
+
+    def test_row_109_export_makes_the_copy_with_pandoc_and_records_it(self):
+        helpers.fake_pandoc(self.tools)
+        made = self.export()
+        self.assertEqual(made['file'], 'document.docx')
+        self.assertEqual((self.root / 'document.docx').read_bytes(), b'docx of document v1\n')
+        self.assertEqual(self.exports()['document'], 'current')
+        (call,) = helpers.pandoc_calls(self.tools)
+        self.assertIn('--sandbox', call)
+        self.assertEqual(call[-1], str(self.root / 'document.md'))
+
+    def test_row_109_export_again_after_an_edit_brings_the_copy_up_to_date(self):
+        helpers.fake_pandoc(self.tools)
+        self.export()
+        self.write('document.md', 'edited\n')
+        self.assertEqual(self.exports()['document'], 'outdated')
+        self.export()
+        self.assertEqual(self.exports()['document'], 'current')
+        self.assertEqual((self.root / 'document.docx').read_bytes(), b'docx of edited\n')
+
+    def test_row_110_without_pandoc_the_copy_is_unavailable_and_says_why(self):
+        made = self.export()
+        self.assertIn('pandoc', made['unavailable'])
+        self.assertIn('not installed', made['unavailable'])
+        self.assertEqual(self.exports()['document'], 'unavailable')
+        self.assertFalse((self.root / 'document.docx').exists())
+
+    def test_row_110_a_pandoc_that_fails_leaves_nothing_and_says_why_plainly(self):
+        helpers.fake_pandoc(self.tools, helpers.PANDOC_FAILS)
+        made = self.export()
+        self.assertIn('Could not parse', made['unavailable'])
+        self.assertNotIn('WARNING', made['unavailable'])
+        self.assertNotIn(str(self.root), made['unavailable'])
+        self.assertFalse((self.root / 'document.docx').exists())
+        self.assertEqual(self.exports()['document'], 'unavailable')
+
+    def test_row_110_a_pandoc_that_never_finishes_is_given_up_on(self):
+        helpers.fake_pandoc(self.tools, helpers.PANDOC_HANGS)
+        with mock.patch.object(workspace, 'PANDOC_TIMEOUT', 0.5):
+            made = self.export()
+        self.assertIn('did not finish', made['unavailable'])
+
+    def test_row_110_a_pandoc_without_its_sandbox_converts_only_a_file_without_pictures(self):
+        helpers.fake_pandoc(self.tools, helpers.PANDOC_WITHOUT_SANDBOX)
+        self.assertEqual(self.export()['file'], 'document.docx')
+        self.write('document.md', 'See ![the chart](https://example.com/chart.png).\n')
+        self.assertIn('unavailable', self.export())
+        self.assertEqual([('--sandbox' in call) for call in helpers.pandoc_calls(self.tools)],
+                         [True, False, True])
+
+    def test_row_110_a_copy_made_another_way_is_still_recorded(self):
+        self.write('document.docx', 'made by hand')
+        self.assertEqual(self.export()['file'], 'document.docx')
+        self.assertEqual(self.exports()['document'], 'current')
+
+    def test_row_110_a_copy_of_an_older_version_is_not_recorded_again(self):
+        self.write('document.docx', 'made by hand')
+        workspace.export(self.root, 'document')
+        self.write('document.md', 'edited\n')
+        self.assertIn('unavailable', self.export())
+        self.assertEqual(self.exports()['document'], 'unavailable')
+
+    def test_a_file_named_or_a_reason_given_never_runs_pandoc(self):
+        helpers.fake_pandoc(self.tools)
+        self.write('guide.docx', 'mine')
+        self.assertEqual(self.export(file='guide.docx')['file'], 'guide.docx')
+        self.assertIn('unavailable', self.export(unavailable='No Word wanted after all'))
+        self.assertEqual(helpers.pandoc_calls(self.tools), [])
+
+    def test_the_refusals_come_before_pandoc_is_run(self):
+        helpers.fake_pandoc(self.tools)
+        workspace.checkpoint(self.root, copies=[])
+        with self.assertRaisesRegex(WorkspaceError, 'checkpoint --copies'):
+            self.export()
+        self.assertEqual(helpers.pandoc_calls(self.tools), [])

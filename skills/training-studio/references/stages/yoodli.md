@@ -29,7 +29,7 @@ For each, present the scenario and its Yoodli file together as the gates referen
 - whether the brief's Google Doc or export is `current`, since it is the file the user uploads,
 - your judgment of whether the context and goals agree with the brief.
 
-On approval, for each: `training.py approve yoodli:<id>`. If `exports` in `training.py status` lists `yoodli:<id>`, make its Word copy, then `training.py export yoodli:<id>`, as the workspace reference describes. The last approval moves the training on: to the next level if one remains, otherwise to the package.
+On approval, for each: `training.py approve yoodli:<id>`. If `exports` in `training.py status` lists `yoodli:<id>`, run `training.py export yoodli:<id>`, as the workspace reference describes. The last approval moves the training on: to the next level if one remains, otherwise to the package.
 
 ## Afterwards
 

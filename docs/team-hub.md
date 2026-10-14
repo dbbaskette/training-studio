@@ -87,7 +87,7 @@ Your assistant runs these for you. Each prints JSON.
 | `hub use NAME` | Chooses the hub this training publishes to |
 | `hub publish [--message TEXT]` | Publishes this training's approved files as the next revision, then syncs |
 | `hub status` | This training's hub, its latest revision, and what has changed since |
-| `hub sync [NAME]` | Fetches what others shared, sends what is waiting, and rebuilds the index |
+| `hub sync [--hub NAME]` | Fetches what others shared, sends what is waiting, and rebuilds the index |
 | `hub find [WORDS] [--kind training\|scenario\|audience]` | Searches titles, IDs and text |
 | `hub get scenario ID [--as NAME] [--level LEVEL]` | Copies a scenario into this training |
 | `hub share scenario ID [--as NAME] [--level LEVEL]` | Puts one of this training's scenarios into the hub |
@@ -95,7 +95,7 @@ Your assistant runs these for you. Each prints JSON.
 | `hub share audience ID --file FILE` | Puts an audience description into the hub |
 | `hub get research TRAINING [--revision N]` | Copies a published research report into `sources/` |
 
-`find`, `get` and `share audience` also take `--hub NAME`, for when you have joined several hubs and are not inside a training that has chosen one.
+`find`, `get` and `share audience` also take `--hub NAME`, as `sync` does, for when you have joined several hubs and are not inside a training that has chosen one.
 
 A scenario published inside a training is fetched as `TRAINING/ID`, or `TRAINING/ID@LEVEL` for a training with levels. `hub find` shows the exact ID to use.
 
