@@ -22,13 +22,18 @@ at every gate for a decision on the page, the slide deck included.
 Each module's own docstring says what a caller needs to know. Refusals meant for a person
 are raised as the core's WorkspaceError, with a sentence to show as it is.
 
-Importing this package puts the helper's own modules (the core, in
-skills/training-studio/scripts) on the import path, so `import workspace`, `import checks`
-and `import home` work anywhere in the runner.
+Importing this package puts the helper's own modules (the core) on the import path, so
+`import workspace`, `import checks` and `import home` work anywhere in the runner. The core
+is found in either layout: in a checkout of the repository it is
+skills/training-studio/scripts, and in an installed version it is the scripts folder beside
+this package.
 """
 import sys
 from pathlib import Path
 
-CORE = Path(__file__).resolve().parent.parent / 'skills' / 'training-studio' / 'scripts'
+_ABOVE = Path(__file__).resolve().parent.parent
+CORE = next((place for place in (_ABOVE / 'skills' / 'training-studio' / 'scripts',
+                                 _ABOVE / 'scripts')
+             if (place / 'workspace.py').is_file()), _ABOVE / 'scripts')
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))

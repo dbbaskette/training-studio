@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "companions": {
+    "harness-research": {
+      "repository": "https://github.com/dbbaskette/harness-research-skill.git",
+      "version": "0.8.0",
+      "commit": "547506e9ba5b0d848267033886624d6cea75c365",
+      "sha256": "4e2e40c1463950a7855596a23c2c716f17d77ef843dd684db4a6c40a89f9778e",
+      "stub": "bootstrap/SKILL.md",
+      "installer": "scripts/install.mjs"
+    },
+    "harness-slides": {
+      "repository": "https://github.com/dbbaskette/harness-slides-skill.git",
+      "version": "0.13.1",
+      "commit": "2ceaf5d8b013d982ec05589dded9d24d12355680",
+      "sha256": "c8e277fb7e9a02370c14ae0bdb03b6d5f523efd068d17118e0e78d4e69942365",
+      "stub": "bootstrap/SKILL.md",
+      "installer": "scripts/install.mjs",
+      "note": "Its installer also downloads, from npm, the packages its slide engine needs."
+    }
+  }
+}

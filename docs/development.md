@@ -30,6 +30,7 @@ runner/                     the runner: see its own section below
 bootstrap/training-studio/  the small entry an installed copy uses
 guidance/manifest.json      which script version the guidance needs
 installer/                  install.sh, install.py and a double-click launcher
+                            companions.json pins each companion skill to one revision
 tests/                      unit tests; temporary directories only
 docs/                       this documentation, the spec, the plan and reviews
 ```
@@ -78,7 +79,7 @@ Drop `--dry-run` to run it. The clone is deleted afterwards; its logs are kept.
 | `tests/test_cli.py` | The command line and readiness, including a course and a two-level training |
 | `tests/test_package.py` | The validator, on a small synthetic package and on the real one |
 | `tests/test_disclosure.py` | Every loading set against its budget |
-| `tests/test_installer.py` | The installer, against a temporary home directory |
+| `tests/test_installer.py` | The installer, against a temporary home directory and a stand-in repository for each companion |
 | `tests/test_sync.py` | Guidance sync, against a local git repository |
 | `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
 | `tests/test_desk.py` | The page: what it reads and records, everything it refuses, the command, the check of this computer with its commands stubbed, and the page's scripts and colours |

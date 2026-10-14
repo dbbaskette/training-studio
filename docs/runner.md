@@ -6,29 +6,35 @@ It is early. It makes the research, the blueprint, the learner guide, the brief,
 
 ## What you need
 
-- A copy of this repository, and Python 3.11 or newer.
+The [installer](installation.md) brings the runner, offers the two companion skills, and says which of these this computer still lacks.
+
+- Python 3.11 or newer.
 - Claude Code or Codex, installed and signed in as you. The runner uses your own sign-in. It has no key of its own.
-- [harness-research](https://github.com/dbbaskette/harness-research-skill), installed. The research cannot run without it.
+- [harness-research](https://github.com/dbbaskette/harness-research-skill), installed. The research cannot run without it. The installer offers it.
 - git, set up with your name and email.
 
 A slide deck needs four more things. The Status screen shows each one, and what to do about one that is missing.
 
-- [harness-slides](https://github.com/dbbaskette/harness-slides-skill), version 0.13.1 or newer. It draws and renders the slides.
-- A brand skill: a skill that holds your organisation's brands, its slide template and its icons. A deck is always made in a brand. Without a brand skill no deck is offered.
+- [harness-slides](https://github.com/dbbaskette/harness-slides-skill), version 0.13.1 or newer. It draws and renders the slides. The installer offers it.
+- A brand skill: a skill that holds your organisation's brands, its slide template and its icons. A deck is always made in a brand. Without a brand skill no deck is offered. It is your organisation's own, so the installer does not bring it.
 - A way to turn slides into pictures, so that they can be looked at before they come to you: LibreOffice on this computer, or Google access that reaches Drive.
 - Poppler, the small programs (`pdftoppm` and `pdfinfo`) that turn a render into pictures.
 
 ## Start it
 
-Run this in a terminal of your own, from your copy of the repository:
+On a Mac, double-click "Open Training Studio" in the Applications folder inside your home folder. A terminal window of your own opens and the page opens in your browser.
+
+On any system, run the line the installer printed. With the usual locations it is:
 
 ```bash
-python3 runner/studio.py serve
+sh ~/.local/share/training-studio/studio
 ```
 
-It prints one line with a link. Open the link exactly as it is printed: the part after `#` is a key, and the page does not work without it. The runner works for as long as this command runs. Press Ctrl-C to end it. Nothing is lost: start it again and every training carries on from where its files say it is.
+From a copy of the repository, without installing, it is `python3 runner/studio.py serve --open`.
 
-One runner serves on a computer at a time.
+The window prints one line with a link, and opens it for you. The part of the link after `#` is a key, and the page does not work without it. If you open the page yourself, use the link exactly as it is printed. The runner works for as long as that window is open. Press Ctrl-C in it, or close it, to end. Nothing is lost: start it again and every training carries on from where its files say it is.
+
+One runner serves on a computer at a time. The installer will not update, go back a version or remove while it is open: close it first.
 
 ## Set it up
 
@@ -118,6 +124,6 @@ A training that has spent what it may stops and asks before it spends more. Clau
 - What a deck is built from stays on the computer that built it and is not shared: the drawings, the previews and the pictures. Your team gets the deck, what it says, and what its gate showed. On another computer the deck's gate shows no pictures.
 - Bringing edits back from a Google Doc, and publishing to a team hub, are not in the runner yet.
 - A training made in a conversation is not picked up by the runner, and a training the runner drives should not also be driven from a conversation while it runs.
-- `python3 runner/studio.py status` prints what is set up and where every run is, as JSON.
+- `sh ~/.local/share/training-studio/studio status` prints what is set up and where every run is, as JSON. From a copy of the repository it is `python3 runner/studio.py status`.
 
 The design is in [the runner's specification](superpowers/specs/2026-10-13-studio-runner-design.md).

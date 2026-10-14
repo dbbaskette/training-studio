@@ -23,7 +23,7 @@ You need:
 
 - Claude Code or Codex.
 - Python 3.11 or newer.
-- Two companion skills: [harness-research](https://github.com/dbbaskette/harness-research-skill), which does the research, and [harness-slides](https://github.com/dbbaskette/harness-slides-skill), which builds the deck. Without harness-slides you still get everything except the deck.
+- Two companion skills: [harness-research](https://github.com/dbbaskette/harness-research-skill), which does the research, and [harness-slides](https://github.com/dbbaskette/harness-slides-skill), which builds the deck. Without harness-slides you still get everything except the deck. The installer offers to bring both.
 
 ## Install
 
@@ -35,7 +35,13 @@ sh installer/install.sh
 
 On a Mac you can double-click `Install Training Studio.command` in the `installer` folder instead.
 
-It installs the skill for Claude Code and Codex, whichever you have, and tells you if a companion skill is missing. It asks before changing anything. See [installation](docs/installation.md) for updating, going back a version and removing it.
+It installs the skill for Claude Code and Codex, whichever you have, and with it the [runner](docs/runner.md), which makes a training from a page in your browser. It asks before changing anything.
+
+It then offers to bring each companion skill you do not have. Each is fetched from its own repository at a revision the installer checks, and installed by its own installer. Say yes or no to each.
+
+When it finishes it says how to open Training Studio: on a Mac, double-click "Open Training Studio" in the Applications folder inside your home folder. It also lists anything you still need, such as git, Node or an assistant that is signed in.
+
+See [installation](docs/installation.md) for what is checked and why, and for updating, going back a version and removing it.
 
 ## Your first training
 
@@ -144,8 +150,8 @@ For each scenario, Training Studio then writes a file under `yoodli/` laid out i
 
 | What you see | What it means |
 | --- | --- |
-| It stops at research and names harness-research | That skill is not installed. Install it and ask again |
-| The deck is "unavailable" | harness-slides is not installed. Everything else still works |
+| It stops at research and names harness-research | That skill is not installed. Run the installer again and say yes when it offers it |
+| The deck is "unavailable" | harness-slides is not installed. Everything else still works. The installer offers it |
 | A Word copy is "unavailable" | You asked for Word copies and no converter was found. Installing [pandoc](https://pandoc.org) fixes it |
 | Something is "stale" | A file it was built from has changed. Ask to rebuild it, or say it is fine as it is |
 | It refuses to start in a folder | The folder already holds files with the names it uses, or it is this repository. Use a new folder |
@@ -156,7 +162,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 
 ## Learn more
 
-- [Installation](docs/installation.md): what the installer does, and how to update, roll back or remove.
+- [Installation](docs/installation.md): what the installer does, how it brings the companion skills, and how to update, roll back or remove.
 - [How it works](docs/how-it-works.md): the stages, approvals, what "stale" means, and the files in a training folder.
 - [Scenarios and Yoodli](docs/scenarios-and-yoodli.md): the scenario format, and building a roleplay in Yoodli.
 - [Google Docs](docs/google-docs.md): sending the learner guide or the brief to a Google Doc for review, and bringing the edits back.

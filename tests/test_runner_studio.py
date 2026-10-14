@@ -84,6 +84,13 @@ class ServeTests(StudioCase):
         self.assertEqual(printed, {'url': 'http://127.0.0.1:8765/#token=the-key'})
         self.assertEqual((self.opened, Server.made[0].did), ([], ['serve', 'stop']))
 
+    def test_asked_to_open_it_shows_a_person_the_page_as_well_as_the_link(self):
+        printed = self.serve(True, '--open')
+        self.assertEqual(printed, {'url': 'http://127.0.0.1:8765/#token=the-key'})
+        self.assertEqual(self.opened, ['http://127.0.0.1:8765/#token=the-key'])
+        self.assertEqual(self.serve(False, '--open')['opened'], True)
+        self.assertEqual(len(self.opened), 2, 'opened once, not twice, for anything else')
+
     def test_to_anything_else_it_prints_no_key_and_opens_the_page_itself(self):
         printed = self.serve(False, '--port', '9000')
         self.assertEqual(printed, {'address': 'http://127.0.0.1:9000/', 'opened': True,
