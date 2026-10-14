@@ -2261,16 +2261,33 @@ AGENTS_FOUND = {'agents': [
      'version': '0.48.0',
      'problem': 'Codex is not signed in. Run codex login in a terminal, then look again.'}]}
 FIVE = ['low', 'medium', 'high', 'xhigh', 'max']
-# What `GET /api/models` answers for each agent: Claude Code's aliases, and Codex's catalog.
-CLAUDE_MODELS = {'agent': 'claude', 'problem': None, 'levels': FIVE, 'models': [
-    {'name': name, 'label': label, 'levels': FIVE, 'default_level': None}
-    for name, label in (('fable', 'Fable'), ('opus', 'Opus'), ('sonnet', 'Sonnet'),
-                        ('haiku', 'Haiku'))]}
-CODEX_MODELS = {'agent': 'codex', 'problem': None, 'levels': ['low', 'medium', 'high'], 'models': [
-    {'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
+CLAUDE_SOURCE = 'Anthropic model reference, cached 2026-10-06'
+
+
+def claude_model(name: str, label: str, family: str, levels: list) -> dict:
+    return {'name': name, 'label': label, 'family': family, 'about': None, 'levels': levels,
+            'default_level': None}
+
+
+# What `GET /api/models` answers for each agent: some of the Claude Code models the runner
+# keeps, grouped by family, and Codex's catalog.
+CLAUDE_MODELS = {'agent': 'claude', 'problem': None, 'levels': FIVE, 'source': CLAUDE_SOURCE,
+                 'models': [
+    claude_model('fable', 'Fable, always the newest (now Fable 5.1)', 'Fable', FIVE),
+    claude_model('claude-fable-5-1', 'Fable 5.1 (claude-fable-5-1)', 'Fable', FIVE),
+    claude_model('opus', 'Opus, always the newest (now Opus 5.5)', 'Opus', FIVE),
+    claude_model('claude-opus-5-5', 'Opus 5.5 (claude-opus-5-5)', 'Opus', FIVE),
+    claude_model('claude-opus-4-6', 'Opus 4.6 (claude-opus-4-6)', 'Opus',
+                 ['low', 'medium', 'high', 'max']),
+    claude_model('haiku', 'Haiku, always the newest (now Haiku 5.5)', 'Haiku', FIVE),
+    claude_model('claude-haiku-4-5', 'Haiku 4.5 (claude-haiku-4-5)', 'Haiku', [])]}
+CODEX_MODELS = {'agent': 'codex', 'problem': None, 'levels': ['low', 'medium', 'high'],
+                'source': None, 'models': [
+    {'name': 'gpt-6-sol', 'label': 'GPT-6-Sol (gpt-6-sol)', 'family': None,
+     'about': 'Previous generation workhorse model.', 'default_level': 'medium',
      'levels': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']},
-    {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna', 'default_level': 'low',
-     'levels': ['low', 'medium', 'high']}]}
+    {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna (gpt-6-luna)', 'family': None, 'about': None,
+     'default_level': 'low', 'levels': ['low', 'medium', 'high']}]}
 MODELS = {'GET /api/models?agent=claude': [ok(CLAUDE_MODELS)],
           'GET /api/models?agent=codex': [ok(CODEX_MODELS)]}
 RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'effort', 'steps', 'workers', 'spent',
@@ -2769,19 +2786,23 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         shots = result['snapshots']
         own = 'The agent’s own choice'
 
-        # Claude Code's aliases, and every level each takes. Nothing is chosen at first.
+        # Claude Code's models, and every level one of them may take. Nothing is chosen at
+        # first.
         claude = shots['claude']
-        self.assertEqual(claude['lists'][model], [own, 'Fable', 'Opus', 'Sonnet', 'Haiku',
-                                                  'Another model…'])
+        self.assertEqual(claude['lists'][model], [
+            own, *[one['label'] for one in CLAUDE_MODELS['models']], 'Another model…'])
         self.assertEqual(claude['lists'][level], [own, 'Low', 'Medium', 'High', 'Extra high',
                                                   'Maximum'])
         self.assertEqual((claude['fields'][model], claude['fields'][level]), ('', ''))
         self.assertNotIn(typed, claude['fields'])
 
-        # Another agent lists its own models. A level none of them all takes is let go.
+        # Another agent lists its own models, each with its slug and what the agent says of
+        # it, in no groups. A level none of them all takes is let go.
         codex = shots['codex']
-        self.assertEqual(codex['lists'][model], [own, 'GPT-6-Sol', 'GPT-6-Luna',
-                                                 'Another model…'])
+        self.assertEqual(codex['lists'][model], [
+            own, 'GPT-6-Sol (gpt-6-sol): Previous generation workhorse model.',
+            'GPT-6-Luna (gpt-6-luna)', 'Another model…'])
+        self.assertNotIn(model, codex['groups'])
         self.assertEqual(codex['lists'][level], [own, 'Low', 'Medium', 'High'])
         self.assertEqual((codex['fields'][model], codex['fields'][level]), ('', ''))
 
@@ -2810,6 +2831,67 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         # Each agent's list is asked for once, apart from the page's refresh.
         self.assertEqual(self.asked(result, 'models'),
                          ['/api/models?agent=claude', '/api/models?agent=codex'])
+
+    def test_claude_models_are_grouped_by_family_each_with_the_levels_it_takes(self):
+        check = {'ok': True, 'found': {'name': 'Field enablement', 'folder': 'trainings',
+                                       'branch': 'main', 'existing': True},
+                 'checks': [{'what': 'The repository can be reached', 'ok': True, 'fix': None}]}
+        # Saved before versions were listed: an alias and a level it takes.
+        alias = {**SET_UP, 'agent': {'default': 'claude', 'model': 'opus', 'effort': 'xhigh'}}
+        saved = {**SET_UP, 'agent': {'default': 'claude', 'model': 'claude-haiku-4-5',
+                                     'effort': None}}
+        answers = self.answers(alias, **{'POST /api/setup/check': [ok(check)],
+                                         'POST /api/setup': [ok(saved)]})
+        model, level = 'Its model', 'Its reasoning level'
+        result = self.run_page(answers, [
+            {'click': 'Settings'}, {'click': 'Change the set-up'}, {'snapshot': 'alias'},
+            {'fill': model, 'value': 'claude-opus-4-6'}, {'snapshot': 'older'},
+            {'fill': level, 'value': 'max'}, {'fill': model, 'value': 'claude-haiku-4-5'},
+            {'snapshot': 'haiku'}, {'click': 'Save'}, {'snapshot': 'saved'},
+        ])
+        shots = result['snapshots']
+        own = 'The agent’s own choice'
+
+        # Each family is a group of its own, its alias first, saying what it means today.
+        held = shots['alias']
+        self.assertEqual(held['groups'][model], [
+            own,
+            ['Fable', ['Fable, always the newest (now Fable 5.1)',
+                       'Fable 5.1 (claude-fable-5-1)']],
+            ['Opus', ['Opus, always the newest (now Opus 5.5)', 'Opus 5.5 (claude-opus-5-5)',
+                      'Opus 4.6 (claude-opus-4-6)']],
+            ['Haiku', ['Haiku, always the newest (now Haiku 5.5)',
+                       'Haiku 4.5 (claude-haiku-4-5)']],
+            'Another model…'])
+        # The alias that was saved is still chosen, with its level.
+        self.assertEqual((held['fields'][model], held['fields'][level]), ('opus', 'xhigh'))
+        self.assertIn('As the Anthropic model reference, cached 2026-10-06, lists them.',
+                      held['text'])
+
+        # An older version offers only the levels it takes: Opus 4.6 has no extra high.
+        older = shots['older']
+        self.assertEqual(older['lists'][level], [own, 'Low', 'Medium', 'High', 'Maximum'])
+        self.assertEqual((older['fields'][model], older['fields'][level]),
+                         ('claude-opus-4-6', ''))
+
+        # Haiku 4.5 takes no level, so none is offered and the one chosen is let go.
+        haiku = shots['haiku']
+        self.assertNotIn(level, haiku['fields'])
+        self.assertIn('Haiku 4.5 (claude-haiku-4-5) takes no reasoning level.', haiku['text'])
+        sent = self.posts(result)[-1]
+        self.assertEqual(sent[0], '/api/setup')
+        self.assertEqual({key: sent[1][key] for key in ('agent', 'model', 'effort')},
+                         {'agent': 'claude', 'model': 'claude-haiku-4-5', 'effort': None})
+
+    def test_a_saved_model_the_list_does_not_have_is_another_model(self):
+        unknown = {**SET_UP, 'agent': {'default': 'claude', 'model': 'claude-opus-4-1',
+                                       'effort': 'high'}}
+        result = self.run_page(self.answers(unknown), [
+            {'click': 'Settings'}, {'click': 'Change the set-up'}, {'snapshot': 'set-up'}])
+        shown = result['snapshots']['set-up']
+        self.assertEqual((shown['fields']['Its model'], shown['fields']['The model’s name'],
+                          shown['fields']['Its reasoning level']),
+                         (' other', 'claude-opus-4-1', 'high'))
 
     def test_a_list_of_models_that_cannot_be_made_still_takes_a_name(self):
         self.started()

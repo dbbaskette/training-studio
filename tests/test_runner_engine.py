@@ -223,6 +223,19 @@ class FormToGateThreeTests(StudioCase):
             self.start(effort='ultra')
         self.assertFalse(self.space.training('rolling-restarts').exists())
 
+    def test_a_level_the_model_does_not_take_starts_nothing(self):
+        for model, effort, said in (
+                ('claude-haiku-4-5', 'high', 'Haiku 4.5 takes no reasoning level'),
+                ('claude-opus-4-6', 'xhigh', 'Opus 4.6 takes one of these reasoning levels')):
+            with self.subTest(model=model), self.assertRaisesRegex(WorkspaceError, said):
+                self.start(agent='claude', model=model, effort=effort)
+        # Nor does one the settings hold for a form that names no agent.
+        settings.save(replace(settings.load(), model='claude-haiku-4-5', effort=None))
+        with self.assertRaisesRegex(WorkspaceError, 'Haiku 4.5 takes no reasoning level'):
+            self.start(effort='low')
+        self.assertFalse(self.space.training('rolling-restarts').exists())
+        self.assertEqual(self.workers.jobs, [])
+
     def test_an_agent_that_is_not_ready_starts_nothing(self):
         away = agents.Readiness('claude', True, True, False, '2.1', 'Claude Code is signed '
                                 'in but cannot be used from this network. Try another.')

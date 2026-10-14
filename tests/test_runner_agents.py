@@ -18,7 +18,7 @@ from unittest import mock
 import helpers  # noqa: F401
 from runner_support import BLUEPRINT, JobCase, still_running, written
 
-from runner import agents, worker_tools
+from runner import agents, settings, worker_tools
 from runner.agents import Claude, Codex, Job, Limits, Outcome, Scripted
 from workspace import WorkspaceError
 
@@ -231,6 +231,21 @@ class ClaudeCommandTests(AgentCase):
         self.assertEqual(command[-4:], ['--model', 'opus', '--effort', 'xhigh'])
         self.assertEqual(Claude().command(self.make(effort='low'))[-2:], ['--effort', 'low'])
         self.assertNotIn('--effort', Claude().command(self.make()))
+
+    def test_the_exact_model_id_is_passed_with_a_level_only_where_it_takes_one(self):
+        base = Claude().command(self.make())
+        for model, effort, more in (
+                ('claude-opus-5-5', 'xhigh', ['--model', 'claude-opus-5-5', '--effort', 'xhigh']),
+                ('claude-opus-4-6', 'max', ['--model', 'claude-opus-4-6', '--effort', 'max']),
+                ('claude-haiku-4-5', None, ['--model', 'claude-haiku-4-5']),
+                # Haiku 4.5 takes no level, and Opus 4.6 not this one: none is passed.
+                ('claude-haiku-4-5', 'high', ['--model', 'claude-haiku-4-5']),
+                ('claude-opus-4-6', 'xhigh', ['--model', 'claude-opus-4-6']),
+                # A model the list does not have is passed as it is, with its level.
+                ('claude-opus-4-1', 'high', ['--model', 'claude-opus-4-1', '--effort', 'high'])):
+            with self.subTest(model=model, effort=effort):
+                self.assertEqual(Claude().command(self.make(model=model, effort=effort)),
+                                 base + more)
 
     def test_the_only_mcp_server_is_the_jobs_own_tools(self):
         job = self.make()
@@ -747,33 +762,125 @@ def effort(*words: str) -> list[dict]:
 # The shape `codex debug models` prints, cut down: codex-cli 0.162.1 prints about 560 KB.
 CODEX_CATALOG = {'models': [
     {'slug': 'gpt-6-sol', 'display_name': 'GPT-6-Sol', 'visibility': 'list',
+     'description': 'Previous generation workhorse model.',
      'default_reasoning_level': 'medium', 'base_instructions': 'x' * 2000,
      'supported_reasoning_levels': effort('low', 'medium', 'high', 'xhigh', 'max', 'ultra')},
     {'slug': 'gpt-6-luna', 'display_name': 'GPT-6-Luna', 'visibility': 'list',
+     'description': '  Fast and affordable    model. ' + 'y' * 200,
      'default_reasoning_level': 'low',
      'supported_reasoning_levels': ['low', 'medium', 'high', 'warp']},
     {'slug': 'gpt-reserve', 'display_name': 'GPT-Reserve', 'visibility': 'hide',
      'default_reasoning_level': 'medium', 'supported_reasoning_levels': effort('low')},
     {'slug': 'two words', 'display_name': 'Not a name', 'visibility': 'list'},
-    {'slug': 'gpt-plain', 'visibility': 'list', 'default_reasoning_level': 'turbo'},
+    {'slug': 'gpt-plain', 'visibility': 'list', 'default_reasoning_level': 'turbo',
+     'display_name': 'gpt-plain', 'description': 7},
     'not a model']}
 LISTED = [
-    {'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
+    {'name': 'gpt-6-sol', 'label': 'GPT-6-Sol (gpt-6-sol)', 'family': None,
+     'about': 'Previous generation workhorse model.', 'default_level': 'medium',
      'levels': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']},
-    {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna', 'default_level': 'low',
+    {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna (gpt-6-luna)', 'family': None,
+     'about': 'Fast and affordable model. ' + 'y' * 92 + '…', 'default_level': 'low',
      'levels': ['low', 'medium', 'high']},
-    {'name': 'gpt-plain', 'label': 'gpt-plain', 'default_level': None, 'levels': []}]
+    {'name': 'gpt-plain', 'label': 'gpt-plain', 'family': None, 'about': None,
+     'default_level': None, 'levels': []}]
+FIVE = ['low', 'medium', 'high', 'xhigh', 'max']
+NO_XHIGH = ['low', 'medium', 'high', 'max']
+
+
+def claude_model(name, label, family, levels):
+    return {'name': name, 'label': label, 'family': family, 'about': None,
+            'default_level': None, 'levels': levels}
+
+
+# Claude Code's models as Anthropic's model reference gave them on 2026-10-06: each family's
+# alias first, then its versions, newest first.
+CLAUDE_LISTED = [
+    claude_model('fable', 'Fable, always the newest (now Fable 5.1)', 'Fable', FIVE),
+    claude_model('claude-fable-5-1', 'Fable 5.1 (claude-fable-5-1)', 'Fable', FIVE),
+    claude_model('claude-fable-5', 'Fable 5 (claude-fable-5)', 'Fable', FIVE),
+    claude_model('opus', 'Opus, always the newest (now Opus 5.5)', 'Opus', FIVE),
+    claude_model('claude-opus-5-5', 'Opus 5.5 (claude-opus-5-5)', 'Opus', FIVE),
+    claude_model('claude-opus-5', 'Opus 5 (claude-opus-5)', 'Opus', FIVE),
+    claude_model('claude-opus-4-8', 'Opus 4.8 (claude-opus-4-8)', 'Opus', FIVE),
+    claude_model('claude-opus-4-7', 'Opus 4.7 (claude-opus-4-7)', 'Opus', FIVE),
+    claude_model('claude-opus-4-6', 'Opus 4.6 (claude-opus-4-6)', 'Opus', NO_XHIGH),
+    claude_model('sonnet', 'Sonnet, always the newest (now Sonnet 5.5)', 'Sonnet', FIVE),
+    claude_model('claude-sonnet-5-5', 'Sonnet 5.5 (claude-sonnet-5-5)', 'Sonnet', FIVE),
+    claude_model('claude-sonnet-5', 'Sonnet 5 (claude-sonnet-5)', 'Sonnet', FIVE),
+    claude_model('claude-sonnet-4-6', 'Sonnet 4.6 (claude-sonnet-4-6)', 'Sonnet', NO_XHIGH),
+    claude_model('haiku', 'Haiku, always the newest (now Haiku 5.5)', 'Haiku', FIVE),
+    claude_model('claude-haiku-5-5', 'Haiku 5.5 (claude-haiku-5-5)', 'Haiku', FIVE),
+    claude_model('claude-haiku-4-5', 'Haiku 4.5 (claude-haiku-4-5)', 'Haiku', [])]
 
 
 class ModelListTests(JobCase):
     """What each agent offers to choose from: its models and the reasoning levels of each."""
 
-    def test_claude_offers_its_aliases_each_with_every_level(self):
-        levels = ['low', 'medium', 'high', 'xhigh', 'max']
-        self.assertEqual(Claude().models(), {'models': [
-            {'name': name, 'label': label, 'default_level': None, 'levels': levels}
-            for name, label in (('fable', 'Fable'), ('opus', 'Opus'), ('sonnet', 'Sonnet'),
-                                ('haiku', 'Haiku'))], 'levels': levels})
+    def test_claude_offers_every_version_by_its_id_with_the_levels_it_takes(self):
+        # A model that is not listed may be given any level Claude Code takes.
+        self.assertEqual(Claude().models(), {
+            'models': CLAUDE_LISTED, 'levels': FIVE,
+            'source': 'Anthropic model reference, cached 2026-10-06'})
+
+    def test_the_list_of_claude_models_is_kept_as_data_with_its_source(self):
+        kept = json.loads((helpers.REPO / 'runner' / 'claude-code-models.json').read_text())
+        self.assertEqual((kept['source'], kept['date']),
+                         ('Anthropic model reference, cached 2026-10-06', '2026-10-06'))
+        self.assertEqual(settings.claude_models()['models'], CLAUDE_LISTED)
+        # Claude Mythos is not offered: only some accounts can use it.
+        self.assertNotIn('mythos', json.dumps(kept).lower())
+        # The runner's guide says how to bring the list up to date.
+        guide = (helpers.REPO / 'docs' / 'runner.md').read_text()
+        for said in ('`runner/claude-code-models.json`', '`{"id", "label", "family", "levels"}`',
+                     '`{"id", "family", "alias"}`', 'Set `source` and `date`',
+                     '"Opus 5.5 (claude-opus-5-5)"', 'Haiku 4.5, is offered none and given none'):
+            self.assertIn(said, guide)
+
+    def test_a_list_that_is_not_whole_is_refused_in_a_sentence(self):
+        good = {'schema': 1, 'source': 'S', 'date': '2026-10-06', 'models': [
+            {'id': 'opus', 'family': 'Opus', 'alias': 'claude-opus-5-5'},
+            {'id': 'claude-opus-5-5', 'label': 'Opus 5.5', 'family': 'Opus',
+             'levels': ['low']}]}
+        path = self.base / 'models.json'
+        path.write_text(json.dumps(good))
+        self.assertEqual([one['label'] for one in settings.read_models(path)['models']],
+                         ['Opus, always the newest (now Opus 5.5)',
+                          'Opus 5.5 (claude-opus-5-5)'])
+        alias, real = good['models']
+        for models, said in (
+                ([{**alias, 'alias': 'claude-opus-9'}, real], 'opus names claude-opus-9'),
+                ([alias, {**real, 'levels': ['warp']}], 'claude-opus-5-5 takes a level'),
+                ([alias, {**real, 'id': 'two words'}], 'two words is not a model'),
+                ([alias, real, real], 'claude-opus-5-5 is listed twice'),
+                ([alias, {**real, 'label': ''}], 'claude-opus-5-5 has no label'),
+                ([alias, {**real, 'family': None}], 'claude-opus-5-5 has no family'),
+                ('opus', 'no list of models')):
+            with self.subTest(said=said):
+                path.write_text(json.dumps({**good, 'models': models}))
+                with self.assertRaisesRegex(WorkspaceError, said):
+                    settings.read_models(path)
+        path.write_text('not json')
+        with self.assertRaisesRegex(WorkspaceError, 'cannot be read'):
+            settings.read_models(path)
+
+    def test_each_model_takes_only_its_own_levels(self):
+        self.assertEqual(settings.takes('claude', 'claude-opus-4-6'), tuple(NO_XHIGH))
+        self.assertEqual(settings.takes('claude', 'claude-haiku-4-5'), ())
+        self.assertEqual(settings.takes('claude', 'haiku'), tuple(FIVE))
+        # A model the list does not have takes every level the agent knows.
+        for model in (None, 'claude-opus-4-1', 'claude-sonnet-4-5-20250929'):
+            self.assertEqual(settings.takes('claude', model), tuple(FIVE))
+        self.assertEqual(settings.takes('codex', 'gpt-6-sol'), settings.LEVELS)
+        self.assertEqual(settings.check_effort('max', 'claude', 'claude-opus-4-6'), 'max')
+        with self.assertRaisesRegex(WorkspaceError, 'Opus 4.6 takes one of these reasoning '
+                                    'levels: low, medium, high, max, or nothing'):
+            settings.check_effort('xhigh', 'claude', 'claude-opus-4-6')
+        with self.assertRaisesRegex(WorkspaceError, 'Haiku 4.5 takes no reasoning level: '
+                                    'leave it to the agent.'):
+            settings.check_effort('low', 'claude', 'claude-haiku-4-5')
+        self.assertIsNone(settings.check_effort(None, 'claude', 'claude-haiku-4-5'))
+        self.assertEqual(settings.check_effort('xhigh', 'codex', 'claude-opus-4-6'), 'xhigh')
 
     def test_codex_offers_the_models_it_lists_and_the_levels_it_names(self):
         asked = []
@@ -787,7 +894,7 @@ class ModelListTests(JobCase):
                                   'Codex')])
         # A hidden model, a name an agent would not take and a level nobody knows are left
         # out. A model that is not listed may be given the levels every listed one takes.
-        self.assertEqual(found, {'models': LISTED, 'levels': []})
+        self.assertEqual(found, {'models': LISTED, 'levels': [], 'source': None})
         self.assertEqual(agents.offered(LISTED[:2])['levels'], ['low', 'medium', 'high'])
 
     def test_a_listing_that_fails_says_why(self):
