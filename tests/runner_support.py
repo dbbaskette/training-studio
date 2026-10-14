@@ -127,7 +127,7 @@ OUTLINE = {'version': 1, 'title': 'Rolling restarts', 'delivery': 'reading', 'mi
                 {'label': 'Traffic', 'text': 'The app keeps serving while it restarts.'}],
      'source': 'Platform documentation: restarts',
      'notes': '6 min. Walk the three-instance example.', 'sources': ['O1']},
-    {'id': 'when-capacity-holds', 'kind': 'content', 'relation': 'condition',
+    {'id': 'when-capacity-holds', 'kind': 'content', 'relation': 'contrast',
      'focal': 'More than one instance',
      'title': 'Capacity holds only with more than one instance',
      'understand': 'A single instance has nothing to hold capacity while it restarts.',
@@ -135,7 +135,7 @@ OUTLINE = {'version': 1, 'title': 'Rolling restarts', 'delivery': 'reading', 'mi
                 {'label': 'One', 'text': 'Requests are dropped while it restarts.'}],
      'caveat': 'A single-instance app still drops requests while it restarts.',
      'notes': '7 min. Health checks start the next batch.', 'sources': ['O2']},
-    {'id': 'the-objection', 'kind': 'content', 'relation': 'contrast',
+    {'id': 'the-objection', 'kind': 'content', 'relation': 'contrast', 'rhythm': 'breathing',
      'focal': 'It depends on the instance count',
      'title': 'Rolling does not always mean zero downtime',
      'understand': 'The claim is true only for an app with several instances.',
@@ -327,7 +327,14 @@ class Slides:
     file does, and a real PNG for each slide. `refuse` maps a call to the lines it says
     no with. It takes no turn of its own at previewing, so `most` says how many previews
     were ever under way at once."""
-    VERSION = '0.13.0'
+    VERSION = '0.13.1'
+    runtime = Path('/opt/slides-tool/versions/0.13.1')
+    READING = {'design guidance': 'Design from the claim in the title.\n',
+               'composition guidance': 'A canvas holds stacks, boxes and text.\n',
+               'drafting guidance': 'One claim a slide.\n',
+               'gallery': 'One drawn slide for each relation.\n',
+               'example order': '{"brief": {"relation": "order"}}\n',
+               'example contrast': '{"brief": {"relation": "contrast"}}\n'}
     LAYOUTS = [{'name': 'Closing words', 'title': False, 'subtitles': 0, 'pictures': 0},
                {'name': 'Picture and title', 'title': True, 'subtitles': 1, 'pictures': 1},
                {'name': 'Title slide', 'title': True, 'subtitles': 1, 'pictures': 0},
@@ -336,7 +343,9 @@ class Slides:
 
     def __init__(self):
         self.calls, self.refuse, self.findings, self.files = [], {}, {}, []
-        self.have = {'local': False, 'drive': True, 'pictures': True, 'missing': []}
+        # What the computer has beside this tool: LibreOffice, Google access that reaches
+        # Drive, and the programs that turn a render into pictures.
+        self.have = {'local': False, 'drive': True, 'pictures': True}
         self.budget, self.busy, self.most, self.counting = 90, 0, 0, threading.Lock()
         self.imported, self.took = [], 0.01
 
@@ -359,9 +368,9 @@ class Slides:
     def version(self) -> str:
         return self.VERSION
 
-    def ready(self) -> dict:
-        """What the module's own `ready(slides)` says of a computer that has this tool."""
-        return {**self.have, 'tool': True, 'version': self.VERSION}
+    def reading(self, brand=None) -> dict:
+        self._asked('reading')
+        return dict(self.READING)
 
     def outline_contract(self, brand) -> str:
         self._asked('outline_contract', brand)
@@ -565,9 +574,9 @@ class Slides:
                     found.setdefault(objective, []).append(number)
         return found
 
-    def drive_check(self) -> dict:
+    def drive_check(self) -> bool:
         self._asked('drive_check')
-        return {'ok': self.have['drive']}
+        return self.have['drive']
 
     def drive_import(self, deck, name) -> dict:
         self._asked('drive_import', deck, name)
@@ -583,10 +592,15 @@ class Brand:
     organisation is named, a few icons and an audit. `revision` is what the brand's
     sources are at now: change it, and a contract exported before no longer holds."""
     name = 'Example Co brand kit'
+    runtime = Path('/opt/brand-kit')
     VOICE = ('# How Example Co is named\n\nWrite Example Co, in two words. Never ExampleCo, '
              'and never the Example Company.\n')
-    ICONS = [{'id': 'icon-server', 'name': 'Server'}, {'id': 'icon-clock', 'name': 'Clock'},
-             {'id': 'icon-server-rack', 'name': 'Server rack'}]
+    ICONS = [{'id': 'icon-server', 'name': 'Server', 'category': 'Hardware', 'native': True},
+             {'id': 'icon-clock', 'name': 'Clock', 'category': 'Time', 'native': True},
+             {'id': 'icon-server-rack', 'name': 'Server rack', 'category': 'Hardware',
+              'native': True},
+             {'id': 'icon-server-photo', 'name': 'Server photo', 'category': 'Pictures',
+              'native': False}]
 
     def __init__(self):
         self.revision, self.refuse, self.exports, self.audited = 1, {}, [], []
@@ -634,7 +648,7 @@ class Brand:
     def audit(self, deck, brand_id, variant) -> dict:
         self._asked('audit')
         self.audited.append((Path(deck).read_bytes(), brand_id, variant))
-        return {'status': 'warn' if self.warnings else 'pass', 'blockers': [],
+        return {'status': 'WARN' if self.warnings else 'PASS', 'blockers': [],
                 'warnings': [dict(warning) for warning in self.warnings]}
 
     def ready(self) -> dict:
@@ -828,6 +842,7 @@ class StudioCase(unittest.TestCase):
         self.documents, self.copies, self.index = Documents(), Copies(), Index()
         # Nothing on this computer makes a deck until a test gives it the two stand-ins.
         self.slides, self.brand = None, None
+        self.real = (engines.slides_tool.Slides, engines.brand_skill.Brand)
         patches = [
             mock.patch.dict(os.environ, {'TRAINING_STUDIO_DATA': str(self.base / 'data'),
                                          'GIT_CONFIG_GLOBAL': str(self.base / 'gitconfig'),
@@ -843,10 +858,13 @@ class StudioCase(unittest.TestCase):
             mock.patch.object(engines.slides_tool, 'Slides', self.the_slides),
             mock.patch.object(engines.brand_skill, 'Brand', self.the_brand),
             mock.patch.object(engines.brand_skill, 'found', lambda: [] if self.brand is None
-                              else [{'name': self.brand.name, 'runtime': '/opt/brand-kit',
+                              else [{'name': self.brand.name,
+                                     'runtime': str(self.brand.runtime),
                                      'brands': self.brand.brands()}]),
-            mock.patch.object(engines.slides_tool, 'ready', lambda slides=None, **more:
-                              slides.ready(), create=True)]
+            # The module's own look at this computer, asked about the programs a test
+            # says are here and never about the ones that really are.
+            mock.patch.object(engines.slides_tool, 'ready', lambda slides=None, which=None,
+                              look=engines.slides_tool.ready: look(slides, which=self.which))]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -858,6 +876,24 @@ class StudioCase(unittest.TestCase):
         self.adapters = {'claude': Scripted(self.workers), 'codex': Scripted(self.workers)}
         self.space = self.set_up()
         self.engine = self.make()
+
+    def which(self, program: str) -> str | None:
+        """Where a program is, on the computer a test describes: Python always, and
+        LibreOffice and the programs that make pictures as the slides stand-in says."""
+        have = getattr(self.slides, 'have', None) or {
+            'local': getattr(getattr(self.slides, 'run', None), 'local', False),
+            'pictures': True}
+        here = {'python3': True, 'soffice': have['local'], 'pdftoppm': have['pictures'],
+                'pdfinfo': have['pictures']}
+        return f'/usr/bin/{Path(program).name}' if here.get(Path(program).name) else None
+
+    def stand_ins(self) -> tuple:
+        """The two modules' own stand-ins, which keep the rules of the real slides tool
+        and of a real brand skill. Give them to `self.slides` and `self.brand`."""
+        tool, skill = self.real
+        with mock.patch.object(self.engines.slides_tool, 'Slides', tool), \
+                mock.patch.object(self.engines.brand_skill, 'Brand', skill):
+            return self.engines.slides_tool.stand_in(), self.engines.brand_skill.stand_in()
 
     def the_slides(self, runtime=None, run=None):
         from workspace import WorkspaceError

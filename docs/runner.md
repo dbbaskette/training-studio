@@ -2,7 +2,7 @@
 
 The runner is a program that takes a training from a short form to its finished files on its own, and stops each time it needs your decision. You work on [the page](desk.md) in your browser. There is no conversation with an assistant: the runner starts an AI agent for each piece of work, checks what comes back, keeps it, and waits for you at each gate.
 
-It is early. Today it makes everything except the slide deck: the research, the blueprint, the learner guide, the brief, the practice scenarios and, if you want them, their layout for Yoodli. A training that wants a deck is taken through everything else; the deck is then made in a conversation with your assistant, as the [README](../README.md) describes, or left out.
+It is early. It makes the research, the blueprint, the learner guide, the brief, the slide deck, the practice scenarios and, if you want them, their layout for Yoodli. A deck needs more on your computer than the rest does. Where that is missing, the training is taken through everything else and the page says what the deck still needs.
 
 ## What you need
 
@@ -10,6 +10,13 @@ It is early. Today it makes everything except the slide deck: the research, the 
 - Claude Code or Codex, installed and signed in as you. The runner uses your own sign-in. It has no key of its own.
 - [harness-research](https://github.com/dbbaskette/harness-research-skill), installed. The research cannot run without it.
 - git, set up with your name and email.
+
+A slide deck needs four more things. The Status screen shows each one, and what to do about one that is missing.
+
+- [harness-slides](https://github.com/dbbaskette/harness-slides-skill), version 0.13.1 or newer. It draws and renders the slides.
+- A brand skill: a skill that holds your organisation's brands, its slide template and its icons. A deck is always made in a brand. Without a brand skill no deck is offered.
+- A way to turn slides into pictures, so that they can be looked at before they come to you: LibreOffice on this computer, or Google access that reaches Drive.
+- Poppler, the small programs (`pdftoppm` and `pdfinfo`) that turn a render into pictures.
 
 ## Start it
 
@@ -31,6 +38,11 @@ The first time, the page opens on set-up. It asks three things.
 - **When your team sees the work.** After each decision, or only when you press "Share now". Sharing never forces: if someone else changed the same file, the page says so and your work stays on your computer until it is sorted out.
 - **The agent and the limits.** Which agent drafts by default, the longest one step may take, the most one training may spend, and how many trainings may work at once.
 
+Where this computer can make a deck, set-up asks two more things.
+
+- **How slide previews are made.** With LibreOffice, the pictures are made on this computer and nothing leaves it. Through Google Drive, each deck keeps one presentation named "Preview: …" in your Drive, written again at each render. Where LibreOffice is there and you have not chosen, it is used: nothing is sent to Drive unless you choose it.
+- **Which brand skill to use,** when more than one was found.
+
 Nothing is changed until you save. You can change any of it later in Settings.
 
 ## Start a training
@@ -44,6 +56,8 @@ Nothing is changed until you save. You can change any of it later in Settings.
 | Drafts the blueprint, one for each level | You approve each blueprint |
 | Writes the learner guide | You approve it |
 | Writes the brief | You approve it |
+| Writes what each slide of the deck says | You approve the words, or say what should change |
+| Draws the slides in the brand, looks at them, has them reviewed and puts right what the review finds | You approve the deck |
 | Drafts each practice scenario the blueprint plans | You approve each one |
 | Lays each scenario out for Yoodli, when you asked for that | You approve each one |
 | Makes the copies you asked for and writes the index | Nothing: it says it is finished, and what is not ready |
@@ -52,7 +66,16 @@ At each stop the page shows the document, what was checked for you, and the agen
 
 With levels, every blueprint is drafted first. Then each level is finished in turn, lowest first.
 
-**The deck.** Choose "No deck" when you start and the deck is left out. Otherwise, when everything else is approved, the run says the deck is all that is left. Make it with your assistant, or press "Leave the deck out"; the index is written once the deck is settled either way.
+**The deck.** Choose "No deck" when you start and the deck is left out. Otherwise you choose its brand and the brand's variant from what your brand skill offers, and whether it is a PowerPoint file or Google Slides. The deck is made for each level after its brief, and you decide twice.
+
+- **What the deck says.** Every slide's title, points, caveat and notes, before any slide is drawn. Words are quick to change here and slow to change later. The run says what a deck of this size has cost before.
+- **The deck itself.** Every slide as a picture, with what the review still finds, the result of the brand's own check, and which slides cover each objective. The file you approve is the one whose pictures you are shown.
+
+Between the two, the slides are drawn in sections, side by side, by agents that look at a preview of what they draw. A different agent then reviews every slide. Sections with something badly wrong in how they are drawn are drawn again, at most twice. After that the deck comes to you as it is, with what remains listed, the gravest first. A finding about what a slide says is never fixed for you: it is listed, and "Ask for changes" takes you back to the words.
+
+On a computer that cannot make a deck, everything else is made and the run says what is missing. Put it right and check this computer again on the Status screen, make the deck with your assistant, or press "Leave the deck out". The index is written once the deck is settled.
+
+**What is left in Google Drive.** When previews are made through Drive, each deck leaves one preview presentation there. The runner never deletes anything in your Drive. Settings lists each one with its address, so that you can. A deck you asked for as Google Slides is one more file in your Drive, and its address is kept in the training.
 
 **A scenario of your own.** A scenario file you wrote in the training's folder is used as it is and never rewritten. It comes to you at its gate with what the format check found. Ask for changes there and your own wording is laid out under the headings; nothing is invented.
 
@@ -90,6 +113,9 @@ A training that has spent what it may stops and asks before it spends more. Clau
 
 - An agent the runner starts is still your own Claude Code or Codex. It knows what that agent normally knows about your account, such as the address you are signed in with, and Codex also reads your own instructions file and the names of your skills. None of that gives it a way to reach your files.
 - A research question that fails three times does not stop the training. It is named as not researched when the research comes to you, and you decide whether that matters.
+- The brand's own check warns on every slide with a caveat or a source line, because those lines are set smaller than the check allows. The warning is shown at the deck's gate. It is not something the runner can put right.
+- A deck is drawn in the default look. Choosing between looks, editing a deck by hand and bringing the edits back, and pictures made by a model are not in the runner.
+- What a deck is built from stays on the computer that built it and is not shared: the drawings, the previews and the pictures. Your team gets the deck, what it says, and what its gate showed. On another computer the deck's gate shows no pictures.
 - Bringing edits back from a Google Doc, and publishing to a team hub, are not in the runner yet.
 - A training made in a conversation is not picked up by the runner, and a training the runner drives should not also be driven from a conversation while it runs.
 - `python3 runner/studio.py status` prints what is set up and where every run is, as JSON.

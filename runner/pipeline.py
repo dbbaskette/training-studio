@@ -69,6 +69,7 @@ import workspace
 from workspace import WorkspaceError
 
 from runner import briefs, deck, gitstate, settings
+from runner import slides as slides_tool
 
 ATTEMPTS = 3            # tries at one step: the first, and two more with the reason added
 QUESTIONS = 3           # questions the workers on one step may put to the person
@@ -107,6 +108,10 @@ DRAWN = f'{WORK}/sections'          # the pictures of each section's last previe
 ABOUT = 'about.json'                # beside pictures: which deck they are of
 SEES = ('Your review of what {it} says', 'Waiting for your review of what {it} says')
 SECTION = re.compile(r'^section-[1-9]\d{0,2}$')
+# What of the slides tool's own guidance each worker of a deck is handed, by the names
+# `slides.reading()` gives. A composer also gets the example of each relation it draws.
+DRAFTING = ('drafting guidance',)
+COMPOSING = ('design guidance', 'composition guidance', 'gallery')
 OUTLINE_CHECKED = (
     'The slides tool checked its shape and its own limits.',
     'Every content slide names the objectives it serves, and every objective is served by '
@@ -1397,6 +1402,21 @@ def _told(root: Path, mine: Deck, name: str) -> str:
     return _read(place(root, mine.level, WORK) / str(brand.get('told')) / name) or ''
 
 
+def reading_file(name: str) -> str:
+    """Where one piece of the slides tool's guidance is kept, beside what else the brand
+    step read for a deck's workers."""
+    return 'reading/' + re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') + '.txt'
+
+
+def _read_also(root: Path, mine: Deck, inputs: dict, names) -> None:
+    """Add the pieces of the slides tool's guidance a worker needs to its inputs, in the
+    order given. One the installed tool does not have is left out."""
+    for name in names:
+        text = _told(root, mine, reading_file(name))
+        if text.strip() and name not in inputs:
+            inputs[name] = text
+
+
 def contract(root: Path, mine: Deck) -> Path:
     """Where a deck's exported brand contract is, on this computer."""
     return place(root, mine.level, WORK) / str((mine.built.get('brand') or {})
@@ -1418,8 +1438,9 @@ def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
     mine = found.decks[level]
     blueprint = _text(root, session, workspace.qualify('blueprint', level)) or ''
     inputs = {'handoff': _read(place(root, level, HANDOFF)) or '',
-              'outline contract': _told(root, mine, 'outline-contract.txt'),
-              'blueprint': blueprint}
+              'outline contract': _told(root, mine, 'outline-contract.txt')}
+    _read_also(root, mine, inputs, DRAFTING)
+    inputs['blueprint'] = blueprint
     guide = (_text(root, session, workspace.qualify('document', level))
              if 'document' in wanted(session) else None)
     if guide:
@@ -1467,9 +1488,10 @@ def section_work(root: Path, found: Survey, step: Step, section: str, error: str
     ids = next(listed['slides'] for listed in start['sections'] if listed['id'] == section)
     inputs = {'brief': _read(folder / 'given' / f'{section}.md') or '',
               'composition contract': _told(root, mine, 'compose-contract.txt')}
-    reading = work / str((mine.built.get('brand') or {}).get('told')) / 'reading'
-    for extra in sorted(reading.glob('*.txt')) if reading.is_dir() else ():
-        inputs[extra.stem.replace('-', ' ')] = extra.read_text(encoding='utf-8')
+    relations = [slide.get('relation') for slide in deck.slides_of(whole)
+                 if slide.get('id') in ids and isinstance(slide.get('relation'), str)]
+    _read_also(root, mine, inputs, [*COMPOSING, *(
+        slides_tool.example(relation) for relation in sorted(set(relations)))])
     again, look = section in mine.again, []
     task = (f'Draw section {number} of {workspace.label(step.artifact)}: the slides in your '
             f'input "brief".\n\nYour inputs are {_inputs(inputs)}.\n'
@@ -1852,11 +1874,17 @@ def deck_view(root: Path, found: Survey, level: str | None, live: dict | None = 
     """What the page shows of a deck being drawn: each section with how it stands, how
     many previews it has taken and the slides its latest preview shows; how many pictures
     there are of the whole deck; and what a deck of this size has cost before. `live` maps
-    each section a worker is drawing now to {'previews', 'slides'}."""
+    each section a worker is drawing now to {'previews', 'slides'}.
+
+    A section's `slides` are numbered within that section's own preview, from 1, which is
+    what `picture_of` takes with the section: where a slide falls in the deck is not known
+    until the sections are merged. `titles` gives each of those slides its title, in the
+    same order."""
     mine = found.decks.get(level)
     if mine is None:
         return None
     sections, started = [], 'deck-start' in mine.done
+    named = {slide.get('id'): slide.get('title') for slide in deck.slides_of(mine.outline)}
     for listed in (mine.start.get('sections') or ()) if started else ():
         ident, now = listed['id'], (live or {}).get(listed['id'])
         made = (mine.built.get('sections') or {}).get(ident) or {}
@@ -1867,8 +1895,12 @@ def deck_view(root: Path, found: Survey, level: str | None, live: dict | None = 
                  'to-do' if waits else 'done')
         shown = now or {'previews': made.get('previews', 0),
                         'slides': list(made.get('pictures') or ())}
+        ids = list(listed.get('slides') or ())
         sections.append({'id': ident, 'state': state, 'previews': shown['previews'],
-                         'slides': list(shown['slides'])})
+                         'slides': list(shown['slides']),
+                         'titles': [str(named.get(ids[number - 1]) or '')
+                                    if type(number) is int and 0 < number <= len(ids) else ''
+                                    for number in shown['slides']]})
     slides = len(deck.slides_of(mine.outline))
     return {'level': level, 'sections': sections,
             'pictures': len(shots(root, level, mine.last['deck'])) if mine.last else 0,

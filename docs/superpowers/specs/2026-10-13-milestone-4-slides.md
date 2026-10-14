@@ -130,24 +130,63 @@ No test starts a real agent, the slides tool, a brand skill or Google.
 
 Three things were found in the tools the runner drives. Each is reported to its owner; none is worked round here.
 
-1. **The render failure** described above. Until it is put right in the slides tool, a deck cannot be previewed or rendered with the brand's template as exported, so the real run in "Done when" cannot finish.
+1. **The render failure** described above. It is put right in version 0.13.1 of the slides tool, which is the oldest version `slides.MINIMUM` accepts, so nothing waits on it any more.
 2. **Caveat and source lines are smaller than the brand's audit allows.** The audit will warn on every content slide until the brand's type role or its audit changes.
 3. **The outline's word budget counts body words only.** The runner applies its own budget of visible words on top.
 
 ## Done when
 
 - The suite passes and `validate_package.py` prints `ok`.
-- A real training with a deck runs on Claude from the form to an approved deck in the brand's template, decided on the page, with previews through Google Drive. This needs the first item above.
+- A real training with a deck runs on Claude from the form to an approved deck in the brand's template, decided on the page, with previews through Google Drive.
 - The outline's gate and one section are run for real on Codex.
 - Not claimed without a person: that a deck is good. The gate is where that is judged.
+
+## Deviations
+
+Where what was built differs from the text above, the code is right and this section says how.
+
+**Where things are kept**
+
+- Everything a deck is built with is under `work/deck/` in the deck's own place, which is ignored and never shared: the exported brand, what the slides tool tells its workers, the sections, the builds, the last preview and its pictures. `deck-handoff.md`, `deck/outline.json`, `deck/review.json` (what the gate showed of the deck that was saved) and the deck itself are shared.
+- A deck that is saved and current has no steps left, on any computer. On a computer that did not render it, its gate shows the review, the audit and the coverage, and no pictures.
+
+**The pipeline**
+
+- A section drawn again exactly as it was is not rendered or reviewed again.
+- With no way of rendering chosen at set-up, LibreOffice is used when it is there. Google Drive is never chosen silently.
+- The person's words of approval go into the copy of the outline that is handed to the slides tool, not into `deck/outline.json`.
+- The reviewer's eight questions are the runner's own list, in `deck.QUESTIONS`, numbered as the tool numbers its own. The tool does not hand its questions to a caller.
+- Every finding of the tool's own check of an outline is held against the outline's writer, the ones the tool only asks to be looked at among them.
+- The tool splits a deck into sections at its section slides. A deck with no section slide is one section, drawn by one worker.
+- A composer is offered only the icons the slides tool can place. One that is a picture is left out of what a search returns.
+- The slides wrapper has no call for the tool's own first draft of an outline, and the runner does not use one: the outline is the worker's. The brand wrapper's readiness check is wrapped and not yet shown on the page.
+- A brand skill lists every brand with at least one variant. The brand wrapper still takes no variant, and then leaves the choice to the skill.
+
+**What a worker is given**
+
+- `Slides.reading()` reads the installed tool's own guidance: its design guidance, its composition guidance, its drafting guidance, what its gallery is for, and one drawn example for each relation. Each is a file inside the tool's folder, read and never run, and cut off at a fixed length. The brand step keeps them beside the two contracts.
+- A composer's inputs are its brief, the composition contract, the design guidance, the composition guidance, the gallery, and the example of each relation its own slides have. The outline's writer is also given the drafting guidance. Guidance the installed tool does not have is left out.
+- The engine tells each job of a deck where the slides tool and the brand skill are, from `Slides.runtime` and `Brand.runtime`, so the worker tools' server uses the same two as the engine.
+
+**The page and the runner**
+
+- In `GET /api/run`, a section's `slides` are numbered within that section's own latest preview, from 1. Those are the numbers `GET /api/slide?path=&section=&number=` takes: where a slide falls in the deck is not known until the sections are merged. `titles` beside them gives each its title.
+- A section's pictures, and `deck` in the run, are answered only while that deck is in hand: from its first step until its gate is decided.
+- `outline` in the run carries `sha256`, and the page sends it back as `seen` with its decision. A decision about words that changed since they were read is refused.
+- `brand` in `GET /api/setup` carries `skills`: every brand skill found, as `{"name", "path", "chosen"}`. `POST /api/setup` takes `brand_skill`, one of those paths. The page offers the choice when more than one was found.
+- The gate's `audit` also carries `blockers`: what the brand's check holds against the deck, or why it could not be run.
+
+**The core**
+
+- One change: the page's Content-Security-Policy is `default-src 'self'; img-src 'self' blob:`, so that a slide fetched with the key in its header can be shown from memory. Nothing else in the policy changed.
 
 ## Appendix: what the page asks the runner
 
 Additions to the earlier contracts. Everything there stands.
 
-- `GET /api/setup` gains `previews`: `{"how": "drive" | "local" | null, "drive": bool, "local": bool, "left": [{"name", "url", "training"}]}`, and `brand`: `{"found": bool, "name": str or null, "brands": [{"brand", "name", "variants": [str]}], "problem": str or null}`. `POST /api/setup` takes `previews`: `"drive"` or `"local"`.
+- `GET /api/setup` gains `previews`: `{"how": "drive" | "local" | null, "drive": bool, "local": bool, "left": [{"name", "url", "training"}]}`, and `brand`: `{"found": bool, "name": str or null, "brands": [{"brand", "name", "variants": [str]}], "problem": str or null, "skills": [{"name", "path", "chosen": bool}]}`. `POST /api/setup` takes `previews`: `"drive"` or `"local"`, and `brand_skill`: the `path` of one of `skills`.
 - `POST /api/trainings`: `brand` is now `{"brand", "variant"}` or `null`.
-- `GET /api/run` gains `outline`: `null`, or `{"level": str or null, "waiting": bool, "slides": [{"id", "kind", "title", "subtitle", "understand", "points": [{"label", "text"}], "caveat", "source", "notes", "serves": [str]}], "checked": [str], "worth": [str], "note": str or null}`; and for a deck being drawn, `deck`: `{"level", "sections": [{"id", "state", "previews": int, "slides": [int]}], "pictures": int, "before": {"dollars": float, "minutes": float} or null}`. Milestone 3's `deck`, the notice when the deck is all that is left, is renamed `deck_left`.
-- `POST /api/outline` with `{"path", "level", "decision": "approve" | "revise", "note"}` returns the run.
+- `GET /api/run` gains `outline`: `null`, or `{"level": str or null, "waiting": bool, "sha256": str, "slides": [{"id", "kind", "title", "subtitle", "understand", "points": [{"label", "text"}], "caveat", "source", "notes", "serves": [str]}], "checked": [str], "worth": [str], "note": str or null}`; and for a deck being drawn, `deck`: `{"level", "sections": [{"id", "state", "previews": int, "slides": [int], "titles": [str]}], "pictures": int, "before": {"dollars": float, "minutes": float} or null}`. A section's `slides` are numbered within the section, from 1, and `titles` are theirs in the same order. Milestone 3's `deck`, the notice when the deck is all that is left, is renamed `deck_left`.
+- `POST /api/outline` with `{"path", "level", "decision": "approve" | "revise", "note", "seen"}` returns the run. `seen` is the `sha256` of the outline that was read.
 - `GET /api/gate` for a deck gains `slides`: `[{"number", "id", "title"}]`, `review`: `{"round": int, "findings": [{"slide", "number", "severity", "about": "drawing" | "content", "note", "fix"}]}`, `audit`: `{"status", "warnings": [{"code", "count", "says"}]}`, and `coverage`: `[{"objective", "says", "reviewed": [int], "cited": [int]}]`.
 - `GET /api/slide?path=&artifact=&number=` answers one slide's picture as `image/png`, for a deck the runner rendered. It needs the key in its header like every other read, so the page fetches it and shows it from memory; a picture is never an address a document could point at. `GET /api/slide?path=&section=&number=` answers a section's latest preview.

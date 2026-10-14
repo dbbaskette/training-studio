@@ -90,14 +90,16 @@ What a caller needs to know
   module's `ready(slides)` whether LibreOffice (`local`) or Google Drive (`drive`) can render and
   whether the programs that make pictures (`pictures`) are there, with its sentences for
   what is missing under `missing`.
-- A slides wrapper that has `reading(brand)`, giving the tool's own design guidance and
-  examples as {name: text}, has them handed to the composers. Without it they work from
-  the composition contract and their brief.
+- The slides wrapper's `reading()` gives the tool's own guidance as {name: text}. It is
+  kept beside the two contracts when the brand is exported. A composer is handed the
+  design guidance, the composition guidance, what the gallery is for and the example of
+  each relation its own slides have; the outline's writer is handed the drafting guidance.
+- A deck's workers use the slides tool and the brand skill the engine uses: each job is
+  told where they are, from `Slides.runtime` and `Brand.runtime`.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 import secrets
 import shutil
@@ -672,21 +674,20 @@ class Engine:
         if not fresh and seen and time.monotonic() - seen[0] < LOOKED_FOR:
             return seen[1]
         found = {'tool': None, 'version': None, 'local': False, 'drive': False,
-                 'pictures': False, 'lacks': [],
+                 'pictures': False, 'lacks': [], 'runtimes': {'slides': None, 'brand': None},
                  'brand': {'found': False, 'name': None, 'brands': [], 'problem': None}}
         try:
             tool = self.slides()
             ready = slides_tool.ready(tool)
-            ready = ready if isinstance(ready, dict) else {}
-            found.update(version=str(tool.version()), local=bool(ready.get('local')),
-                         drive=bool(ready.get('drive')),
-                         pictures=ready.get('pictures', True) is not False,
-                         lacks=[said for said in ready.get('missing') or ()
-                                if isinstance(said, str)])
+            found.update(version=ready['version'], local=ready['local'],
+                         drive=ready['drive'], pictures=ready['pictures'],
+                         lacks=list(ready['missing']))
+            found['runtimes']['slides'] = str(tool.runtime)
         except (WorkspaceError, OSError) as refusal:
             found['tool'] = str(refusal)
         try:
             skill = self._skill()
+            found['runtimes']['brand'] = str(skill.runtime)
             found['brand'] = {'found': True, 'name': str(skill.name), 'problem': None, 'brands': [
                 {'brand': str(entry.get('brand')), 'name': str(entry.get('name')),
                  'variants': [str(variant) for variant in entry.get('variants') or ()]}
@@ -883,9 +884,8 @@ class Engine:
             (told / 'compose-contract.txt').write_text(tool.compose_contract(contract),
                                                        encoding='utf-8')
             home.write_json(told / 'layouts.json', tool.layouts(contract))
-            reading = getattr(tool, 'reading', None)
-            for name, text in (reading(contract) if callable(reading) else {}).items():
-                worker_tools._write(told / 'reading' / f'{worker_tools.slug(name)}.txt', text)
+            for name, text in tool.reading(contract).items():
+                worker_tools._write(told / pipeline.reading_file(name), text)
             kept = {'brand': chosen[0], 'variant': chosen[1], 'folder': folder.name,
                     'told': told.name, 'changed': None, 'at': home.now(),
                     'contract': contract.relative_to(work.resolve()).as_posix(),
@@ -1317,10 +1317,9 @@ class Engine:
         record = self._load(root)
         number = len(pipeline.tries(record, step.id).get('attempts', [])) + 1
         folder = self._folder(root, step.id, number)
-        worker_tools.prepare(folder, **{**work.prepared, 'runtimes': {
-            'slides': os.environ.get(slides_tool.VARIABLE),
-            'brand': settings.load().brand_skill
-            or os.environ.get(brand_skill.VARIABLE)}})
+        # A deck's worker is given the slides tool and the brand skill this engine uses.
+        worker_tools.prepare(folder, **{**work.prepared, 'runtimes': dict(
+            self._look()['runtimes']) if step.stage == 'deck' else {}})
         limits = agents.Limits(record['limits']['step_seconds'],
                                max(0.01, self._left(record)))
         job = agents.Job(work.guidance, work.task, folder, work.profile,

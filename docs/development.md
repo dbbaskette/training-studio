@@ -83,7 +83,7 @@ Drop `--dry-run` to run it. The clone is deleted afterwards; its logs are kept.
 | `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
 | `tests/test_desk.py` | The page: what it reads and records, everything it refuses, the command, the check of this computer with its commands stubbed, and the page's scripts and colours |
 | `tests/test_hub.py` | The team hub, against bare git repositories in temporary directories |
-| `tests/test_runner_*.py` | The runner: workers with a scripted agent, the worker tools against a pretend web, the workspace against bare git repositories, research against a stand-in for harness-research, the pipelines, the engine and its server |
+| `tests/test_runner_*.py` | The runner: workers with a scripted agent, the worker tools against a pretend web, the workspace against bare git repositories, research against a stand-in for harness-research, the slide deck against stand-ins for the slides tool and a brand skill, the pipelines, the engine and its server |
 
 The page's scripts are tested in a document that has no HTML parser, so a script that wrote markup would fail. That checks what the scripts build, name and send. It does not replace looking at the page in a browser.
 
@@ -146,6 +146,9 @@ runner/
   documents.py              the documents a person supplies for research
   copies.py                 the Google Docs and Word files a training asked for
   index.py                  readiness, and README.md written from the record
+  deck.py                   the runner's own rules for a deck, and what its workers are told
+  slides.py                 the harness-slides command line, called from Python
+  brand.py                  a brand skill on this computer, called from Python
   briefs/                   what a worker is told for each kind of job
 ```
 
@@ -155,7 +158,17 @@ Three rules hold it together.
 - **A worker never holds the keys.** It gets an empty folder outside the workspace and the runner's own tools, and nothing else. Only what those tools accepted is kept, and it is saved through the core, which is the only thing that can approve, and only when the page says a person did.
 - **Every rule about who may ask stays in the desk.** `runner/page.py` adds addresses to the page's server and never loosens one of its rules.
 
-No test starts a real agent or the real harness-research. Both are replaceable: `agents.Scripted` and `research.StandIn`. A change to the engine or the pipelines is finished with one real training, through the page, on each agent it claims to support.
+No test starts a real agent, the real harness-research, the slides tool or a brand skill. Each is replaceable: `agents.Scripted`, `research.StandIn`, `slides.StandIn` and `brand.StandIn`. A change to the engine or the pipelines is finished with one real training, through the page, on each agent it claims to support.
+
+### The slide deck
+
+- **Two wrappers, each with a stand-in.** `slides.py` and `brand.py` each wrap one command line and say in their docstrings what a caller gets back. `slides.stand_in()` and `brand.stand_in()` keep the real tools' rules: an outline is checked, a section is compiled, a preview is real pictures, the audit reads the deck. No brand's name is in this repository.
+- **Two sets of tests.** `tests/test_runner_deck.py` drives the flow against small fakes in `tests/runner_support.py`, which make each kind of trouble easy to cause. `tests/test_runner_deck_whole.py` drives the same flow against the two stand-ins, with workers that use their tools as an agent would. A change to either wrapper or to the flow must pass both.
+- **The deck's steps are the runner's own.** The core knows one file for the stage, the deck. What the deck says has a gate the runner keeps in its run record; gate 6 is the core's.
+- **What is shared and what is not.** `deck-handoff.md`, `deck/outline.json`, `deck/review.json` and the deck are committed. Everything a deck is built with is under `work/deck/`, which is ignored: the exported brand, the tool's guidance, the sections, the builds and the pictures.
+- **One tool, one brand skill.** The engine tells each deck job where the slides tool and the brand skill are, from `Slides.runtime` and `Brand.runtime`, so the worker tools' server uses the same two.
+- **Previews are taken one at a time** on a computer, whoever is drawing, through one lock file in the runner's own data folder.
+- **The tool's guidance is read, never copied here.** `Slides.reading()` reads the installed tool's own design and drafting guidance and its gallery, and the engine hands a worker the parts its job needs.
 
 ## What is not yet verified
 

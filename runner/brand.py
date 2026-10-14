@@ -32,6 +32,10 @@ Added to the above
 ------------------
 - `found()` returns [{'name', 'runtime', 'brands'}], `runtime` being the skill's folder as
   text, with links followed. Give one to `Brand(runtime=...)` to use that skill.
+- Every brand `brands()` lists has at least one variant. `export` and `audit` take None
+  for the variant all the same, and then leave the choice to the skill.
+- `brand.runtime` is the folder of the skill a Brand uses. Give it to `Brand(runtime=...)`
+  to use that same skill somewhere else, as the worker tools' server does.
 - A skill's companion command is the script in its `scripts` folder that is named for the
   skill. It is run only when the folder holds a SKILL.md and the script mentions brands,
   and then only to ask for its brands and its version.
@@ -207,8 +211,14 @@ def found(run=None) -> list[dict]:
             for runtime, _, name, brands in _installed(run)]
 
 
+def _variant(variant: str | None) -> list[str]:
+    """How a variant is named to the skill. With none named, the skill chooses."""
+    return ['--variant', variant] if variant else []
+
+
 class Brand:
-    """The brands, contract, icons and audit commands of one installed brand skill."""
+    """The brands, contract, icons and audit commands of one installed brand skill.
+    `runtime` is the folder it is installed in, and `name` what it calls itself."""
 
     def __init__(self, runtime: Path | None = None, run=None):
         self.run = run or run_command
@@ -258,7 +268,7 @@ class Brand:
             raise WorkspaceError(NOT_WHOLE)
         return listed
 
-    def export(self, folder: Path, brand_id: str, variant: str,
+    def export(self, folder: Path, brand_id: str, variant: str | None,
                delivery: str = 'reading') -> dict:
         """Export one brand's contract for slides into a new folder."""
         if delivery not in DELIVERIES:
@@ -270,7 +280,7 @@ class Brand:
                 'voice': folder / 'VOICE.md'}
         try:
             self._answer('contract', 'export', '--medium', 'slides', '--brand', brand_id,
-                         '--variant', variant, '--delivery', delivery, '--output',
+                         *_variant(variant), '--delivery', delivery, '--output',
                          str(folder))
             if not all(path.is_file() for path in made.values()):
                 raise WorkspaceError('The brand skill exported a brand without the three '
@@ -299,9 +309,9 @@ class Brand:
                 for icon in results if isinstance(icon, dict)
                 and isinstance(icon.get('id'), str)]
 
-    def audit(self, deck: Path, brand_id: str, variant: str) -> dict:
+    def audit(self, deck: Path, brand_id: str, variant: str | None) -> dict:
         """Run the brand's own audit over a finished deck."""
-        report = self._answer('presentation', '--brand', brand_id, '--variant', variant,
+        report = self._answer('presentation', '--brand', brand_id, *_variant(variant),
                               '--file', str(deck), '--json', report=True)
 
         def said(kept: str) -> list[dict]:

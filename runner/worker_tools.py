@@ -67,8 +67,9 @@ checked here before anything is kept. Each job has a folder that only the runner
   folder and hash, its slides as {'number', 'id', 'title', 'image'}, the blueprint's
   objective IDs, and where an accepted assessment is also kept. The slides tool takes one
   assessment for one render, so one that is already there stands.
-- `runtimes` is {'slides', 'brand'}: where the slides tool and the brand skill are, when
-  this computer was told. The server runs apart from the runner and finds them again.
+- `runtimes` is {'slides', 'brand'}: the folders of the slides tool and of the brand skill
+  the engine itself uses, from each wrapper's `runtime`. The server runs apart from the
+  runner, and makes its own wrappers of those same two. A job with no deck is given none.
 - Nothing a deck's tool answers names a folder on this computer.
 """
 from __future__ import annotations
@@ -640,8 +641,8 @@ def render(slides, compiled: Path, folder: Path, how: dict) -> dict:
     'lock', 'kept', 'named'}: 'kept' names the file that remembers a deck's one preview
     file in Google Drive, which is written again each time, and 'named' is what to
     remember of it beside its ID and address. A preview that fails after it made that
-    file says so in its refusal's `left`, and the file is remembered all the same. Returns
-    what the slides tool returned."""
+    file says so in its refusal's `left`, as {'fileId', 'url'}, and the file is remembered
+    all the same. Returns what the slides tool returned."""
     kept = Path(how['kept']) if how.get('kept') else None
     with one_at_a_time(Path(how['lock'])):
         known = home.read_json(kept, {}) if kept else {}
@@ -655,7 +656,7 @@ def render(slides, compiled: Path, folder: Path, how: dict) -> dict:
                                    file_id=known.get('id'))
         except WorkspaceError as refusal:  # a preview that failed may have made its file
             left = getattr(refusal, 'left', None) or {}
-            remember(left.get('id'), left.get('url'))
+            remember(left.get('fileId'), left.get('url'))
             raise
         remember(found.get('fileId'), found.get('url'))
     return found
@@ -1122,6 +1123,8 @@ class WorkerTools:
                            'these right first:\n- ' + '\n- '.join(problems))
         build = self.folder / 'builds' / f'{used + 1}-{secrets.token_hex(3)}'
         taken = self.folder / 'previews' / build.name
+        for new in (build, taken):   # the slides tool makes a folder, and not what holds it
+            new.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.slides().compile(_draft(self.folder / 'drafts', 'preview', kept),
                                   spec['brand'], folder=build)
@@ -1158,12 +1161,16 @@ class WorkerTools:
         if not words or len(words) > 80:
             raise Refusal('Search with one or two plain words.')
         found = self.brand().icons(words, min(max(1, whole(limit, 'limit')), ICONS))
+        # One that is a picture cannot be placed by the slides tool, so it is not offered.
+        found = [icon for icon in found if isinstance(icon, dict)
+                 and icon.get('native', True) is not False]
         if not found:
             return True, (f'No icon matches "{words}". Every word has to match: try one '
                           'plain noun.')
         return True, (f'Icons for "{words}". Use an ID as the icon of an icon node:\n'
                       + '\n'.join(f"- {icon.get('id')}: {icon.get('name')}"
-                                  for icon in found if isinstance(icon, dict)))
+                                  + (f" ({icon['category']})" if icon.get('category') else '')
+                                  for icon in found))
 
     @tool
     def submit_section(self, section, changed='', bothers=''):

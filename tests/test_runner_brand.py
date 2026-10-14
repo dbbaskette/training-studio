@@ -265,6 +265,12 @@ class CommandTests(unittest.TestCase):
                                 'voice': str(self.root / 'brand' / 'VOICE.md')})
         self.assertEqual(self.ran[0][-4:], ['--delivery', 'reading', '--output',
                                             str(self.root / 'brand')])
+        self.assertIn('--variant', self.ran[0])
+        self.brand.export(self.root / 'plain', 'acme', None)
+        self.brand.audit('/d/deck.pptx', 'acme', None)
+        self.assertEqual([call for call in self.ran[1:] if '--variant' in call or None in call],
+                         [], 'with no variant named, the skill chooses')
+        del self.ran[1:]
         with self.assertRaisesRegex(WorkspaceError, 'exported for reading or live delivery, '
                                     'not print'):
             self.brand.export(self.root / 'other', 'acme', 'light', delivery='print')

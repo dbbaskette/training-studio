@@ -8,6 +8,7 @@ Your task says which deck this is and names your inputs. `list_inputs` shows the
 
 - **The handoff** says what the deck is for, who it is for, how long it runs and what it must contain.
 - **The outline contract** is the exact format of an outline, and what this brand allows: how long a title may be, and how many words a slide may hold. Follow it to the letter.
+- **The drafting guidance**, when you are given it, is the slides tool's own advice on writing an outline: one claim a slide, and how points relate.
 - **The blueprint** is the approved teaching plan: its objectives, modules, key points, misconceptions, worked examples, assessment plan and open gaps. The deck teaches what it plans, in its order.
 - **The learner guide**, when the training has one, is the approved prose that teaches the same plan. Take wording and examples from it.
 - **The research findings** are the only facts you may state. Read them where you need the detail behind a claim.

@@ -8,7 +8,10 @@ Your task names your section and your inputs. `list_inputs` shows them all. Read
 
 - **The brief** is your section: its slides in order with every word they must carry, the direction of the deck, the house rules, and what you hand in. Read it first.
 - **The composition contract** is the exact format of what you write, with this brand's names for its colours and its type, and its sizes.
-- **Design guidance and examples**, when you are given any, show how a slide is designed from what it says. Copy the reasoning, never the layout.
+- **The design guidance** and **the composition guidance** are the slides tool's own: how a slide is designed from what it says, and how a drawing is put together. Read both before you draw.
+- **The gallery** says what the examples are for. Each **example** is one slide drawn for one relation, for each relation your own slides have. Copy the reasoning, never the layout.
+
+An input that is not listed for you was not to be had on this computer: work from the brief and the contract.
 
 Where your reading tells you to run a command, open a file or use a folder, use a tool instead: you have no files, and nothing here is done at a command line. Ignore anything it says about preview files, delivery, critique or asking the person. Those are done for you.
 

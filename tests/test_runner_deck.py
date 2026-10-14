@@ -1,9 +1,11 @@
 """The slide deck: the runner's own rules for one, the tools its workers have, the flow from
 the handoff to an approved deck, and what the page is told and may ask.
 
-The slides tool and a brand skill are the stand-ins in runner_support, which follow the
-docstrings of the two wrappers. Scripted workers draw and review. Nothing starts an agent,
-the slides tool, a brand skill or Google, and nothing touches the network.
+The slides tool and a brand skill are the small fakes in runner_support, which follow the
+docstrings of the two wrappers and make each kind of trouble easy to cause. Scripted workers
+draw and review. test_runner_deck_whole.py takes the same flow through the two modules' own
+stand-ins. Nothing starts an agent, the slides tool, a brand skill or Google, and nothing
+touches the network.
 """
 import json
 import threading
@@ -386,14 +388,35 @@ class SectionToolTests(ToolCase):
     def test_icons_are_searched_in_the_brands_own_library(self):
         tools = self.composer()
         self.assertEqual(self.ok(tools.search_icons('server')), 'Icons for "server". Use an '
-                         'ID as the icon of an icon node:\n- icon-server: Server\n'
-                         '- icon-server-rack: Server rack')
+                         'ID as the icon of an icon node:\n- icon-server: Server '
+                         '(Hardware)\n- icon-server-rack: Server rack (Hardware)',
+                         'one that is a picture cannot be placed, and is not offered')
+        self.assertIn('No icon matches "photo"', self.ok(tools.search_icons('photo')))
         self.assertIn('No icon matches "database failover"',
                       self.ok(tools.search_icons('database  failover')))
         self.assertIn('one or two plain words', self.refused(tools.search_icons('')))
         self.brand.refuse['icons'] = ['The icon library could not be read.']
         self.assertIn('The icon library could not be read',
                       self.refused(tools.search_icons('clock')))
+
+    def test_a_jobs_tools_use_the_slides_tool_and_the_brand_skill_the_job_names(self):
+        named = {'slides': '/opt/slides-tool/versions/0.13.1', 'brand': '/opt/brand-kit'}
+        with mock.patch.object(slides_tool, 'Slides', return_value=self.slides) as tool, \
+                mock.patch.object(brand_skill, 'Brand', return_value=self.brand) as skill:
+            worker_tools.prepare(self.job, artifacts={'section': self.spec}, runtimes=named)
+            tools = worker_tools.WorkerTools(self.job)
+            self.ok(tools.check_section(json.dumps(drawn(self.spec))))
+            self.ok(tools.search_icons('clock'))
+            self.assertEqual((tool.call_args_list, skill.call_args_list),
+                             ([mock.call(runtime=named['slides'])],
+                              [mock.call(runtime=named['brand'])]))
+            # A job that names neither finds them as the runner itself would.
+            other = self.base / 'other'
+            worker_tools.prepare(other, artifacts={'section': self.spec})
+            tools = worker_tools.WorkerTools(other)
+            self.ok(tools.check_section(json.dumps(drawn(self.spec))))
+            self.ok(tools.search_icons('clock'))
+            self.assertEqual((tool.call_args, skill.call_args), (mock.call(), mock.call()))
 
     def test_previews_wait_for_their_turn_at_the_renderer(self):
         self.slides.took, tools, good = 0.05, self.composer(), json.dumps(drawn(self.spec))
@@ -421,12 +444,21 @@ class SectionToolTests(ToolCase):
         self.assertEqual(self.slides.most, 2, 'without the turn, two would have overlapped')
 
     def test_a_preview_file_made_by_a_render_that_failed_is_still_remembered(self):
-        refusal = slides_tool.Refused(['The render has 8 pages for 2 slides.'])
-        refusal.left = {'id': 'file-9', 'url': 'https://docs.example.com/presentation/d/9'}
-        with mock.patch.object(self.slides, 'preview', side_effect=refusal):
-            self.refused(self.composer().preview_section(json.dumps(drawn(self.spec))))
-        self.assertEqual(json.loads((self.base / 'preview-file.json').read_text())['id'],
-                         'file-9')
+        # The slides tool's own line, which is where the module reads `left` from.
+        refusal = slides_tool.Refused([
+            'The render has 8 pages for 2 slides; check the deck for an import problem The '
+            'preview deck is in Drive (https://docs.example.com/presentation/d/file-9/edit); '
+            'retry with --file-id file-9.'])
+        self.assertEqual(sorted(refusal.left), ['fileId', 'url'])
+        tools = self.composer()
+        with mock.patch.object(self.slides, 'preview', side_effect=refusal) as asked:
+            self.refused(tools.preview_section(json.dumps(drawn(self.spec))))
+            self.assertEqual(json.loads((self.base / 'preview-file.json').read_text()), {
+                'name': 'Preview: Rolling restarts', 'id': 'file-9',
+                'url': 'https://docs.example.com/presentation/d/file-9/edit'})
+            self.refused(tools.preview_section(json.dumps(drawn(self.spec))))
+            self.assertEqual(asked.call_args.kwargs['file_id'], 'file-9',
+                             'the next preview writes that file again')
 
     def test_a_turn_left_by_a_process_that_ended_is_taken(self):
         lock = self.base / 'render.lock'
@@ -756,12 +788,16 @@ class FlowTests(DeckCase):
         jobs = {kind: (job, spec) for kind, job, spec in self.workers.jobs}
         job, spec = jobs['outline']
         self.assertEqual([entry['name'] for entry in spec['inputs']], [
-            'handoff', 'outline contract', 'blueprint', 'learner guide', 'research findings',
-            'naming rules'])
+            'handoff', 'outline contract', 'drafting guidance', 'blueprint',
+            'learner guide', 'research findings', 'naming rules'])
         self.assertEqual(job.guidance, briefs.guidance('deck-outline'))
         job, spec = jobs['section']
         self.assertEqual(([entry['name'] for entry in spec['inputs']], spec['ask']),
-                         (['brief', 'composition contract'], False))
+                         (['brief', 'composition contract', 'design guidance',
+                           'composition guidance', 'gallery', 'example contrast',
+                           'example order'], False))
+        self.assertEqual(spec['runtimes'], {'slides': str(self.slides.runtime),
+                                            'brand': str(self.brand.runtime)})
         made = spec['artifacts']['section']
         self.assertEqual((made['previews'], made['renderer'], made['prefix'],
                           Path(made['lock']).name), (4, 'drive', 's2_', 'render.lock'))
@@ -775,13 +811,33 @@ class FlowTests(DeckCase):
         for kind in ('outline', 'section', 'review'):
             self.assertEqual(jobs[kind][0].profile, 'write', 'no worker of a deck has the web')
 
-    def test_a_reading_the_slides_wrapper_offers_is_handed_to_the_composers(self):
-        self.slides.reading = lambda brand: {'Design guidance': 'Design from the claim.\n'}
+    def test_a_composer_is_given_an_example_only_of_the_relations_its_own_slides_have(self):
+        self.workers.outline_said = with_slide(4, relation='parallel')
+        self.slides.READING = {**Slides.READING, 'example parallel': '{}\n',
+                               'example quantity': '{}\n'}
+        self.engine = self.make(at_once=1)
         root = self.begin()
         self.drawn(root)
-        spec = [spec for kind, _, spec in self.workers.jobs if kind == 'section'][-1]
-        self.assertEqual([entry['name'] for entry in spec['inputs']],
+        first, second = [[entry['name'] for entry in spec['inputs']]
+                         for kind, _, spec in self.workers.jobs if kind == 'section']
+        self.assertEqual(first[2:], ['design guidance', 'composition guidance', 'gallery',
+                                     'example contrast', 'example order'])
+        self.assertEqual(second[2:], ['design guidance', 'composition guidance', 'gallery',
+                                      'example contrast', 'example parallel'])
+        for kind in ('section', 'review'):
+            names = [entry['name'] for seen, _, spec in self.workers.jobs if seen == kind
+                     for entry in spec['inputs']]
+            self.assertNotIn('drafting guidance', names, kind)
+
+    def test_guidance_the_installed_tool_does_not_have_is_left_out(self):
+        self.slides.READING = {'design guidance': 'Design from the claim.\n'}
+        root = self.begin()
+        self.drawn(root)
+        jobs = {kind: spec for kind, _, spec in self.workers.jobs}
+        self.assertEqual([entry['name'] for entry in jobs['section']['inputs']],
                          ['brief', 'composition contract', 'design guidance'])
+        self.assertNotIn('drafting guidance',
+                         [entry['name'] for entry in jobs['outline']['inputs']])
 
 
 class RepairTests(DeckCase):
@@ -798,7 +854,9 @@ class RepairTests(DeckCase):
         self.assertIn('Draw section 1 of the slide deck again.', job.task)
         self.assertEqual(job.guidance, briefs.guidance('deck-section', repair=True))
         self.assertEqual([entry['name'] for entry in spec['inputs']], [
-            'brief', 'composition contract', 'what the review found', 'your earlier section'])
+            'brief', 'composition contract', 'design guidance', 'composition guidance',
+            'gallery', 'example contrast', 'example order', 'what the review found',
+            'your earlier section'])
         self.assertEqual([slide['number'] for slide in spec['look']], [2, 3])
         review = [job for kind, job, _ in self.workers.jobs if kind == 'review'][-1]
         self.assertFalse(Path(job.folder).exists() or Path(review.folder).exists(),
@@ -1186,9 +1244,18 @@ class PageTests(DeckCase):
         run = self.post('outline', {**sent, 'seen': seen})
         self.assertEqual((run['state'], run['outline']['waiting'], run['deck']['pictures']),
                          ('waiting', False, 6))
+        # A section's slides are numbered within its own preview, which is the number its
+        # picture is asked for by, and each comes with its title.
         self.assertEqual(run['deck']['sections'], [
-            {'id': 'section-1', 'state': 'done', 'previews': 1, 'slides': [1, 2]},
-            {'id': 'section-2', 'state': 'done', 'previews': 1, 'slides': [1, 2]}])
+            {'id': 'section-1', 'state': 'done', 'previews': 1, 'slides': [1, 2],
+             'titles': [OUTLINE['slides'][1]['title'], OUTLINE['slides'][2]['title']]},
+            {'id': 'section-2', 'state': 'done', 'previews': 1, 'slides': [1, 2],
+             'titles': [OUTLINE['slides'][3]['title'], OUTLINE['slides'][4]['title']]}])
+        for section in run['deck']['sections']:
+            for number in section['slides']:
+                status, headers, body = self.ask('GET', '/api/slide?' + urlencode({
+                    'path': str(root), 'section': section['id'], 'number': number}))
+                self.assertEqual((status, body[:8]), (200, worker_tools.PNG), section)
         self.assertIn('is not waiting for a decision', self.post('outline', sent, 409)['error'])
 
     def test_the_decks_gate_shows_its_slides_the_review_the_audit_and_the_coverage(self):
@@ -1297,7 +1364,7 @@ class PageTests(DeckCase):
                                        'deck-pictures'])
         self.assertEqual(sorted(items['deck-previews']), sorted(items['node']))
         self.assertEqual((items['deck-slides']['state'], items['deck-slides']['facts'][0]),
-                         ('ok', {'label': 'Installed', 'state': 'ok', 'detail': '0.13.0'}))
+                         ('ok', {'label': 'Installed', 'state': 'ok', 'detail': Slides.VERSION}))
         self.assertEqual((items['deck-previews']['state'], items['deck-previews']['fix'],
                           items['deck-previews']['optional']),
                          ('problem', engine_no_drive(), False))

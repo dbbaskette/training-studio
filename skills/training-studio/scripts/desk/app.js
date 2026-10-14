@@ -2081,10 +2081,19 @@ function findingsNote(found) {
   return node;
 }
 
-// What the brand's own check of the finished deck says. A warning is shown as a warning.
+// What the brand's own check of the finished deck says. A warning is shown as a warning, and
+// what the check holds against the deck, or why it could not be run, is said in its own words.
 function auditPart(audit) {
   const warnings = list(audit.warnings);
+  const held = list(audit.blockers).filter(Boolean);
   const node = add(make('div', 'audit'), make('h3', 'row-title', 'The brand’s own check'));
+  if (held.length) {
+    const against = make('ul', 'look');
+    for (const said of held) add(against, add(make('li'), state('late', String(said))));
+    add(node, state('late', 'The check did not pass this deck.'), against,
+      make('p', 'quiet', 'Approving is still yours to decide. Weigh this first.'));
+    if (!warnings.length) return node;
+  }
   if (!warnings.length) {
     const status = String(audit.status || '').toLowerCase();
     return add(node, AUDIT_QUIET.includes(status)
@@ -2764,6 +2773,8 @@ function setupForm() {
     dollars: given(limits.training_dollars) ? String(limits.training_dollars) : '',
     parallel: given(limits.parallel) ? String(limits.parallel) : '',
     previews: previewsNow(held.previews || {}),
+    brandSkill: (brandSkills().find((skill) => skill.chosen) || brandSkills()[0] || {}).path
+      || '',
     check: null, checked: '', checking: false, unchecked: '', existing: false, turn: 0,
     saving: false,
   };
@@ -3013,6 +3024,26 @@ function limitsCard(form) {
     { short: true, mode: 'numeric' }));
 }
 
+// The brand skills found on this computer, each as the runner names it and where it is.
+function brandSkills() {
+  return list(((view.setup || {}).brand || {}).skills).filter((skill) => skill && skill.path);
+}
+
+// Which brand skill decks are made with. It is a choice only where more than one was found.
+// Two with one name are told apart by where each is.
+function brandSkillCard(form) {
+  const skills = brandSkills();
+  if (skills.length < 2) return null;
+  const twice = (name) => skills.filter((skill) => skill.name === name).length > 1;
+  return add(card('The brand skill decks are made with'),
+    make('p', '', 'A slide deck is always made in a brand, and a brand skill holds the '
+      + 'brands. More than one was found on this computer.'),
+    oneOf('setup-brand-skill', 'Use this brand skill', skills.map((skill) => [skill.path,
+      (skill.name || skill.path) + (twice(skill.name) ? ' (' + skill.path + ')' : '')]),
+    form, 'brandSkill'),
+    make('p', 'quiet field-hint', 'A new training offers the brands of the one chosen here.'));
+}
+
 // How the pictures of a deck's slides are made. Each way says what it means, and a way this
 // computer cannot do says so and cannot be chosen.
 function previewsCard(form) {
@@ -3064,7 +3095,7 @@ function paintSetup(fresh) {
       make('p', '', 'An agent is the AI that drafts each stage for you to decide on. It has '
         + 'to be installed on this computer and signed in.'),
       ...agentFields(form, 'setup', 'Use by default')),
-    previewsCard(form), limitsCard(form),
+    brandSkillCard(form), previewsCard(form), limitsCard(form),
     add(make('div', 'form-foot'), problem, add(make('div', 'bar'), save,
       first ? null : capsule('Cancel', 'quiet', back, 'cancel'))));
   place({ title: first ? 'Set up Training Studio' : 'Set-up', name: 'Set-up',
@@ -3161,6 +3192,8 @@ async function saveSetup(pressed) {
   else body.repository = asked.repository;
   // Where this computer can make previews in neither way, there is no choice to send.
   if (form.previews) body.previews = form.previews;
+  // With one brand skill, or none, there is nothing to choose and nothing to send.
+  if (brandSkills().length > 1 && form.brandSkill) body.brand_skill = form.brandSkill;
   const first = !view.setup.configured;
   try {
     view.setup = await send('setup', body);
@@ -4111,24 +4144,28 @@ function costBefore(before) {
 }
 
 // One section of a deck while it is drawn: where it stands, how many previews it has used,
-// and its slides as they were last previewed.
-function sectionItem(section, index, titles) {
+// and its slides as they were last previewed. The runner numbers a section's slides within
+// that section, from 1, and gives each its title: where a slide falls in the deck is not
+// known until the sections are put together, so nothing here says.
+function sectionItem(section, index) {
   const [shape, words] = SECTION_WORDS[section.state]
     || ['current', spoken(section.state || 'being drawn')];
   const slides = list(section.slides);
+  const titles = list(section.titles);
   const used = Number(section.previews) || 0;
   const text = add(make('div', 'row-text'), make('p', 'step-name', 'Section ' + (index + 1)),
-    make('p', 'quiet', capital(slidesNamed(slides)) + ' · '
-      + (used ? count(used, 'preview', 'previews') + ' used' : 'No preview yet')));
+    make('p', 'quiet', used ? (slides.length ? count(slides.length, 'slide', 'slides') + ' · '
+      : '') + count(used, 'preview', 'previews') + ' used' : 'No preview yet'));
   if (used && slides.length) {
     const thumbs = make('ul', 'thumbs');
-    for (const number of slides) {
+    slides.forEach((number, at) => {
       const name = make('span', 'thumb-name quiet', String(number));
       name.setAttribute('aria-hidden', 'true');
       // A new preview is a new picture of the same slide, so it is fetched again.
       add(thumbs, add(make('li', 'thumb'), pictureAt({ section: section.id, number },
-        'Slide ' + number + (titles[number] ? ': ' + titles[number] : ''), used), name));
-    }
+        'Section ' + (index + 1) + ', slide ' + number + (titles[at] ? ': ' + titles[at] : ''),
+        used), name));
+    });
     add(text, make('p', 'quiet', 'As last previewed:'), thumbs);
   }
   const item = make('li', 'row step section');
@@ -4147,15 +4184,8 @@ function deckCard(run) {
     add(node, make('p', 'quiet', 'Its sections appear here once the deck is split into '
       + 'them.'));
   } else {
-    // A slide is named by its title where what the deck says is still at hand to read it from.
-    const titles = {};
-    const said = run.outline && (run.outline.level || null) === (deck.level || null)
-      ? list(run.outline.slides) : [];
-    said.forEach((slide, index) => {
-      titles[index + 1] = slide.title;
-    });
     const items = make('ol', 'rows');
-    sections.forEach((section, index) => items.append(sectionItem(section, index, titles)));
+    sections.forEach((section, index) => items.append(sectionItem(section, index)));
     add(node, make('p', '', 'It is drawn in sections, side by side. Each one draws its '
       + 'slides, looks at a preview of them, and puts right what it sees before handing in.'),
     items);
@@ -4204,8 +4234,8 @@ function paintRun(fresh) {
     run.finished ? ['finished', [run.finished, lead],
       () => finishedPart(run, lead === 'finished')] : null,
     // While a deck is drawn, its sections and their latest previews are what there is to see.
-    run.deck ? ['deck', [run.deck, run.outline && [run.outline.level,
-      list(run.outline.slides).map((slide) => slide.title)]], () => deckCard(run)] : null,
+    run.deck ? ['deck', [run.deck, run.outline && run.outline.level],
+      () => deckCard(run)] : null,
     ['steps', list(run.steps).map((step) => [step.id, step.label, step.kind, step.status,
       step.attempts > 1, step.error]), () => stepsCard(run)],
     list(run.workers).length ? ['workers', run.workers, () => workersCard(run)] : null,
@@ -4445,8 +4475,11 @@ async function decideOutline(decision, note, problem, pressed) {
   pressed.disabled = true;
   let run;
   try {
-    run = await send('outline', { path: view.path, level: view.run.outline.level || null,
-      decision, note: note || null });
+    // What was read goes with the decision, so that words that changed since are not decided.
+    const body = { path: view.path, level: view.run.outline.level || null, decision,
+      note: note || null };
+    if (view.run.outline.sha256) body.seen = view.run.outline.sha256;
+    run = await send('outline', body);
   } catch (failure) {
     say(problem, failure.message);
     pressed.disabled = false;

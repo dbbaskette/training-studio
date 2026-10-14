@@ -6,6 +6,7 @@ rules for decisions are tested everywhere.
 """
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -36,7 +37,9 @@ PAGE = helpers.SCRIPTS / 'desk'
 PAGE_FILES = ('index.html', 'app.js', 'markdown.js', 'style.css')
 HARNESS = Path(__file__).resolve().parent / 'page_harness.js'
 NODE = shutil.which('node')
-SECURITY_HEADERS = {'Content-Security-Policy': "default-src 'self'",
+# Everything comes from the desk itself. A picture may also be one the page holds in memory
+# (blob:), which is how a slide fetched with the key in its header is shown.
+SECURITY_HEADERS = {'Content-Security-Policy': "default-src 'self'; img-src 'self' blob:",
                     'X-Content-Type-Options': 'nosniff',
                     'X-Frame-Options': 'DENY',
                     'Referrer-Policy': 'no-referrer',
@@ -2126,7 +2129,7 @@ def ok(body) -> dict:
 # The runner's answers, written out field for field from the appendices of the milestone 2,
 # milestone 3 and milestone 4 specifications ("What the page asks the runner"). Its server is
 # built apart from the page.
-RUNNER = ok({'runner': True, 'version': '0.9.0'})
+RUNNER = ok({'runner': True, 'version': '0.11.0'})
 LIMITS = {'step_seconds': 900, 'training_dollars': 20, 'parallel': 2}
 # A computer with a brand skill and no way yet to make previews: what every screen but the
 # deck's own is tried on. The tests of previews say what their computer can do.
@@ -2154,11 +2157,11 @@ AGENTS_FOUND = {'agents': [
      'problem': 'Codex is not signed in. Run codex login in a terminal, then look again.'}]}
 RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'steps', 'workers', 'spent', 'question',
               'problem', 'documents', 'copies', 'deck_left', 'finished', 'outline', 'deck'}
-OUTLINE_FIELDS = {'level', 'waiting', 'slides', 'checked', 'worth', 'note'}
+OUTLINE_FIELDS = {'level', 'waiting', 'slides', 'sha256', 'checked', 'worth', 'note'}
 OUTLINE_SLIDE_FIELDS = {'id', 'kind', 'title', 'subtitle', 'understand', 'points', 'caveat',
                         'source', 'notes', 'serves'}
 DECK_FIELDS = {'level', 'sections', 'pictures', 'before'}
-SECTION_FIELDS = {'id', 'state', 'previews', 'slides'}
+SECTION_FIELDS = {'id', 'state', 'previews', 'slides', 'titles'}
 FINDING_FIELDS = {'slide', 'number', 'severity', 'about', 'note', 'fix'}
 STEP_FIELDS = {'id', 'label', 'kind', 'status', 'attempts', 'seconds', 'dollars', 'error'}
 DOCUMENT_FIELDS = {'name', 'bytes', 'readable', 'problem'}
@@ -2249,12 +2252,17 @@ def an_outline(*slides: dict, **more) -> dict:
                'checked': ['Every objective is served by a slide.',
                            'Every slide is within its budget of words.'],
                'worth': ['Slide 2 is three words under its budget.'], **more}
+    # The runner names the version it shows by the hash of the outline's file.
+    outline['sha256'] = hashlib.sha256(json.dumps(outline['slides']).encode()).hexdigest()
     assert set(outline) == OUTLINE_FIELDS, outline
     return outline
 
 
-def a_section(ident: str, state: str, previews: int, slides: list) -> dict:
-    section = {'id': ident, 'state': state, 'previews': previews, 'slides': slides}
+def a_section(ident: str, state: str, previews: int, titles: list) -> dict:
+    """One section of a deck being drawn, as the runner says it: the slides of its latest
+    preview numbered within the section, from 1, each with its title."""
+    section = {'id': ident, 'state': state, 'previews': previews,
+               'slides': list(range(1, len(titles) + 1)), 'titles': list(titles)}
     assert set(section) == SECTION_FIELDS, section
     return section
 
@@ -3793,6 +3801,52 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertIn('Slide previews\ncannot be made on this computer yet',
                       shots['saved']['text'])
 
+    def test_the_brand_skill_is_chosen_at_set_up_where_more_than_one_was_found(self):
+        check = {'ok': True, 'found': {'name': 'Field enablement', 'folder': 'trainings',
+                                       'branch': 'main', 'existing': True},
+                 'checks': [{'what': 'The repository can be reached', 'ok': True, 'fix': None}]}
+        saved = {'repository': 'git@example.com:team/tools.git', 'folder': 'trainings',
+                 'branch': 'main', 'name': 'Field enablement', 'share_when': 'each-decision',
+                 'agent': 'claude', 'model': None, 'limits': LIMITS}
+        kit = {'name': 'Example Brand Kit', 'path': '/skills/example-brand', 'chosen': True}
+        labs = {'name': 'Example Labs Kit', 'path': '/skills/example-labs', 'chosen': False}
+
+        def run(skills: list, *choose: dict) -> dict:
+            answers = self.answers({**SET_UP, 'brand': {**BRAND, 'skills': skills}}, **{
+                'POST /api/setup/check': [ok(check)], 'POST /api/setup': [ok(SET_UP)]})
+            return self.run_page(answers, [
+                {'click': 'Settings'}, {'click': 'Change the set-up'}, {'snapshot': 'set-up'},
+                *choose, {'click': 'Save'}])
+
+        # Two were found: the one in use is shown, and another can be chosen.
+        result = run([kit, labs], {'fill': 'Use this brand skill', 'value': labs['path']})
+        shown = result['snapshots']['set-up']
+        self.assertIn('The brand skill decks are made with', shown['text'])
+        self.assertIn('More than one was found on this computer.', shown['text'])
+        self.assertEqual(shown['fields']['Use this brand skill'], kit['path'])
+        self.assertEqual(self.posts(result)[-1],
+                         ('/api/setup', {**saved, 'brand_skill': labs['path']}))
+        # Saved untouched, it says which is in use, so the runner keeps to it.
+        result = run([labs, kit])
+        self.assertEqual(self.posts(result)[-1],
+                         ('/api/setup', {**saved, 'brand_skill': kit['path']}))
+        # Two that call themselves the same are told apart by where each is.
+        twin = {**labs, 'name': kit['name']}
+        shown = run([kit, twin])['snapshots']['set-up']
+        for told in ('Example Brand Kit (/skills/example-brand)',
+                     'Example Brand Kit (/skills/example-labs)'):
+            self.assertIn(told, shown['text'])
+        # One, or none that the runner lists: nothing to choose, and nothing is sent.
+        for skills in ([kit], []):
+            result = run(skills)
+            self.assertNotIn('The brand skill decks are made with',
+                             result['snapshots']['set-up']['text'])
+            self.assertEqual(self.posts(result)[-1], ('/api/setup', saved))
+        result = self.run_page(self.answers(SET_UP, **{
+            'POST /api/setup/check': [ok(check)], 'POST /api/setup': [ok(SET_UP)]}), [
+            {'click': 'Settings'}, {'click': 'Change the set-up'}, {'click': 'Save'}])
+        self.assertEqual(self.posts(result)[-1], ('/api/setup', saved))
+
     def test_what_a_deck_says_is_read_and_decided_like_any_gate(self):
         self.started()
         asking = 'Waiting for your decision on what the deck says.'
@@ -3801,8 +3855,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                         outline=an_outline())
         drawing = a_run('working', going, steps=deck_steps('done', 'done', 'done', 'working'),
                         outline=an_outline(waiting=False),
-                        deck=a_deck(a_section('opening', 'working', 0, [1, 2]),
-                                    a_section('practice', 'to-do', 0, [3, 4])))
+                        deck=a_deck(a_section('section-1', 'working', 0, []),
+                                    a_section('section-2', 'to-do', 0, [])))
         answers = self.answers(**{
             'GET /api/trainings': [self.listed('waiting', asking, needs=True),
                                    self.listed('working', going)],
@@ -3868,8 +3922,10 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                       'If the blueprint or the guide changes, this comes back to you.'):
             self.assertIn(shown, confirm['sheet'])
         self.assertEqual((confirm['filled'], confirm['posts']), (['Approve'], 0))
+        # The decision names the version that was read, so one that changed is not decided.
         self.assertEqual(self.posts(result), [('/api/outline', {
-            'path': str(self.root), 'level': None, 'decision': 'approve', 'note': None})])
+            'path': str(self.root), 'level': None, 'decision': 'approve', 'note': None,
+            'seen': an_outline()['sha256']})])
 
         # After deciding, the same "what happens next" as any gate, in the run's own words.
         done = shots['approved']
@@ -3934,7 +3990,9 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertIn('Rolling restarts · Level 101', gate['text'])
         # A refusal is said in the sheet, and the note is still there to send again.
         self.assertIn('A step is being saved.', shots['refused']['sheet'])
-        sent = {'path': str(self.root), 'level': '101', 'decision': 'revise', 'note': note}
+        sent = {'path': str(self.root), 'level': '101', 'decision': 'revise', 'note': note,
+                'seen': first['sha256']}
+        self.assertNotEqual(first['sha256'], shorter['sha256'])
         self.assertEqual(self.posts(result), [('/api/outline', sent)] * 2)
         after = shots['sent']
         self.assertIn('Your changes are noted. Once they are made, the new version comes back '
@@ -3968,10 +4026,13 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         going = 'Drawing the slides, in three sections.'
         before = ('A deck of this size has cost about $2.40 and about 7 minutes of agent time '
                   'before. It spends from the same limit as the rest of the training.')
-        sections = [a_section('opening', 'done', 2, [1, 2]),
-                    a_section('practice', 'working', 1, [3]),
-                    a_section('closing', 'to-do', 0, [4])]
-        redrawn = [sections[0], a_section('practice', 'working', 2, [3]), sections[2]]
+        # As the runner gives them: each section's slides are numbered within that section,
+        # which is the number its picture is asked for by, and each comes with its title.
+        sections = [a_section('section-1', 'done', 2, ['Why restart in turn', 'In practice']),
+                    a_section('section-2', 'working', 1, ['What to try next']),
+                    a_section('section-3', 'to-do', 0, [])]
+        redrawn = [sections[0], a_section('section-2', 'working', 2, ['What to try next']),
+                   sections[2]]
 
         def drawing(held: list) -> dict:
             return a_run('working', going, outline=an_outline(waiting=False),
@@ -3988,9 +4049,10 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             'GET /api/slide': [a_picture()]})
         result = self.run_page(answers, [
             {'click': 'Open Rolling restarts'}, {'snapshot': 'drawing'},
-            {'see': 'Slide 3:'}, {'see': 'Slide 1:'}, {'snapshot': 'seen'},
+            {'see': 'Section 2, slide 1:'}, {'see': 'Section 1, slide 1:'},
+            {'snapshot': 'seen'},
             {'poll': True}, {'snapshot': 'redrawn'},
-            {'see': 'Slide 3:'}, {'snapshot': 'again'},
+            {'see': 'Section 2, slide 1:'}, {'snapshot': 'again'},
             {'click': 'Read what the deck says'}, {'snapshot': 'left'},
         ])
         shots = result['snapshots']
@@ -4000,34 +4062,39 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         for shown in ('Write the handoff for the deck', 'Draw the sections', 'Review the slides',
                       'Next it asks for your decision on the slide deck.',
                       'The slide deck', before, 'It is drawn in sections, side by side.',
-                      'Section 1', 'Slides 1 and 2 · 2 previews used', 'Handed in',
-                      'Section 2', 'Slide 3 · 1 preview used', 'Being drawn',
-                      'Section 3', 'Slide 4 · No preview yet', 'Not started',
-                      'Slide 1: Rolling restarts. Its picture is on its way.'):
+                      'Section 1', '2 slides · 2 previews used', 'Handed in',
+                      'Section 2', '1 slide · 1 preview used', 'Being drawn',
+                      'Section 3', 'No preview yet', 'Not started',
+                      'Section 1, slide 1: Why restart in turn. Its picture is on its way.'):
             self.assertIn(shown, first['text'])
+        # No place in the deck is claimed for a slide: that is not known until the sections
+        # are put together, and a title is never taken from another slide's place.
+        for absent in ('Slides 1 and 2', 'Slide 3 ·', 'Rolling restarts. Its picture'):
+            self.assertNotIn(absent, first['text'])
         self.assertLess(first['text'].index('Section 1'), first['text'].index('Steps'))
         # A section with no preview has no picture to wait for, and nothing is fetched before
         # its place comes into view.
-        self.assertNotIn('Slide 4: What to try next', first['text'])
+        self.assertNotIn('Section 3, slide', first['text'])
         self.assertEqual((first['pictures'], first['held']), ([], []))
 
         seen = shots['seen']
         self.assertEqual(seen['pictures'], [
-            {'alt': 'Slide 1: Rolling restarts', 'of': of('opening', 1)},
-            {'alt': 'Slide 3: In practice', 'of': of('practice', 3)}])
-        self.assertIn('Slide 2: Why restart in turn. Its picture is on its way.', seen['text'])
+            {'alt': 'Section 1, slide 1: Why restart in turn', 'of': of('section-1', 1)},
+            {'alt': 'Section 2, slide 1: What to try next', 'of': of('section-2', 1)}])
+        self.assertIn('Section 1, slide 2: In practice. Its picture is on its way.',
+                      seen['text'])
         # A new preview is a new picture: the earlier one is let go, and the new one is
         # fetched when it is looked at. The section that did not change keeps its picture.
         redone = shots['redrawn']
-        self.assertIn('Slide 3 · 2 previews used', redone['text'])
+        self.assertIn('1 slide · 2 previews used', redone['text'])
         self.assertEqual((redone['pictures'], redone['held']),
-                         ([{'alt': 'Slide 1: Rolling restarts', 'of': of('opening', 1)}],
-                          [of('opening', 1)]))
+                         ([{'alt': 'Section 1, slide 1: Why restart in turn',
+                            'of': of('section-1', 1)}], [of('section-1', 1)]))
         self.assertEqual(len(shots['again']['pictures']), 2)
         slides = [request for request in result['requests']
                   if request['address'].startswith('/api/slide')]
         self.assertEqual([request['address'] for request in slides],
-                         [of('practice', 3), of('opening', 1), of('practice', 3)])
+                         [of('section-2', 1), of('section-1', 1), of('section-2', 1)])
         # Each is asked for with the key in its header, as every read is.
         for request in slides:
             self.assertEqual((request['method'], request['headers']),
@@ -4036,7 +4103,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertEqual((shots['left']['heading'], shots['left']['held']),
                          ('What the deck says', []))
         self.assertEqual(result['released'],
-                         [of('practice', 3), of('opening', 1), of('practice', 3)])
+                         [of('section-2', 1), of('section-1', 1), of('section-2', 1)])
 
         # A browser that cannot say what is in view is asked for each in turn. A picture that
         # cannot be fetched, or is not a picture, says so in words in its place.
@@ -4045,19 +4112,19 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             'GET /api/trainings': [self.listed('working', going)],
             'GET /api/training': [self.detail('working', going)],
             'GET /api/run': [drawing(sections)], 'GET /api/slide': [a_picture()],
-            'GET ' + of('opening', 2): [gone],
-            'GET ' + of('practice', 3): [a_picture('text/html')]})
+            'GET ' + of('section-1', 2): [gone],
+            'GET ' + of('section-2', 1): [a_picture('text/html')]})
         result = self.run_page(answers, [{'click': 'Open Rolling restarts'},
                                          {'snapshot': 'drawing'}], unwatched=True)
         shot = result['snapshots']['drawing']
         self.assertEqual(self.asked(result, 'slide'),
-                         [of('opening', 1), of('opening', 2), of('practice', 3)])
-        self.assertEqual(shot['pictures'], [{'alt': 'Slide 1: Rolling restarts',
-                                             'of': of('opening', 1)}])
-        for shown in ('Slide 2: Why restart in turn. Its picture could not be fetched. That '
+                         [of('section-1', 1), of('section-1', 2), of('section-2', 1)])
+        self.assertEqual(shot['pictures'], [{'alt': 'Section 1, slide 1: Why restart in turn',
+                                             'of': of('section-1', 1)}])
+        for shown in ('Section 1, slide 2: In practice. Its picture could not be fetched. That '
                       'preview is no longer kept.',
-                      'Slide 3: In practice. Its picture could not be fetched. What came back '
-                      'is not a picture.'):
+                      'Section 2, slide 1: What to try next. Its picture could not be fetched. '
+                      'What came back is not a picture.'):
             self.assertIn(shown, shot['text'])
 
     def at_the_decks_gate(self) -> None:
@@ -4077,7 +4144,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         waits = 'The slide deck is waiting for your review.'
         gate = self.gate_as_the_runner_gives_it('deck', **{
             'slides': SHOWN, 'review': {'round': 2, 'findings': []},
-            'audit': {'status': 'ok', 'warnings': []},
+            'audit': {'status': 'ok', 'warnings': [], 'blockers': []},
             'coverage': [{'objective': 'O1', 'says': 'Say why instances restart in turn.',
                           'reviewed': [2], 'cited': [2]}], **more})
         return self.answers(**{
@@ -4260,6 +4327,19 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                                          {'snapshot': 'gate'}])
         self.assertIn('It listed no warnings, and answered “blocked”.',
                       result['snapshots']['gate']['text'])
+
+        # What the check holds against the deck, or why it could not be run, is said in its
+        # own words, as the runner gives it.
+        why = 'The brand’s audit could not be run. The brand skill refused: no deck.'
+        answers = self.a_decks_gate(audit={'status': 'blocked', 'warnings': [],
+                                           'blockers': [why]})
+        result = self.run_page(answers, [{'click': 'Review the slide deck'},
+                                         {'snapshot': 'gate'}])
+        text = result['snapshots']['gate']['text']
+        for shown in ('The check did not pass this deck.', why,
+                      'Approving is still yours to decide. Weigh this first.'):
+            self.assertIn(shown, text)
+        self.assertNotIn('It listed no warnings', text)
 
     def test_the_decks_needs_are_listed_with_the_rest_of_this_computers_check(self):
         def item(name: str, state: str, fix: str = '', **facts: str) -> dict:

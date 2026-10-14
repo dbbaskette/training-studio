@@ -119,6 +119,49 @@ class FindingTheRuntimeTests(unittest.TestCase):
         self.assertEqual(slides.find_runtime(), version)
         self.assertEqual(slides.Slides(run=says()).runtime, version)
 
+    def test_its_own_guidance_is_read_from_inside_its_folder_and_never_run(self):
+        home = installed(self.home / 'runtime')
+        (home / 'references' / 'gallery').mkdir(parents=True)
+        for name, text in (('design.md', '# Design\n'), ('compositions.md', '# Compose\n'),
+                           ('draft.md', 'x' * (slides.READ_MOST + 500)),
+                           ('gallery/order.json', '{"brief": {"relation": "order"}}\n'),
+                           ('gallery/unknown.json', '{}\n'), ('review.md', '# Review\n'),
+                           ('gallery/none.json', '  \n')):
+            (home / 'references' / name).write_text(text)
+        (self.home / 'private.md').write_text('Not the tool\'s to hand on.\n')
+        (home / 'references' / 'gallery.md').symlink_to(self.home / 'private.md')
+        (home / 'references' / 'gallery' / 'contrast.json').symlink_to(
+            home / 'references' / 'gallery' / 'order.json')
+        ran = []
+        tool = slides.Slides(runtime=home, run=lambda command, cwd=None: (
+            ran.append(command) or (0, f'Harness Slides {slides.MINIMUM}\n', '')))
+        self.assertEqual(tool.runtime, home)
+        del ran[:]
+        found = tool.reading()
+        self.assertEqual(found, tool.reading(self.home / 'brand-contract.json'),
+                         'it is the same for every brand')
+        self.assertEqual(list(found), ['design guidance', 'composition guidance',
+                                       'drafting guidance', 'example order',
+                                       'example contrast'],
+                         'only what a writer or a composer needs, a link out of the folder is '
+                         'not followed, and what the tool does not have is left out')
+        self.assertEqual((found['design guidance'], found['example order']),
+                         ('# Design\n', '{"brief": {"relation": "order"}}\n'))
+        self.assertEqual(len(found['drafting guidance']), slides.READ_MOST)
+        self.assertEqual(ran, [], 'nothing is run to read it')
+        self.assertEqual(slides.example('order'), 'example order')
+        self.assertEqual(slides.Slides(runtime=self.home / 'nowhere', run=says()).reading(), {})
+
+    def test_the_stand_in_has_short_guidance_of_its_own(self):
+        found = slides.stand_in().reading()
+        self.assertEqual(list(found), [
+            'design guidance', 'composition guidance', 'drafting guidance', 'gallery',
+            *(slides.example(relation) for relation in slides.RELATIONS[:-1])])
+        self.assertTrue(all(len(text) < 2000 for text in found.values()))
+        for relation in slides.RELATIONS[:-1]:
+            drawn = json.loads(found[slides.example(relation)])
+            self.assertEqual(drawn['brief']['relation'], relation)
+
     def test_the_real_command_needs_node(self):
         os.environ[slides.VARIABLE] = str(installed(self.home / 'runtime'))
         with mock.patch.object(slides.shutil, 'which', return_value=None):

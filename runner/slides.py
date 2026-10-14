@@ -17,6 +17,7 @@ What a caller needs to know
     slides.critique(preview_folder, assessment)
     made = slides.render(compiled, deck)
     slides.cited(compiled)                         # {objective: [slide numbers]}, from the scene
+    slides.reading()                               # {name: text}: the tool's own guidance
     slides.drive_check()                           # whether Google access reaches Drive
     slides.drive_import(deck, name)                # {'id', 'name', 'url'}
 
@@ -64,6 +65,16 @@ Added to the above
   Slides, and looks for programs some other way, which is how a test asks.
 - Every call that writes removes what it wrote when it fails, so the same path can be
   tried again. Nothing that was there before the call is ever removed.
+- `reading()` returns the guidance the tool's own workers are sent to read, as
+  {name: text}: 'design guidance', 'composition guidance', 'drafting guidance', 'gallery'
+  (what its examples are for), and 'example order', 'example contrast' and so on, one drawn
+  slide for each relation the tool has an example of. They are files of the installed
+  tool, read and never run, each from inside its folder and cut off at READ_MOST
+  characters. One the installed version does not have is left out. A caller chooses which
+  a worker needs; `example(relation)` is the name of one relation's example.
+- `slides.runtime` is the folder the tool is installed in, with links followed. Give it to
+  `Slides(runtime=...)` to use that same tool somewhere else, as the worker tools' server
+  does. `Slides(read=...)` replaces how a guidance file is read.
 - For tests: `sketch(slide, prefix)` draws one content slide of an outline plainly, as a
   section's composer might; StandIn's `fails`, `drive`, `local` and `pause` make it refuse,
   lose its Drive or its LibreOffice, or take its time; `files` is what it "keeps in Drive".
@@ -102,6 +113,11 @@ COUNTED = re.compile(r'^\d+ problems to fix:$')
 NOISE = re.compile(r'^\((?:node:\d+\)|Use `node )')   # Node's own warnings, not the tool's
 LEFT = re.compile(r'The preview deck is in Drive \((\S+)\); retry with --file-id (\S+?)\.$')
 PREVIEWING = threading.Lock()   # one preview at a time, whoever asks
+GUIDES = {'design guidance': 'design.md', 'composition guidance': 'compositions.md',
+          'drafting guidance': 'draft.md', 'gallery': 'gallery.md'}   # under REFERENCES
+REFERENCES = Path('references')
+GALLERY = REFERENCES / 'gallery'    # one drawn slide for each relation, as JSON
+READ_MOST = 60_000      # characters of one guidance file that are handed on
 
 
 class Refused(WorkspaceError):
@@ -191,11 +207,32 @@ def _new(path):
         raise
 
 
-class Slides:
-    """The outline, compose and drive commands of one installed harness-slides."""
+def example(relation: str) -> str:
+    """What `reading()` calls the drawn example of one relation."""
+    return f'example {relation}'
 
-    def __init__(self, runtime: Path | None = None, run=None):
+
+def read_guidance(runtime: Path, relative: Path) -> str | None:
+    """One guidance file of an installed tool, as text, or None when it has no such file.
+    Only a file inside the tool's own folder is read, links followed, and no more of it
+    than READ_MOST characters. Nothing is run."""
+    try:
+        inside, file = Path(runtime).resolve(), (Path(runtime) / relative).resolve()
+        if inside not in file.parents or not file.is_file():
+            return None
+        with file.open(encoding='utf-8', errors='replace') as handle:
+            return handle.read(READ_MOST)
+    except (OSError, RuntimeError):
+        return None
+
+
+class Slides:
+    """The outline, compose and drive commands of one installed harness-slides. `runtime`
+    is the folder it is installed in."""
+
+    def __init__(self, runtime: Path | None = None, run=None, read=None):
         self.run = run or run_command
+        self.read = read or read_guidance
         self.runtime = Path(runtime) if runtime else find_runtime()
         self.node = 'node' if run else shutil.which('node')
         if self.node is None:
@@ -322,6 +359,18 @@ class Slides:
                                  'slides cite cannot be read. Compile the deck again.')
         return found
 
+    # --- what the tool's own workers read ---
+
+    def reading(self, brand: Path | None = None) -> dict:
+        """The tool's guidance for whoever writes an outline or draws a slide, as
+        {name: text}. It is the same for every brand, so `brand` changes nothing."""
+        wanted = {name: REFERENCES / file for name, file in GUIDES.items()}
+        wanted.update({example(relation): GALLERY / f'{relation}.json'
+                       for relation in RELATIONS})
+        found = {name: self.read(self.runtime, relative) for name, relative in wanted.items()}
+        return {name: text for name, text in found.items()
+                if isinstance(text, str) and text.strip()}
+
     # --- Google Drive ---
 
     def drive_check(self) -> bool:
@@ -377,7 +426,8 @@ def ready(slides: Slides | None = None, which=shutil.which) -> dict:
 
 def stand_in() -> Slides:
     """A Slides that needs nothing installed, for tests."""
-    return Slides(runtime=Path('stand-in'), run=StandIn())
+    tool = StandIn()
+    return Slides(runtime=Path('stand-in'), run=tool, read=tool.read)
 
 
 # --- a stand-in for tests ----------------------------------------------------------------
@@ -470,6 +520,21 @@ BRIEF = (   # what the tool writes for the worker of one section, word for word
     '## Return\n\n'
     'The section file, your final preview directory, the Drive file ID, what you changed '
     'after looking, and what still bothers you.\n')
+GUIDANCE = {   # what the stand-in's guidance files say: a few invented lines each
+    'design.md': '# Designing a slide\n\nStart from what the slide must make its audience '
+                 'understand. Give it one emphasis, and let the structure show the '
+                 'relation.\n',
+    'compositions.md': '# Compositions\n\nA slide is a canvas of stacks, grids, boxes and '
+                       'text, with edges that join nodes. Its brief names the relation, the '
+                       'focal node and the rhythm.\n',
+    'draft.md': '# Drafting an outline\n\nOne claim a slide, said in its title. Each point '
+                'is a label and a sentence. Name the relation between the points.\n',
+    'gallery.md': '# The gallery\n\nOne drawn slide for each relation. Copy the reasoning '
+                  'and never the layout.\n'}
+SHOWN = {'id': 'worked-example', 'kind': 'content',
+         'title': 'An example of one relation, drawn',
+         'points': [{'label': 'First', 'text': 'One thing.'},
+                    {'label': 'Second', 'text': 'Another thing.'}], 'sources': ['example']}
 PRESENTATION = (
     '# {title}\n\n{audience}Delivered {said}. {count} slides.\n\n'
     'Outline: `outline.json`, SHA-256 `{digest}`.\n\n'
@@ -1508,6 +1573,17 @@ class StandIn:
         if isinstance(result, str):
             return 0, result + '\n', ''
         return 0, json.dumps(result, indent=2, ensure_ascii=False) + '\n', ''
+
+    def read(self, runtime: Path, relative: Path) -> str | None:
+        """A guidance file, as `read_guidance` gives one: a few invented lines for each
+        guide, and for each relation but 'none' a slide of two points as `sketch` draws
+        it."""
+        relative = Path(relative)
+        if relative.parent == GALLERY and relative.suffix == '.json' \
+                and relative.stem in RELATIONS[:-1]:
+            return json.dumps(sketch({**SHOWN, 'relation': relative.stem}, 'ex_'),
+                              indent=2) + '\n'
+        return GUIDANCE.get(relative.name) if relative.parent == REFERENCES else None
 
     def _act(self, args: list[str]):
         if args == ['--version']:
