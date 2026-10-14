@@ -183,6 +183,11 @@ DRIVING = ('take', 'hand-over')
 FETCH_EVERY = 180       # seconds between fetches while the runner serves
 TICK = 15               # seconds between looks at whether to notify
 PAGE_OPEN = 45          # seconds since a page last asked, while one counts as open
+# What went wrong in the work done in the background while the runner serves, by job.
+BACKGROUND = {'fetch': 'The last look for what your team shared did not work: {said}. It '
+                       'is tried again every few minutes.',
+              'tell': "The last try at telling you through this computer's notifications "
+                      'did not work: {said}. It is tried again in a few seconds.'}
 NO_DRIVERS = ('This workspace is a folder on this computer, so its trainings are not taken '
               'or handed over.')
 TAKEN = '{name} took this training over on {when}. This computer stopped working on it.'
@@ -303,6 +308,26 @@ def folder_name(step: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', step.lower()).strip('-')
 
 
+def _refs(repo: Path, branch: str) -> tuple | None:
+    """Where a clone's branch and what it knows of the remote's stand, told without starting
+    git: each file git keeps them in, by when it was written, how large it is and which file
+    it is. git writes a ref anew, never in place, so any change shows. None where the refs
+    are not kept in such files."""
+    folder = repo / '.git'
+    if not folder.is_dir() or (folder / 'reftable').exists():
+        return None
+    marks: list = [str(repo), branch]
+    for name in ('HEAD', f'refs/heads/{branch}', f'refs/remotes/origin/{branch}',
+                 'packed-refs'):
+        try:
+            found = (folder / name).stat()
+        except OSError:
+            marks.append(None)
+            continue
+        marks.append((found.st_mtime_ns, found.st_size, found.st_ino))
+    return tuple(marks)
+
+
 class Elsewhere(WorkspaceError):
     """This computer may not change a training: someone else drives it, or nobody does."""
 
@@ -313,19 +338,22 @@ class _Gone(WorkspaceError):
 
 class _Slots:
     """How many trainings may work at once, and whose turn is next: they take turns in
-    the order they asked. The limit is asked for each time, so a change of settings is
-    felt without a restart."""
+    the order they asked. The limit is read as each one starts to wait, and again when
+    `renew` says the settings changed, so a change is felt without a restart, and a run
+    that waits does not read the settings over and over."""
 
     def __init__(self, limit):
-        self.limit, self.used, self.changed = limit, 0, threading.Condition()
+        self.read, self.limit, self.used = limit, None, 0
+        self.changed = threading.Condition()
         self.waiting: list = []
 
     def take(self, closing, who=None) -> bool:
         who = object() if who is None else who
         with self.changed:
             self.waiting.append(who)
+            self.limit = self.read()
             try:
-                while self.used >= self.limit() or self.waiting[0] is not who:
+                while self.used >= self.limit or self.waiting[0] is not who:
                     if closing():
                         return False
                     self.changed.wait(0.5)
@@ -344,6 +372,12 @@ class _Slots:
     def give_back(self) -> None:
         with self.changed:
             self.used -= 1
+            self.changed.notify_all()
+
+    def renew(self) -> None:
+        """The settings changed: read the limit again, and let whoever it now admits go."""
+        with self.changed:
+            self.limit = self.read()
             self.changed.notify_all()
 
 
@@ -378,6 +412,9 @@ class Engine:
         self.slides = slides or slides_tool.Slides
         self.brand = brand or brand_skill.Brand
         self._looked: tuple[float, dict] | None = None
+        self._looking = threading.Lock()    # one look at this computer at a time
+        self._ahead: tuple[tuple, int] | None = None    # the clone's refs, and commits unshared
+        self._background: dict[str, dict] = {}  # what last went wrong in the background, by job
         self.documents = documents or documents_kept
         self.copies = copies or copies_made
         self.index = index or index_written
@@ -672,12 +709,13 @@ class Engine:
         if report.get('reached'):
             self._clash = found
 
-    def _notice(self, root: Path) -> str | None:
+    def _notice(self, root: Path, record: dict | None = None) -> str | None:
         """What a person should know about who drives a training: that it was taken from
-        this computer, or that it was changed on two at once."""
+        this computer, or that it was changed on two at once. `record` is its run record,
+        where the caller has just read it."""
         if root.name in self._clash:
             return self._clash[root.name]
-        if self.mine(root):
+        if self.mine(root) if record is None else team.ours(self.workspace, record):
             return self._stalled
         lost = team.kept('taken').get(str(root))
         if not lost:
@@ -1051,33 +1089,44 @@ class Engine:
 
     def _look(self, fresh: bool = False) -> dict:
         """What this computer has for making a deck: the slides tool, what it can render
-        with, and a brand skill with its brands. A look is reused for a few minutes."""
-        seen = self._looked
-        if not fresh and seen and time.monotonic() - seen[0] < LOOKED_FOR:
-            return seen[1]
-        found = {'tool': None, 'version': None, 'local': False, 'drive': False,
-                 'pictures': False, 'lacks': [], 'runtimes': {'slides': None, 'brand': None},
-                 'brand': {'found': False, 'name': None, 'brands': [], 'problem': None}}
-        try:
-            tool = self.slides()
-            ready = slides_tool.ready(tool)
-            found.update(version=ready['version'], local=ready['local'],
-                         drive=ready['drive'], pictures=ready['pictures'],
-                         lacks=list(ready['missing']))
-            found['runtimes']['slides'] = str(tool.runtime)
-        except (WorkspaceError, OSError) as refusal:
-            found['tool'] = str(refusal)
-        try:
-            skill = self._skill()
-            found['runtimes']['brand'] = str(skill.runtime)
-            found['brand'] = {'found': True, 'name': str(skill.name), 'problem': None, 'brands': [
-                {'brand': str(entry.get('brand')), 'name': str(entry.get('name')),
-                 'variants': [str(variant) for variant in entry.get('variants') or ()]}
-                for entry in skill.brands() if isinstance(entry, dict)]}
-        except (WorkspaceError, OSError) as refusal:
-            found['brand']['problem'] = str(refusal)
-        self._looked = (time.monotonic(), found)
-        return found
+        with, a brand skill with its brands, and every brand skill found. A look is reused
+        for a few minutes, and one is taken at a time: whoever asks meanwhile waits for it.
+        Drive is not asked while previews are made with LibreOffice: it is then None."""
+        with self._looking:
+            seen = self._looked
+            if not fresh and seen and time.monotonic() - seen[0] < LOOKED_FOR:
+                return seen[1]
+            found = {'tool': None, 'version': None, 'local': False, 'drive': False,
+                     'pictures': False, 'lacks': [],
+                     'runtimes': {'slides': None, 'brand': None},
+                     'brand': {'found': False, 'name': None, 'brands': [], 'problem': None},
+                     'skills': []}
+            try:
+                tool = self.slides()
+                ready = slides_tool.ready(tool, drive=settings.load().previews != 'local')
+                found.update(version=ready['version'], local=ready['local'],
+                             drive=ready['drive'], pictures=ready['pictures'],
+                             lacks=list(ready['missing']))
+                found['runtimes']['slides'] = str(tool.runtime)
+            except (WorkspaceError, OSError) as refusal:
+                found['tool'] = str(refusal)
+            try:
+                skill = self._skill()
+                found['runtimes']['brand'] = str(skill.runtime)
+                found['brand'] = {
+                    'found': True, 'name': str(skill.name), 'problem': None, 'brands': [
+                        {'brand': str(entry.get('brand')), 'name': str(entry.get('name')),
+                         'variants': [str(variant) for variant in entry.get('variants') or ()]}
+                        for entry in skill.brands() if isinstance(entry, dict)]}
+            except (WorkspaceError, OSError) as refusal:
+                found['brand']['problem'] = str(refusal)
+            try:
+                found['skills'] = [entry for entry in brand_skill.found()
+                                   if isinstance(entry, dict) and entry.get('runtime')]
+            except (WorkspaceError, OSError):
+                pass
+            self._looked = (time.monotonic(), found)
+            return found
 
     def deck_needs(self, fresh: bool = False) -> dict:
         """What a deck needs on this computer: `missing`, a sentence for each thing it
@@ -1111,7 +1160,8 @@ class Engine:
             item('deck-previews', 'A way to render previews of slides',
                  'problem' if renders or seen['tool'] else 'ok',
                  [fact('LibreOffice on this computer', can[seen['local']]),
-                  fact('Google Drive', can[seen['drive']]),
+                  fact('Google Drive', 'unknown', 'not asked, as LibreOffice makes them')
+                  if seen['drive'] is None else fact('Google Drive', can[seen['drive']]),
                   fact('Chosen', 'ok' if how else 'unknown',
                        {'drive': 'Google Drive', 'local': 'LibreOffice'}.get(how, 'not yet'))],
                  renders or ''),
@@ -1130,22 +1180,24 @@ class Engine:
 
     def brand_skills(self) -> list[dict]:
         """Every brand skill found on this computer, as {'name', 'path', 'chosen'}, read
-        from `brand.found()`. `path` is where the skill is, which names it at set-up."""
+        from `brand.found()` with the rest of a look at this computer, and reused with it.
+        `path` is where the skill is, which names it at set-up."""
         named = settings.load().brand_skill
-        try:
-            found = [entry for entry in brand_skill.found() if isinstance(entry, dict)
-                     and entry.get('runtime')]
-        except (WorkspaceError, OSError):
-            return []
         return [{'name': str(entry.get('name') or entry['runtime']),
                  'path': str(entry['runtime']),
                  'chosen': str(entry['runtime']) == named if named else number == 0}
-                for number, entry in enumerate(found)]
+                for number, entry in enumerate(self._look()['skills'])]
 
     def brands(self) -> list[dict] | None:
         """The brands the brand skill on this computer has, or None with no brand skill."""
         brand = self._look()['brand']
         return list(brand['brands']) if brand['found'] else None
+
+    def saved(self) -> None:
+        """The person saved new settings: a run waiting its turn reads the new limit now, and
+        this computer is looked at again for what they changed about a deck."""
+        self._slots.renew()
+        self.deck_needs(fresh=True)
 
     def look_again(self) -> dict:
         """Look at this computer afresh, as the person asks, and let every training that
@@ -2190,7 +2242,12 @@ class Engine:
         space = self.workspace
         if space is None or space.address is None:
             return {'shared': False, 'notice': None}
-        waiting = hub.ahead(space.repo, f'refs/remotes/origin/{space.branch}')
+        refs, seen = _refs(space.repo, space.branch), self._ahead
+        if refs is not None and seen is not None and seen[0] == refs:
+            waiting = seen[1]
+        else:
+            waiting = hub.ahead(space.repo, f'refs/remotes/origin/{space.branch}')
+            self._ahead = None if refs is None else (refs, waiting)
         return {'shared': not waiting, 'notice': self._unshared if waiting else None}
 
     # --- what the page shows -------------------------------------------------------------
@@ -2414,11 +2471,23 @@ class Engine:
             return None
         try:
             record = self._load(root)
-            found = self._survey(root, record)
         except (WorkspaceError, OSError) as failure:
-            return {'state': 'failed', 'sentence': str(failure), 'needs': True,
-                    'question': None, 'mine': True, 'driver': None, 'last_shared': None,
-                    'notice': None}
+            return self._unread(failure)
+        return self._brief(root, record)
+
+    @staticmethod
+    def _unread(failure: Exception) -> dict:
+        """A run in brief whose record or files could not be read."""
+        return {'state': 'failed', 'sentence': str(failure), 'needs': True, 'question': None,
+                'mine': True, 'driver': None, 'last_shared': None, 'notice': None}
+
+    def _brief(self, root: Path, record: dict, found: pipeline.Survey | None = None) -> dict:
+        """`brief`, from a record already read and, where there is one, a survey already
+        made of it."""
+        try:
+            found = self._survey(root, record) if found is None else found
+        except (WorkspaceError, OSError) as failure:
+            return self._unread(failure)
         state, sentence = self._state(record, found, self._run(root))
         asked = record.get('question')
         needs = bool(asked or record.get('problem') or found.next.kind == 'stuck'
@@ -2426,7 +2495,7 @@ class Engine:
         mine, who, state, sentence, last = self._whose(root, record, found, state, sentence)
         return {'state': state, 'sentence': sentence, 'needs': needs and mine,
                 'question': asked['text'] if asked and mine else None, 'mine': mine,
-                'driver': who, 'last_shared': last, 'notice': self._notice(root)}
+                'driver': who, 'last_shared': last, 'notice': self._notice(root, record)}
 
     @staticmethod
     def _asking(scope: str) -> str:
@@ -2527,12 +2596,21 @@ class Engine:
         is how many trainings work at once."""
         space, runs, elsewhere = self.workspace, [], []
         for root in self.trainings():
+            # The record is read once, and the title is taken from the survey's own reading
+            # of the training. Only where the survey cannot be made is it read on its own.
             try:
                 record = self._load(root)
-                title = workspace.load(root)['title']
             except (WorkspaceError, OSError):
                 continue
-            found = self.brief(root) or {}
+            try:
+                surveyed = self._survey(root, record)
+                title = surveyed.session['title']
+            except (WorkspaceError, OSError):
+                try:
+                    surveyed, title = None, workspace.load(root)['title']
+                except (WorkspaceError, OSError):
+                    continue
+            found = self._brief(root, record, surveyed)
             shown = {'path': str(root), 'id': root.name, 'title': title,
                      'state': found.get('state'), 'sentence': found.get('sentence'),
                      'driver': found.get('driver')}
@@ -2541,11 +2619,18 @@ class Engine:
                 runs.append({**shown, 'needs': bool(found.get('needs')),
                              'queue': self._queue(self._run(root)),
                              'spent': {'dollars': dollars, 'tokens': tokens},
-                             'notice': self._notice(root)})
+                             'notice': found.get('notice')})
             elif shown['driver'] is not None:
                 elsewhere.append({**shown, 'last_shared': found.get('last_shared'),
                                   'notice': found.get('notice')})
-        return {'limit': settings.load().parallel, 'runs': runs, 'elsewhere': elsewhere}
+        return {'limit': settings.load().parallel, 'runs': runs, 'elsewhere': elsewhere,
+                'background': self.went_wrong()}
+
+    def went_wrong(self) -> dict | None:
+        """What last went wrong in the work the runner does by itself while it serves, as
+        {'at', 'says'}, until that work next goes right. None when nothing has."""
+        kept = list(self._background.values())
+        return max(kept, key=lambda found: found['at']) if kept else None
 
     # --- a notification when no page is open ---------------------------------------------
 
@@ -2617,13 +2702,24 @@ class Engine:
     def _serve(self, every: float, tick: float) -> None:
         last = time.monotonic()
         while not self._ending.wait(tick):
-            try:
-                if time.monotonic() - last >= every:
-                    last = time.monotonic()
-                    self.fetch()
-                self.tell()
-            except Exception:  # neither ever ends the runner; the next look tries again
-                continue
+            if time.monotonic() - last >= every:
+                last = time.monotonic()
+                if not self._kept('fetch', self.fetch):
+                    continue
+            self._kept('tell', self.tell)
+
+    def _kept(self, job: str, action) -> bool:
+        """Do one piece of the work done in the background. What goes wrong never ends the
+        runner, and the next look tries again; it is kept for the Status screen until the
+        same work goes right. False when it went wrong."""
+        try:
+            action()
+        except Exception as failure:  # neither ever ends the runner; the next look tries again
+            said = str(failure).strip().rstrip('.') or type(failure).__name__
+            self._background[job] = {'at': home.now(), 'says': BACKGROUND[job].format(said=said)}
+            return False
+        self._background.pop(job, None)
+        return True
 
     # --- publishing inside the workspace -------------------------------------------------
 

@@ -938,7 +938,8 @@ class StudioCase(unittest.TestCase):
             # The module's own look at this computer, asked about the programs a test
             # says are here and never about the ones that really are.
             mock.patch.object(engines.slides_tool, 'ready', lambda slides=None, which=None,
-                              look=engines.slides_tool.ready: look(slides, which=self.which))]
+                              drive=True, look=engines.slides_tool.ready: look(
+                                  slides, which=self.which, drive=drive))]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
