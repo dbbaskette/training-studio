@@ -195,6 +195,48 @@ class WholeDeckTests(WholeCase):
         self.engine.deck_needs(fresh=True)
 
 
+class DesignedDeckTests(WholeCase):
+    """The same deck through a slides tool with a design session: the outline's writer
+    proposes how each slide is drawn, the tool keeps the proposal, and the person's one
+    decision on the page is the tool's answer."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides, self.brand = self.stand_ins(design=True)
+        self.tool, self.skill = self.slides.run, self.brand.run
+        self.engine.deck_needs(fresh=True)
+
+    def test_a_deck_with_its_design_goes_from_the_handoff_to_approved(self):
+        root = self.begin()
+        view = self.to_outline(root)
+        shown = view['outline']
+        self.assertEqual([slide['design']['family'] for slide in shown['slides']], [
+            'text', 'diagram', 'diagram', 'text', 'diagram', 'diagram', 'text'])
+        self.assertEqual(shown['design']['asked'], [slide['id'] for slide in PARTED['slides']])
+        checked = [call for call in self.asked('design propose') if '--expected' not in call]
+        self.assertGreaterEqual(len(checked), 3, 'probed, checked by the worker, proposed')
+        self.assertEqual(self.asked('design respond'), [])
+        status = json.loads(self.tool(['node', 'script', 'design', 'status', '--project',
+                                       str(root / pipeline.DESIGNS)])[1])
+        self.assertEqual((status['mode'], status['buildAllowed'], status['revision']),
+                         ('batch', False, shown['design']['revision']))
+        view = self.engine.outline(root, None, 'approve', seen=shown['sha256'],
+                                   design=shown['design']['revision'])
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'),
+                         view.get('problem'))
+        responded = self.asked('design respond')
+        self.assertEqual(len(responded), 1)
+        self.assertEqual(len(self.asked('design check')), 1)
+        session = json.loads((root / pipeline.DESIGNS / '.harness-slides' / 'design' /
+                              'session.json').read_text())
+        self.assertEqual({approval['response'] for approval in session['approvals'].values()},
+                         {'Approve the whole plan'})
+        self.assertEqual(len(session['approvals']), len(PARTED['slides']))
+        for job in self.base.glob('data/**/drafts/design-*'):
+            self.fail(f'a worker check left its project behind: {job}')
+        self.assertEqual(self.to_end(root), ['deck', 'scenario:main'])
+
+
 class TroubleTests(WholeCase):
     def test_what_a_deck_needs_is_read_from_what_the_two_modules_say(self):
         needs = self.engine.deck_needs(fresh=True)

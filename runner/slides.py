@@ -20,6 +20,11 @@ What a caller needs to know
     slides.reading()                               # {name: text}: the tool's own guidance
     slides.drive_check()                           # whether Google access reaches Drive
     slides.drive_import(deck, name)                # {'id', 'name', 'url'}
+    slides.designs()                               # whether it keeps a design session
+    slides.design_propose(project, proposal, expected=None)   # with its question
+    slides.design_status(project)
+    slides.design_check(project)                   # {'plan', 'revision', 'buildAllowed'}
+    slides.design_respond(project, reply)          # a person's answer to the question
 
 - `brand` is the path of an exported brand-contract.json. `outline`, `composition`, `parts`
   and `assessment` are paths of JSON files; `folder`, `compiled`, `preview_folder` and
@@ -72,6 +77,16 @@ Added to the above
   tool, read and never run, each from inside its folder and cut off at READ_MOST
   characters. One the installed version does not have is left out. A caller chooses which
   a worker needs; `example(relation)` is the name of one relation's example.
+- The design session is the tool's record of what a person approved of how each slide is
+  drawn, kept in `project`, a folder of the deck's own. `designs()` asks the tool whether it
+  has the session as a deck's outline gate needs it: a proposal of schema 2, one question
+  for the whole plan (`--mode batch`), and refusals as JSON. 0.13.1 has none of the three.
+  Every design call asks for JSON, so a refusal of one carries `found`, each problem as
+  {'code', 'slide', 'asset', 'provider', 'detail', 'recoverable', 'next', 'fallback'?},
+  with `codes` and the design `revision` it named. Its lines are the details.
+- `design_respond` sends a person's answer, and nothing else may: no worker is given it.
+  The reply names the question and revision that were put to the person, so an answer to
+  anything older is refused as `design-revision-stale`.
 - `slides.runtime` is the folder the tool is installed in, with links followed. Give it to
   `Slides(runtime=...)` to use that same tool somewhere else, as the worker tools' server
   does. `Slides(read=...)` replaces how a guidance file is read.
@@ -83,6 +98,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 
@@ -113,11 +129,20 @@ RELATIONS = ('order', 'dependency', 'hierarchy', 'membership', 'contrast', 'para
 
 
 class Refused(WorkspaceError):
-    """The slides tool said no. `problems` holds the lines it gave, one problem each."""
+    """The slides tool said no. `problems` holds the lines it gave, one problem each. When it
+    was asked for its refusal as JSON, `found` holds each problem as the tool gave it and
+    `revision` the design revision it named; otherwise `found` is empty."""
 
-    def __init__(self, problems: list[str]):
+    def __init__(self, problems: list[str], refusal: dict | None = None):
         super().__init__('The slides tool refused: ' + ' '.join(problems))
         self.problems = problems
+        self.found = list((refusal or {}).get('problems') or ())
+        self.revision = (refusal or {}).get('designRevision')
+
+    @property
+    def codes(self) -> list[str]:
+        """The code of each problem, in order, when the refusal came as JSON."""
+        return [str(problem.get('code')) for problem in self.found]
 
     @property
     def left(self) -> dict | None:
@@ -149,6 +174,20 @@ def run_command(command: list[str], cwd: Path | None = None) -> tuple[int, str, 
 
 def _numbers(version: str) -> tuple:
     return tuple(int(part) for part in re.findall(r'\d+', version)[:3])
+
+
+def _blocked(out: str) -> dict | None:
+    """A refusal the tool printed as JSON on its standard output, or None when it printed
+    none."""
+    try:
+        found = json.loads(out)
+    except ValueError:
+        return None
+    if not isinstance(found, dict) or found.get('status') != 'blocked' \
+            or not isinstance(found.get('problems'), list) or not found['problems'] \
+            or not all(isinstance(problem, dict) for problem in found['problems']):
+        return None
+    return found
 
 
 def _problems(err: str, code: int) -> list[str]:
@@ -206,6 +245,7 @@ class Slides:
         self.read = read or read_guidance
         self.runtime = Path(runtime) if runtime else find_runtime()
         self.node = 'node' if run else shutil.which('node')
+        self._designs: bool | None = None
         if self.node is None:
             raise WorkspaceError('harness-slides needs Node.js 20 or newer, which was not '
                                  'found on this computer. Install it, then try again.')
@@ -220,6 +260,10 @@ class Slides:
     def _call(self, *args: str) -> str:
         code, out, err = self.run([self.node, str(self.runtime / SCRIPT), *args])
         if code != 0:
+            found = _blocked(out) if '--json' in args else None
+            if found:
+                raise Refused([str(problem.get('detail') or problem.get('code'))
+                               for problem in found['problems']], found)
             raise Refused(_problems(err, code))
         return out
 
@@ -329,6 +373,52 @@ class Slides:
             raise WorkspaceError(f'{compiled} does not hold a compiled deck, so what its '
                                  'slides cite cannot be read. Compile the deck again.')
         return found
+
+    # --- the design session ---
+
+    def designs(self) -> bool:
+        """Whether this tool keeps the design session a deck's outline is approved through:
+        a proposal of schema 2, one question for the whole plan, and refusals as JSON. The
+        tool is asked, not its version: a proposal from a file that is not there, in an empty
+        folder that is thrown away, is refused as JSON by a tool that has all three, and
+        nothing is written. The answer is kept."""
+        if self._designs is None:
+            try:
+                with tempfile.TemporaryDirectory() as folder:
+                    code, out, _ = self.run([
+                        self.node, str(self.runtime / SCRIPT), 'design', 'propose',
+                        '--project', str(Path(folder) / 'project'), '--file',
+                        str(Path(folder) / 'none.json'), '--mode', 'batch', '--json'])
+            except (WorkspaceError, OSError):
+                code, out = 0, ''
+            self._designs = code != 0 and _blocked(out) is not None
+        return self._designs
+
+    def design_propose(self, project: Path, proposal: Path,
+                       expected: str | None = None) -> dict:
+        """Propose a design in `project`, a folder that exists, as one question for the
+        whole plan. A changed proposal names the revision it replaces in `expected`. Slides
+        whose approved design is unchanged keep their approval."""
+        args = ['design', 'propose', '--project', str(project), '--file', str(proposal),
+                '--mode', 'batch', '--json']
+        return self._json(*args, *(['--expected', expected] if expected else []))
+
+    def design_status(self, project: Path) -> dict:
+        """Where the design of `project` stands, with the question waiting now."""
+        return self._json('design', 'status', '--project', str(project), '--json')
+
+    def design_check(self, project: Path) -> dict:
+        """The approved design, which may be built. Refused until every slide is approved."""
+        return self._json('design', 'check', '--project', str(project), '--json')
+
+    def design_respond(self, project: Path, reply: dict) -> dict:
+        """Record a person's answer: {'questionId', 'planRevision', 'decision',
+        'feedback'}. Only what the person decided is ever sent."""
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / 'reply.json'
+            file.write_text(json.dumps(reply, ensure_ascii=False), encoding='utf-8')
+            return self._json('design', 'respond', '--project', str(project), '--file',
+                              str(file), '--json')
 
     # --- what the tool's own workers read ---
 

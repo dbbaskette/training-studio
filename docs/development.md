@@ -34,6 +34,7 @@ installer/                  install.sh, install.py and a double-click launcher
                             companions.json pins each companion skill to one revision
 tests/                      unit tests; temporary directories only
   stand_ins/                the companion tools the runner calls, played in Python
+  fixtures/                 a companion's own contract fixtures, copied unchanged
 docs/                       this documentation, the spec, the plan and reviews
 ```
 

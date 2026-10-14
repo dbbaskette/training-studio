@@ -205,6 +205,41 @@ OUTLINE = {'version': 1, 'title': 'Rolling restarts', 'delivery': 'reading', 'mi
      'notes': '1 min. Point to the practice scenario.'}]}
 
 
+def designed(outline: dict, **slides) -> dict:
+    """The design a worker hands in with an outline: a diagram for each content slide, the
+    first with an icon still to be found, and direct text for each lead slide. `slides`
+    replaces the entry of a slide, by its ID with dashes as underscores."""
+    entries = []
+    for slide in outline['slides']:
+        content = slide.get('kind') == 'content'
+        entry = {'id': slide['id'], 'intent': {
+            'takeaway': slide['title'],
+            'audienceQuestion': f"Why does it matter that {slide['title'].lower()}?",
+            'relationship': slide.get('relation') or 'opening',
+            'rationale': ('The parts and how they connect are spatial, so a diagram shows them.'
+                          if content else 'A title slide names the subject and nothing else.'),
+            'alternative': ({'treatment': 'A list of the points',
+                             'reason': 'A list hides how the parts connect.'} if content else
+                            {'treatment': 'A picture of a cluster',
+                             'reason': 'It would decorate the title without explaining it.'}),
+            'visual': {'family': 'diagram' if content else 'text',
+                       'purpose': ('Show the points as the parts of one mechanism.'
+                                   if content else 'Name the subject plainly.')}},
+            'composition': ('Native boxes for each point, joined left to right, the focal '
+                            'statement above them.' if content else
+                            "The brand's own layout for this slide, with its words alone."),
+            'asset': {'description': 'Native boxes and connectors.' if content else
+                      'No asset.', 'disposition': 'selected' if content else 'not-needed',
+                      'reason': ('The boxes carry the relation.' if content else
+                                 'The words are the slide.')}}
+        if content and not any(item.get('asset', {}).get('candidates') for item in entries):
+            entry['asset']['candidates'] = [{'assetId': 'icon_instance', 'kind': 'icon',
+                                             'ref': 'server', 'concept': 'An instance',
+                                             'status': 'pending'}]
+        entries.append(slides.get(slide['id'].replace('-', '_'), entry))
+    return {'slides': entries}
+
+
 def left(sentence: str, *why: str) -> str:
     """What a training says when its deck is all that is left and cannot be made here.
     Without `why`, the computer has neither the slides tool nor a brand skill."""
@@ -269,6 +304,7 @@ class Workers:
         self.jobs, self.queued, self.plan, self.cost = [], {}, FOUR, None
         self.blueprint_text = BLUEPRINT
         self.outline_said = OUTLINE
+        self.design_said = None     # the design handed in with it, when one is asked for
         self.found = []     # what each review in turn finds; nothing, once this runs out
 
     def then(self, kind: str, *acts) -> None:
@@ -343,9 +379,11 @@ class Workers:
 
     def outline(self, tools, job):
         said = json.dumps(self.outline_said)
-        checked = tools.check_outline(said)
+        design = None if not tools.job['artifacts']['outline'].get('design') else json.dumps(
+            self.design_said or designed(self.outline_said))
+        checked = tools.check_outline(said, design)
         assert checked[1].startswith('Nothing to put right'), checked[1]
-        accepted = tools.submit_outline(said)
+        accepted = tools.submit_outline(said, design)
         assert accepted[0], accepted[1]
         tools.submit_review('Six slides. The check slide is the one I am least sure of.')
 
@@ -401,6 +439,9 @@ class Slides:
         self.have = {'local': False, 'drive': True, 'pictures': True}
         self.budget, self.busy, self.most, self.counting = 90, 0, 0, threading.Lock()
         self.imported, self.took = [], 0.01
+        # Whether this tool keeps a design session, as the one after 0.13.1 does, and the
+        # answers it was sent.
+        self.design, self.replies = False, []
 
     def _asked(self, name: str, *given) -> None:
         from runner import slides
@@ -630,6 +671,37 @@ class Slides:
     def drive_check(self) -> bool:
         self._asked('drive_check')
         return self.have['drive']
+
+    def designs(self) -> bool:
+        return self.design
+
+    def _session(self, name: str, project, act, *given):
+        """A design command, played by the design stand-in, which keeps the tool's rules
+        and writes the session where the tool does. A refusal comes as JSON would."""
+        from runner import slides
+        from stand_ins import design as designs
+        self._asked(name, project, *given)
+        session = designs.Session(project)
+        try:
+            return act(session)
+        except (designs.Refusal, ValueError) as refused:
+            found = designs.refusal(refused, session.revision())
+            raise slides.Refused([problem['detail'] for problem in found['problems']], found)
+
+    def design_propose(self, project, proposal, expected=None) -> dict:
+        return self._session('design_propose', project, lambda session: session.propose(
+            self._read(proposal), expected, 'batch'), proposal)
+
+    def design_status(self, project) -> dict:
+        return self._session('design_status', project, lambda session: session.status())
+
+    def design_check(self, project) -> dict:
+        return self._session('design_check', project, lambda session: session.check())
+
+    def design_respond(self, project, reply) -> dict:
+        self.replies.append(dict(reply))
+        return self._session('design_respond', project,
+                             lambda session: session.respond(reply))
 
     def drive_import(self, deck, name) -> dict:
         self._asked('drive_import', deck, name)
@@ -963,14 +1035,15 @@ class StudioCase(unittest.TestCase):
                 'pdfinfo': have['pictures']}
         return f'/usr/bin/{Path(program).name}' if here.get(Path(program).name) else None
 
-    def stand_ins(self) -> tuple:
+    def stand_ins(self, design: bool = False) -> tuple:
         """The stand-ins in tests/stand_ins, which keep the rules of the real slides tool
-        and of a real brand skill. Give them to `self.slides` and `self.brand`."""
+        and of a real brand skill. Give them to `self.slides` and `self.brand`. With
+        `design`, the slides tool is the one after 0.13.1, with its design session."""
         from stand_ins import brand as brand_stand_in, slides as slides_stand_in
         tool, skill = self.real
         with mock.patch.object(self.engines.slides_tool, 'Slides', tool), \
                 mock.patch.object(self.engines.brand_skill, 'Brand', skill):
-            return slides_stand_in.stand_in(), brand_stand_in.stand_in()
+            return slides_stand_in.stand_in(design), brand_stand_in.stand_in()
 
     def the_slides(self, runtime=None, run=None):
         from workspace import WorkspaceError

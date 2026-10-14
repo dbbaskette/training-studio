@@ -77,7 +77,10 @@ With levels, every blueprint is drafted first. Then each level is finished in tu
 
 **The deck.** Choose "No deck" when you start and the deck is left out. Otherwise you choose its brand and the brand's variant from what your brand skill offers, and whether it is a PowerPoint file or Google Slides. The deck is made for each level after its brief, and you decide twice.
 
-- **What the deck says.** Every slide's title, points, caveat and notes, before any slide is drawn. Words are quick to change here and slow to change later. The run says what a deck of this size has cost before.
+- **What the deck says, and how each slide is drawn.** Every slide's title, points, caveat and notes, before any slide is drawn. Words are quick to change here and slow to change later. The run says what a deck of this size has cost before.
+  - Where harness-slides keeps a design session (versions after 0.13.1), each slide's words sit beside its design: the visual and what it teaches, how it is laid out, the claim, what it was weighed against, the assets it needs and any not found yet, and the wording it must keep. A slide that is right as text says why.
+  - It is still one decision. Approving records your approval of the words and the design together, in harness-slides' own record of the design, and the slides are drawn from both. Ask for changes and the words and the design come back together. When a change touches only some slides, the others are marked as approved before.
+  - With harness-slides 0.13.1 the review shows the words alone, as before. A deck keeps the review it started with, so a deck that was already under way is never redesigned behind your back.
 - **The deck itself.** Every slide as a picture, with what the review still finds, the result of the brand's own check, and which slides cover each objective. The file you approve is the one whose pictures you are shown.
 
 Between the two, the slides are drawn in sections, side by side, by agents that look at a preview of what they draw. A different agent then reviews every slide. Sections with something badly wrong in how they are drawn are drawn again, at most twice. After that the deck comes to you as it is, with what remains listed, the gravest first. A finding about what a slide says is never fixed for you: it is listed, and "Ask for changes" takes you back to the words.
@@ -170,7 +173,7 @@ The original folder is left exactly as it was, with nothing deleted. From then o
 
 ## What the runner guarantees
 
-- **Only you approve.** A training the runner drives is decided on the page, and nowhere else. The runner has no way to approve a draft, and neither has an agent.
+- **Only you approve.** A training the runner drives is decided on the page, and nowhere else. The runner has no way to approve a draft, and neither has an agent. An agent that proposes a deck's design cannot answer for you either: only your decision on the page is sent to harness-slides.
 - **An agent cannot touch your files.** Each agent works in an empty folder outside your trainings, with no shell and no file tools. It can read what the runner gives it, search the web when the job is research, and hand back a draft or a finding. The runner checks what is handed back before anything is kept.
 - **Quotes are real.** The runner fetches each source itself and keeps a copy. A finding is kept only when every quote in it is found, word for word, in the saved page.
 - **Everything is recorded.** Each step, decision and request is a commit in the workspace, saying what happened. The pages a finding quotes stay on your computer; they are not shared.

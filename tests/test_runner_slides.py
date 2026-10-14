@@ -1365,5 +1365,210 @@ class StandInCompositionTests(Deck):
                          ['Use resolved brand contract schema 1 with identity/variant'])
 
 
+CONTRACT = Path(__file__).resolve().parent / 'fixtures' / 'visual-contract'
+
+
+class DesignTests(unittest.TestCase):
+    """The design session, through the wrapper, against Harness Slides' own contract fixture,
+    a copy of its tests/fixtures/visual-contract. The stand-in plays the tool after 0.13.1,
+    and 0.13.1 itself."""
+
+    def setUp(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.root = Path(holder.name).resolve()
+        self.slides = slides_stand_in.stand_in(design=True)
+        self.tool = self.slides.run
+        self.cases = json.loads((CONTRACT / 'cases.json').read_text(encoding='utf-8'))
+        self.made = 0
+
+    def project(self) -> Path:
+        self.made += 1
+        folder = self.root / f'project-{self.made}'
+        folder.mkdir()
+        return folder
+
+    def given(self, state: str, project: Path) -> dict | None:
+        """A project as a case of the fixture starts: empty, proposed or approved."""
+        if state == 'empty':
+            return None
+        proposed = self.slides.design_propose(project, CONTRACT / self.cases['proposal'])
+        if state == 'proposed':
+            return proposed
+        return self.slides.design_respond(project, {
+            'questionId': proposed['question']['id'], 'planRevision': proposed['revision'],
+            **self.cases['approval']})
+
+    def refused(self, call, *args) -> slides.Refused:
+        with self.assertRaises(slides.Refused) as refused:
+            call(*args)
+        return refused.exception
+
+    def test_the_contract_fixture_is_proposed_as_one_question_and_approved_by_one_answer(self):
+        plan = json.loads((CONTRACT / 'proposal.json').read_text(encoding='utf-8'))
+        project = self.project()
+        proposed = self.given('proposed', project)
+        self.assertEqual((proposed['mode'], proposed['buildAllowed'], proposed['pending']),
+                         ('batch', False, [slide['id'] for slide in plan['slides']]))
+        self.assertEqual(proposed['question']['slides'], proposed['pending'])
+        self.assertEqual(proposed['question']['options'], ['Approve the whole plan',
+                                                           'Request changes'])
+        self.assertEqual(self.cases['approval']['feedback'], 'Approve the whole plan',
+                         'approving without a note sends the option chosen, word for word')
+        self.assertEqual(proposed['slides'][0]['visibleText'], (
+            'Custom resource: Declares the state you want\nController: Runs in a pod and '
+            'watches the resource\nAPI server: Stores both and tells watchers what changed\n'
+            'An operator manages only the resources it was written for.\nSource: Kubernetes '
+            'documentation, Operator pattern'))
+        self.assertEqual((proposed['slides'][2]['intent']['visual']['family'],
+                          proposed['slides'][2]['asset']['disposition']), ('text', 'not-needed'))
+        self.assertEqual(self.refused(self.slides.design_check, project).codes,
+                         ['design-awaiting-approval'] * 3)
+        approved = self.given('approved', self.project())
+        self.assertEqual((approved['buildAllowed'], approved['pending'], approved['question']),
+                         (True, [], None))
+        project = self.project()
+        self.given('approved', project)
+        checked = self.slides.design_check(project)
+        self.assertEqual((checked['buildAllowed'], checked['revision']),
+                         (True, self.slides.design_status(project)['revision']))
+        session = project / '.harness-slides' / 'design' / 'session.json'
+        approvals = json.loads(session.read_text())['approvals']
+        self.assertEqual(approvals['reconcile_loop']['response'], 'Approve the whole plan')
+
+    def test_every_refusal_of_a_design_command_in_the_fixture_comes_back_as_its_problems(self):
+        calls = {'propose': lambda project, file: self.slides.design_propose(project, file),
+                 'respond': lambda project, file: self.slides.design_respond(
+                     project, json.loads(Path(file).read_text(encoding='utf-8'))),
+                 'check': lambda project, file: self.slides.design_check(project)}
+        ran = []
+        for case in self.cases['cases']:
+            if case['run'][0] != 'design':
+                continue    # composition against the design is a later issue's (#44)
+            with self.subTest(case['id']):
+                project = self.project()
+                self.given(case['given'], project)
+                run = [part.replace('{project}', str(project)).replace('{fixture}', str(CONTRACT))
+                       for part in case['run']]
+                file = run[run.index('--file') + 1] if '--file' in run else None
+                refusal = self.refused(calls[run[1]], project, file)
+                self.assertEqual(len(refusal.found), len(case['problems']), refusal.found)
+                for found, wanted in zip(refusal.found, case['problems']):
+                    for key in ('code', 'slide', 'asset', 'provider', 'detail', 'recoverable',
+                                'next'):
+                        self.assertIn(key, found)
+                    for key, value in wanted.items():
+                        if key == 'fallback':
+                            self.assertTrue(found['fallback']['needsApproval'])
+                            self.assertIn('native diagram', found['fallback']['proposal'])
+                        else:
+                            self.assertEqual(found[key], value, key)
+                self.assertEqual(refusal.problems, [found['detail'] for found in refusal.found])
+                self.assertEqual(refusal.revision, None if case['given'] == 'empty'
+                                 else self.slides.design_status(project)['revision'])
+                ran.append(case['id'])
+        self.assertEqual(ran, ['qualification-missing', 'copy-mismatch', 'asset-unresolved',
+                               'awaiting-approval', 'stale-reply'])
+
+    def test_each_design_call_is_run_as_the_command_line_takes_it(self):
+        project = self.project()
+        proposed = self.slides.design_propose(project, CONTRACT / 'proposal.json')
+        self.slides.design_propose(project, CONTRACT / 'proposal.json',
+                                   expected=proposed['revision'])
+        self.slides.design_status(project)
+        self.slides.design_respond(project, {'questionId': proposed['question']['id'],
+                                             'planRevision': proposed['revision'],
+                                             'decision': 'approve',
+                                             'feedback': 'Approve the whole plan'})
+        self.slides.design_check(project)
+        asked = [call for call in self.tool.calls if call[0] == 'design']
+        reply = asked[3][asked[3].index('--file') + 1]
+        self.assertEqual(asked, [
+            ['design', 'propose', '--project', str(project), '--file',
+             str(CONTRACT / 'proposal.json'), '--mode', 'batch', '--json'],
+            ['design', 'propose', '--project', str(project), '--file',
+             str(CONTRACT / 'proposal.json'), '--mode', 'batch', '--json', '--expected',
+             proposed['revision']],
+            ['design', 'status', '--project', str(project), '--json'],
+            ['design', 'respond', '--project', str(project), '--file', reply, '--json'],
+            ['design', 'check', '--project', str(project), '--json']])
+        self.assertFalse(Path(reply).exists(), 'the reply is written for the call alone')
+        self.assertFalse((project / '.harness-slides' / 'design' / '.lock').exists())
+
+    def test_whether_a_tool_takes_a_design_is_asked_of_it_not_read_from_its_version(self):
+        self.assertTrue(self.slides.designs())
+        older = slides_stand_in.stand_in()
+        self.assertFalse(older.designs())
+        self.assertEqual(older.version(), self.slides.version(),
+                         'the two say the same version: only what they do tells them apart')
+        for tool in (self.slides, older):
+            tool.designs()
+            probes = [call for call in tool.run.calls if call[:2] == ['design', 'propose']]
+            self.assertEqual(len(probes), 1, 'asked once, then remembered')
+            self.assertEqual(probes[0][-3:], ['--mode', 'batch', '--json'])
+            project = Path(probes[0][probes[0].index('--project') + 1])
+            self.assertFalse(project.exists(), 'nothing is left behind, and nothing written')
+        self.assertEqual(older.run(['node', 'script', 'design', 'status', '--project', 'x',
+                                    '--json']),
+                         (1, '', '--json is not valid for this command\n'))
+        code, out, err = older.run(['node', 'script', 'design', 'propose', '--project', 'x',
+                                    '--file', 'y', '--mode', 'batch'])
+        self.assertEqual((code, out), (1, ''))
+        self.assertIn("Unknown option '--mode'", err)
+        # Whatever else a tool says, only a refusal as JSON on its standard output is a yes.
+        for answer in ((1, '', 'Unknown command/action; run --help\n'), (0, '{}\n', ''),
+                       (1, 'not json\n', ''), (1, '{"status": "fine"}\n', '')):
+            tool = slides.Slides(runtime=Path('/opt/harness-slides'), run=lambda command,
+                                 cwd=None, said=answer: says()(command) if command[2:] == [
+                                     '--version'] else said)
+            self.assertFalse(tool.designs(), answer)
+
+    def test_a_refusal_without_json_is_still_the_tools_sentence(self):
+        project = self.project()
+        code, out, err = self.tool(['node', 'script', 'design', 'propose', '--project',
+                                    str(project), '--file',
+                                    str(CONTRACT / 'refusals' / 'qualification-missing.json')])
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(err, 'reconcile_loop: the qualification "Reconciliation never stops" '
+                              'does not appear in the slide copy\n')
+        missing = self.refused(self.slides.design_status, self.project())
+        self.assertEqual((missing.codes, missing.revision), (['design-missing'], None))
+
+    def test_notes_keep_an_approval_and_a_change_to_the_copy_asks_about_that_slide_alone(self):
+        project, plan = self.project(), json.loads((CONTRACT / 'proposal.json').read_text())
+        approved = self.given('approved', project)
+        file = project / 'changed.json'
+        plan['slides'][1]['notes'] = 'Different speaker notes.'
+        file.write_text(json.dumps(plan))
+        stale = self.refused(self.slides.design_propose, project, file)
+        self.assertEqual(stale.codes, ['design-revision-stale'],
+                         'a changed proposal names the revision it replaces')
+        kept = self.slides.design_propose(project, file, expected=approved['revision'])
+        self.assertEqual((kept['buildAllowed'], kept['pending'], kept['question']),
+                         (True, [], None))
+        plan['slides'][1]['copy']['points'][1]['text'] = 'Read the live state'
+        file.write_text(json.dumps(plan))
+        asked = self.slides.design_propose(project, file, expected=kept['revision'])
+        self.assertEqual((asked['pending'], asked['question']['slides']),
+                         (['reconcile_loop'], ['reconcile_loop']))
+        self.assertEqual(asked['question']['options'], ['Approve these designs',
+                                                        'Request changes'])
+        self.assertIn('the remaining designs', asked['question']['prompt'])
+        revised = self.slides.design_respond(project, {
+            'questionId': asked['question']['id'], 'planRevision': asked['revision'],
+            'decision': 'revise', 'feedback': 'Say observe, not read.'})
+        self.assertEqual((revised['status'], revised['question'], revised['pending']),
+                         ('revision requested', None, ['reconcile_loop']))
+        self.assertEqual(self.refused(self.slides.design_check, project).codes,
+                         ['design-revision-requested'])
+        again = self.slides.design_propose(project, file, expected=revised['revision'])
+        self.assertEqual((again['status'], again['question']), ('revision requested', None),
+                         'the same proposal again is not the change that was asked for')
+        old = self.refused(self.slides.design_respond, project, {
+            'questionId': asked['question']['id'], 'planRevision': asked['revision'],
+            'decision': 'approve', 'feedback': 'Approve these designs'})
+        self.assertEqual(old.codes, ['design-revision-stale'])
+
+
 if __name__ == '__main__':
     unittest.main()

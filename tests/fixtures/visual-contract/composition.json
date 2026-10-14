@@ -1,0 +1,186 @@
+{
+ "version": 1,
+ "title": "Kubernetes operators: how a controller keeps a cluster in shape",
+ "direction": {
+  "focal": "accentAqua",
+  "neutral": "canvasSecondary"
+ },
+ "slides": [
+  {
+   "id": "operator_architecture",
+   "title": "An operator is a controller that runs inside the cluster",
+   "sources": [
+    "brief:operators-101"
+   ],
+   "brief": {
+    "relation": "membership",
+    "focal": "arch_controller"
+   },
+   "canvas": {
+    "type": "box",
+    "id": "arch_cluster",
+    "style": "outline",
+    "children": [
+     {
+      "type": "text",
+      "id": "arch_cluster_label",
+      "text": "Cluster",
+      "textRole": "label"
+     },
+     {
+      "type": "stack",
+      "direction": "row",
+      "gap": "none",
+      "children": [
+       {
+        "type": "box",
+        "id": "arch_api",
+        "text": "API server\nStores both and tells watchers what changed",
+        "align": "center"
+       },
+       {
+        "type": "spacer",
+        "weight": 0.4
+       },
+       {
+        "type": "box",
+        "id": "arch_controller",
+        "text": "Controller\nRuns in a pod and watches the resource",
+        "align": "center"
+       },
+       {
+        "type": "spacer",
+        "weight": 0.4
+       },
+       {
+        "type": "box",
+        "id": "arch_resource",
+        "text": "Custom resource\nDeclares the state you want",
+        "align": "center"
+       }
+      ]
+     }
+    ]
+   },
+   "connect": [
+    {
+     "id": "arch_watch",
+     "from": "arch_controller",
+     "to": "arch_api",
+     "label": "watches"
+    },
+    {
+     "id": "arch_owns",
+     "from": "arch_controller",
+     "to": "arch_resource",
+     "label": "owns"
+    }
+   ],
+   "caveat": "An operator manages only the resources it was written for.",
+   "source": "Kubernetes documentation, Operator pattern",
+   "notes": "Point at the cluster boundary first: everything here runs inside it."
+  },
+  {
+   "id": "reconcile_loop",
+   "title": "The controller closes the gap, again and again",
+   "sources": [
+    "brief:operators-101"
+   ],
+   "brief": {
+    "relation": "order",
+    "focal": "loop_desired"
+   },
+   "canvas": {
+    "type": "stack",
+    "direction": "row",
+    "gap": "none",
+    "children": [
+     {
+      "type": "box",
+      "id": "loop_desired",
+      "text": "Desired state\nWhat the custom resource declares",
+      "align": "center"
+     },
+     {
+      "type": "spacer",
+      "weight": 0.4
+     },
+     {
+      "type": "box",
+      "id": "loop_observe",
+      "text": "Observe\nRead what is running now",
+      "align": "center"
+     },
+     {
+      "type": "spacer",
+      "weight": 0.4
+     },
+     {
+      "type": "box",
+      "id": "loop_act",
+      "text": "Act\nChange the cluster toward the desired state",
+      "align": "center"
+     }
+    ]
+   },
+   "connect": [
+    {
+     "id": "loop_one",
+     "from": "loop_desired",
+     "to": "loop_observe",
+     "label": "compare"
+    },
+    {
+     "id": "loop_two",
+     "from": "loop_observe",
+     "to": "loop_act",
+     "label": "differs"
+    },
+    {
+     "id": "loop_three",
+     "from": "loop_act",
+     "to": "loop_observe",
+     "route": "curve"
+    }
+   ],
+   "caveat": "Reconciliation repeats; it is not a one-time install step.",
+   "notes": "Walk the loop twice: once when the resource is created, once after someone deletes a pod by hand."
+  },
+  {
+   "id": "knowledge_check",
+   "title": "Check: a managed pod is deleted. What happens?",
+   "sources": [
+    "brief:operators-101"
+   ],
+   "brief": {
+    "relation": "parallel"
+   },
+   "canvas": {
+    "type": "stack",
+    "direction": "column",
+    "gap": "normal",
+    "children": [
+     {
+      "type": "box",
+      "id": "check_a",
+      "style": "outline",
+      "text": "A  Nothing until the operator is reinstalled"
+     },
+     {
+      "type": "box",
+      "id": "check_b",
+      "style": "outline",
+      "text": "B  The controller notices and recreates it"
+     },
+     {
+      "type": "box",
+      "id": "check_c",
+      "style": "outline",
+      "text": "C  The custom resource is deleted too"
+     }
+    ]
+   },
+   "notes": "Answer: B. The controller observes the drift and acts to restore the desired state."
+  }
+ ]
+}

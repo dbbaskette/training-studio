@@ -1,6 +1,6 @@
 # Write what a slide deck says
 
-You are writing the outline of a slide deck for one training: what each slide says, and nothing about how it is drawn. The slides are drawn later by someone else, from your outline alone. The deck is presented and also handed out, so every slide must make sense to someone reading it alone. You work alone, and you have only the tools named in this guidance.
+You are writing the outline of a slide deck for one training: what each slide says. When your task asks for the design as well, you also propose how each slide is drawn. The slides are drawn later by someone else, from what the person approves. The deck is presented and also handed out, so every slide must make sense to someone reading it alone. You work alone, and you have only the tools named in this guidance.
 
 ## What you are given
 

@@ -54,7 +54,12 @@ checked here before anything is kept. Each job has a folder that only the runner
   `submit_section`; a review, set up with `review=`, has `look_at_slide`,
   `submit_assessment` and `submit_coverage`. `look=` gives any job slides to look at.
 - An 'outline' takes 'brand' (the exported brand contract's path) and 'blueprint' (its
-  text). It is checked with the slides tool's own check and with `deck.rules`. A 'section'
+  text). It is checked with the slides tool's own check and with `deck.rules`. With 'design'
+  true, `check_outline` and `submit_outline` take the slides' design beside the outline: it
+  is checked with `deck.design_rules`, and the proposal `deck.proposal` makes of the two is
+  proposed to the slides tool in a project of the job's own, which is removed after. What
+  is kept is then {'outline', 'design'}, the design being that proposal. No tool answers the
+  tool's question about a design: that is the person's, on the page. A 'section'
   takes 'brand' and what `deck.fixed` returned, and how its previews are taken:
   'previews' (how many it has), 'renderer', 'lock' and 'kept'. It is checked with
   `deck.kept` and with the slides tool's compiler. What is handed in must be the version
@@ -527,11 +532,16 @@ def check_outline(text: str, spec: dict, slides,
                   scratch: Path) -> tuple[list[str], list[dict], list[str], str]:
     """An outline: what each slide of a deck says. The slides tool checks its shape and
     its own limits, and the runner's own rules are checked on top, with the tool's budget
-    of words counted against everything a slide shows."""
+    of words counted against everything a slide shows. With 'design', the outline comes with
+    its design as {'outline', 'design'}, and the proposal made from the two is checked too."""
     try:
         outline, kept = as_json(text, 'outline')
     except Refusal as refusal:
         return [str(refusal)], [], [], text
+    if spec.get('design'):
+        given = outline if isinstance(outline, dict) else {}
+        outline, kept = given.get('outline'), as_json(given.get('outline') or {}, 'outline')[1]
+        design = given.get('design')
     budget = spec.get('budget')
     try:
         report = slides.outline_check(_draft(scratch, 'outline', kept), spec['brand'])
@@ -544,7 +554,50 @@ def check_outline(text: str, spec: dict, slides,
     outcomes = [checks.result('outline.tool', found),
                 checks.result('outline.rules', deck.rules(outline, spec.get('blueprint') or '',
                                                           budget))]
+    if not spec.get('design'):
+        return held(outcomes), outcomes, [], kept
+    problems, proposed = check_design(outline, design, slides, scratch)
+    outcomes.append(checks.result('outline.design', problems))
+    kept = json.dumps({'outline': json.loads(kept), 'design': proposed}, indent=2,
+                      ensure_ascii=False) + '\n'
     return held(outcomes), outcomes, [], kept
+
+
+def check_design(outline, design, slides, scratch: Path) -> tuple[list[str], dict | None]:
+    """The design handed in with an outline: the runner's own rules, then the proposal made
+    from the two, proposed to the slides tool in a project of its own that is thrown away.
+    Returns what to put right and the proposal. Nothing the tool keeps outlives the check."""
+    if not deck.slides_of(outline):
+        return ['The design is checked once the outline has its slides.'], None
+    problems = deck.design_rules(outline, design)
+    if problems:
+        return problems, None
+    proposed = deck.proposal(outline, design)
+    project = scratch / f'design-{secrets.token_hex(4)}'
+    _write(project / 'proposal.json', json.dumps(proposed, ensure_ascii=False))
+    try:
+        slides.design_propose(project, project / 'proposal.json')
+    except WorkspaceError as refusal:
+        found = getattr(refusal, 'found', None)
+        if not found:
+            return said_no(refusal), proposed
+        return [_problem(problem) for problem in found], proposed
+    finally:
+        shutil.rmtree(project, ignore_errors=True)
+    return [], proposed
+
+
+def _problem(problem: dict) -> str:
+    """One problem the slides tool found in a design, as the worker is told it: the slide,
+    what is wrong, and the way out the tool offers when it has one."""
+    slide, detail = problem.get('slide'), str(problem.get('detail') or problem.get('code'))
+    line = detail if not slide or detail.startswith(f'{slide}:') else f'{slide}: {detail}'
+    fallback = problem.get('fallback') or {}
+    if fallback.get('proposal'):
+        line += '' if line.endswith(('.', '?', '!')) else '.'
+        line += (f" Instead, you may propose this, which the person approves like the rest: "
+                 f"{fallback['proposal']}.")
+    return line
 
 
 def check_section(text: str, spec: dict, slides,
@@ -1074,17 +1127,34 @@ class WorkerTools:
                       + ('Hand it in with submit_outline.' if kind == 'outline' else
                          'Preview it with preview_section before you hand it in.'))
 
-    @tool
-    def check_outline(self, outline):
-        """Check a draft of the outline. Nothing is kept."""
-        return self._tried('outline', outline)
+    def _outlined(self, outline, design) -> str:
+        """An outline as it is checked: alone, or with its design when the job asks for
+        one, as {'outline', 'design'}."""
+        _, spec = self._spec('outline')
+        if not spec.get('design'):
+            if design is not None:
+                raise Refusal('This outline is handed in without a design. Send the outline '
+                              'alone.')
+            return as_json(outline, 'outline')[1]
+        if design is None:
+            raise Refusal('Hand the outline in with its design: one entry for every slide, as '
+                          'your guidance says.')
+        return json.dumps({'outline': as_json(outline, 'outline')[0],
+                           'design': as_json(design, 'design')[0]},
+                          indent=2, ensure_ascii=False) + '\n'
 
     @tool
-    def submit_outline(self, outline):
-        """Hand the outline in. It is checked the same way and kept when nothing is left
-        to put right."""
+    def check_outline(self, outline, design=None):
+        """Check a draft of the outline, with its design when the job asks for one. Nothing
+        is kept."""
+        return self._tried('outline', self._outlined(outline, design))
+
+    @tool
+    def submit_outline(self, outline, design=None):
+        """Hand the outline in, with its design when the job asks for one. It is checked the
+        same way and kept when nothing is left to put right."""
         name, _ = self._spec('outline')
-        return self._hand_in(name, as_json(outline, 'outline')[1])
+        return self._hand_in(name, self._outlined(outline, design))
 
     # --- a deck: how it is drawn ---
 
@@ -1571,12 +1641,13 @@ TOOLS = [
     _described('submit_review', 'After your draft is accepted, give your own honest notes '
                'on it for the person who will review it: where it is weakest, what is '
                'missing, what to look at.', {'text': TEXT}, ['text']),
-    _described('check_outline', 'Check a draft of the outline. Returns what to put right. '
-               'Nothing is kept: use it until nothing is left to put right.',
-               {'outline': TEXT}, ['outline']),
-    _described('submit_outline', 'Hand the outline in, whole, as JSON text. It is checked '
-               'the same way and kept only when nothing is left to put right.',
-               {'outline': TEXT}, ['outline']),
+    _described('check_outline', 'Check a draft of the outline, and of its design when your '
+               'task asks for one. Returns what to put right. Nothing is kept: use it until '
+               'nothing is left to put right.', {'outline': TEXT, 'design': TEXT}, ['outline']),
+    _described('submit_outline', 'Hand the outline in, whole, as JSON text, with its design '
+               'when your task asks for one. They are checked the same way and kept only '
+               'when nothing is left to put right.', {'outline': TEXT, 'design': TEXT},
+               ['outline']),
     _described('check_section', 'Compile a draft of your section, whole, as JSON text, '
                'without rendering it. Returns every problem to put right. Free to use as '
                'often as you need.', {'section': TEXT}, ['section']),

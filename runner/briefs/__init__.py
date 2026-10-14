@@ -11,6 +11,7 @@ What a caller needs to know
     briefs.guidance('scenario')                 drafting a practice scenario
     briefs.guidance('yoodli')                   laying a scenario out in Yoodli's fields
     briefs.guidance('deck-outline')             writing what a slide deck says
+    briefs.guidance('deck-outline', design=True)   and proposing how each slide is drawn
     briefs.guidance('deck-section')             drawing one section of a deck
     briefs.guidance('deck-section', repair=True)   drawing it again after a review
     briefs.guidance('deck-review')              reviewing a deck someone else drew
@@ -70,9 +71,10 @@ def mode(name: str) -> str:
 
 
 def guidance(job: str, level: str | None = None, kind: str | None = None,
-             naming: bool = False, repair: bool = False) -> str:
+             naming: bool = False, repair: bool = False, design: bool = False) -> str:
     """The guidance for one kind of job, whole. `naming` says the job has the brand's
-    naming rules among its inputs, and `repair` that a section is drawn again."""
+    naming rules among its inputs, `repair` that a section is drawn again, and `design`
+    that the writer of what a deck says proposes how each slide is drawn too."""
     if job not in JOBS:
         raise WorkspaceError('There is a brief for: ' + ', '.join(JOBS) + '.')
     if level is not None and (job not in LEVELLED or level not in workspace.LEVELS):
@@ -81,11 +83,14 @@ def guidance(job: str, level: str | None = None, kind: str | None = None,
     if (kind is not None) != (job == 'brief') or kind not in (None, *workspace.BRIEF_KINDS):
         raise WorkspaceError('A brief, and nothing else, is written as one of these kinds: '
                              + ', '.join(workspace.BRIEF_KINDS) + '.')
-    if (naming and job not in NAMED) or (repair and job != 'deck-section'):
+    if (naming and job not in NAMED) or (repair and job != 'deck-section') \
+            or (design and job != 'deck-outline'):
         raise WorkspaceError('Naming rules are given to the writers of a guide, a brief and '
-                             'a scenario, and only a section of a deck is drawn again.')
+                             'a scenario, only a section of a deck is drawn again, and only '
+                             'the writer of what a deck says proposes its design.')
     text = read(job)
-    for added in (['naming'] if naming else []) + (['deck-repair'] if repair else []):
+    for added in ((['naming'] if naming else []) + (['deck-repair'] if repair else [])
+                  + (['deck-design'] if design else [])):
         text = text.replace(HAND_BACK, f'\n{read(added)}{HAND_BACK}', 1)
     if level is not None:
         text += '\n' + read(LEVELLED[job]).replace('{level}', level)

@@ -57,6 +57,12 @@ What a caller needs to know
   the person's decision through the core, then calls `decided` and `carry_on`. What a deck
   says has a gate of the runner's own, kept in the run record: the engine puts it to the
   person and waits, and `outline` is how the page records what they decided.
+- Where the slides tool keeps a design session, what a deck says is written with how each
+  slide is drawn, and the gate puts both to the person as one decision. The design is
+  proposed to the tool, the page's decision is sent to it as the one answer to its
+  question, and the approval binds the outline, the proposal and the tool's revision. A
+  deck keeps the gate it was first written with, so a deck already under way when the tool
+  gains the session is decided on its words alone, as before.
 - After the blueprints it goes one level at a time: the guide, the brief, each practice
   scenario, each Yoodli scenario, with the copies the training asked for made after each
   approval. A copy that cannot be made is noted with the reason and never holds it up.
@@ -244,6 +250,11 @@ SETTLED = ('The research for this training was planned from the documents alread
 PREVIEWS = 'previews'   # in the per-user data folder: the render's turn, and each deck's file
 DECK_KEPT = ('What you approved the deck should say is kept, and so is everything made '
              'before it.')
+CHANGED = '{it} has changed since it was opened. Read the new version before deciding.'
+DESIGN_GONE = ('What this deck says is written with its design, which the slides tool on '
+               'this computer cannot keep. Update harness-slides, then try again.')
+DESIGN_DIFFERS = ('The design you approved is not what the slides tool holds as approved, so '
+                  'the deck cannot be started. {said}')
 NOT_CHOSEN = ("How a deck's previews are rendered has not been chosen. Choose Google Drive "
               'or LibreOffice in Settings.')
 NO_RENDERER = ('This computer has no way to render previews of slides. Install LibreOffice, '
@@ -1444,16 +1455,58 @@ class Engine:
             self._note(root, level, brand=kept)
             self._done(root, it, clock, f'export the brand for {workspace.label(it.artifact)}')
 
+    def _designed(self, mine: pipeline.Deck) -> bool | None:
+        """Whether what a deck says is written with its design. A deck keeps what it was
+        first written with; a new one has a design when the slides tool can keep one. None
+        when it was written with a design and the tool here can no longer keep one."""
+        if mine.designed is False:
+            return False
+        try:
+            can = self.slides().designs()
+        except WorkspaceError:
+            can = False
+        return can if mine.designed is None else (True if can else None)
+
+    def _propose(self, root: Path, level: str | None) -> dict:
+        """Propose a deck's design to the slides tool as one question for the whole plan, in
+        the deck's own folder, and say what is put to the person: the design file's hash,
+        the revision, whether it may be built already, and the question. Call it holding
+        `files`."""
+        tool, project = self.slides(), pipeline.place(root, level, pipeline.DESIGNS)
+        file = pipeline.place(root, level, pipeline.DESIGN)
+        try:
+            expected = tool.design_status(project)['revision']
+        except slides_tool.Refused as refusal:
+            if refusal.codes != ['design-missing']:
+                raise
+            expected = None
+        status = tool.design_propose(project, file, expected)
+        question = status.get('question') or None
+        return {'sha256': workspace.sha256_file(file), 'revision': status['revision'],
+                'allowed': bool(status.get('buildAllowed')),
+                'question': {key: question.get(key) for key in ('id', 'slides', 'options')}
+                if question else None}
+
     def _ask(self, root: Path, run: _Run, found: pipeline.Survey, step: pipeline.Next) -> None:
         """Put what a deck says to the person, at the runner's own gate, and wait. The
-        core has no gate for it, so this one is kept in the run record."""
+        core has no gate for it, so this one is kept in the run record. A deck written with
+        its design proposes it to the slides tool first, so that the person's one decision
+        answers the tool's own question."""
         it = step.step
         level, says = self._level(it), pipeline.subject(it)
         with self.files:
+            design = None
+            if found.decks[level].designed:
+                try:
+                    design = self._propose(root, level)
+                except WorkspaceError as refusal:
+                    return self._problem(root, it.id, 'failed', (
+                        f'{workspace.sentence(says)} could not be put to you with its design. '
+                        f'{refusal}'), KEPT)
             record = self._load(root)
             self._decided(record, level)['waiting'] = {
                 'sha256': workspace.sha256_file(pipeline.place(root, level, pipeline.OUTLINE)),
-                'at': home.now()}
+                'design': design, 'at': home.now()}
             self._store(root, record)
             workspace.checkpoint(root, stage='deck', level=level,
                                  next_step=f'Waiting for your review of {says}')
@@ -1472,6 +1525,16 @@ class Engine:
         mine, work = found.decks[level], pipeline.place(root, level, pipeline.WORK)
         folder, source = work / f'start-{token}', work / f'outline-{token}.json'
         approved = mine.kept['approved']
+        design = approved.get('design')
+        if design:
+            try:
+                checked = self.slides().design_check(pipeline.place(root, level,
+                                                                    pipeline.DESIGNS))
+                if checked.get('revision') != design['revision']:
+                    raise WorkspaceError('It holds another revision.')
+            except WorkspaceError as refusal:
+                return self._problem(root, it.id, 'stopped', DESIGN_DIFFERS.format(
+                    said=refusal), DECK_KEPT)
         words = [f"Approved on the page, {approved['at']}."]
         words += [approved['note']] if approved.get('note') else []
         try:
@@ -1509,6 +1572,7 @@ class Engine:
                     shutil.rmtree(old, ignore_errors=True)
             self._note(root, level, sections={}, rounds=[], start={
                 'outline': approved['sha256'], 'brand': mine.built['brand']['sha256'],
+                'design': design,
                 'folder': folder.name, 'sections': sections, 'at': home.now()})
             self._done(root, it, clock, f'split {workspace.label(it.artifact)} into '
                        f"{len(sections)} section{'' if len(sections) == 1 else 's'}")
@@ -1699,10 +1763,13 @@ class Engine:
             self._done(root, it, clock, f'keep {workspace.label(it.artifact)}')
 
     def outline(self, path, level: str | None, decision: str, note: str | None = None,
-                seen: str | None = None) -> dict:
+                seen: str | None = None, design: str | None = None) -> dict:
         """Record what a person decided about what a deck says, as the page heard it:
         `approve`, or `revise` with what should change. Nothing else calls this: the
-        engine puts an outline to the person and waits."""
+        engine puts an outline to the person and waits. `seen` is the outline that was read
+        and `design` the revision of its design; either one that changed since is refused.
+        A deck written with its design has the decision sent to the slides tool as its one
+        answer to the tool's question, and approval binds the two."""
         root = self._held(path)
         if decision not in DECIDING:
             raise WorkspaceError('What a deck says can be decided as: '
@@ -1716,12 +1783,18 @@ class Engine:
             if step.kind != 'outline' or self._level(step.step) != level:
                 raise WorkspaceError('What that deck says is not waiting for a decision.')
             kept, says = self._decided(record, level), pipeline.subject(step.step)
-            if seen is not None and seen != kept['waiting']['sha256']:
-                raise WorkspaceError(f'{workspace.sentence(says)} has changed since it was '
-                                     'opened. Read the new version before deciding.')
+            asked = kept['waiting'].get('design')
+            if (seen is not None and seen != kept['waiting']['sha256']) or (
+                    asked and design is not None and design != asked['revision']):
+                raise WorkspaceError(CHANGED.format(it=workspace.sentence(says)))
+            if asked:
+                self._answer(root, level, asked, decision, note, says)
             if decision == 'approve':
                 kept['approved'] = {'sha256': kept['waiting']['sha256'], 'at': home.now(),
                                     'by': 'page', 'note': note}
+                if asked:
+                    kept['approved']['design'] = {'sha256': asked['sha256'],
+                                                  'revision': asked['revision']}
                 said = f'{workspace.sentence(says)} was approved on the page.'
             else:
                 kept['asked'] = {'kind': 'revise', 'note': note, 'at': home.now()}
@@ -1734,6 +1807,32 @@ class Engine:
             self._commit(root, said)
         self.carry_on(root)
         return self.view(root)
+
+    def _answer(self, root: Path, level: str | None, asked: dict, decision: str,
+                note: str | None, says: str) -> None:
+        """Send the person's decision to the slides tool as its answer to the question that
+        was put to them: the note in their words, or, approving without one, the option
+        they chose, word for word. When the tool has nothing to ask, because its approvals
+        still hold, nothing is sent. Call it holding `files`."""
+        question = asked.get('question')
+        if question is None:
+            if decision == 'approve' and not asked.get('allowed'):
+                raise WorkspaceError(f'The slides tool is not asking about the design of '
+                                     f'{says}, and has not approved it. Ask for changes.')
+            return
+        reply = {'questionId': question['id'], 'planRevision': asked['revision'],
+                 'decision': decision, 'feedback': note or question['options'][0]}
+        try:
+            answered = self.slides().design_respond(
+                pipeline.place(root, level, pipeline.DESIGNS), reply)
+        except slides_tool.Refused as refusal:
+            if 'design-revision-stale' in refusal.codes:
+                raise WorkspaceError(CHANGED.format(it=workspace.sentence(says)))
+            raise WorkspaceError('The slides tool did not take your decision: '
+                                 + ' '.join(refusal.problems))
+        if decision == 'approve' and not answered.get('buildAllowed'):
+            raise WorkspaceError('The slides tool took your approval and still waits on part '
+                                 'of the design. Open it again.')
 
     # --- a deck, as the page is shown it -------------------------------------------------
 
@@ -1931,13 +2030,16 @@ class Engine:
         it, says = step.step, pipeline.bare(step.step.id) == 'deck-outline'
         if (says and not self._brand_holds(root, found, it)) or not self._may_go(root):
             return
+        designed = says and self._designed(found.decks[self._level(it)])
+        if designed is None:
+            return self._problem(root, it.id, 'stopped', DESIGN_GONE, KEPT)
         record = self._load(root)
         sources = (self.documents.sources(root)
                    if it.id == 'research-plan' and record.get('documents') else None)
         naming = (self._naming(root, found.session)
                   if it.stage in pipeline.NAMED and it.kind == 'agent' else None)
         work = pipeline.work(root, found, it, step.request, last_error(record, it.id),
-                             record['answers'].get(it.id, []), sources, naming)
+                             record['answers'].get(it.id, []), sources, naming, designed)
         outcome, handed, started_at, folder = self._job(root, run, it, work)
         if outcome.reason == 'stopped':
             return self._stopped(root, it, outcome, started_at)
@@ -1952,7 +2054,8 @@ class Engine:
                 if says:  # kept in the deck's own folder: its gate is the runner's
                     self._decided(record, self._level(it)).update(
                         outline=pipeline.keep_outline(root, found, self._level(it), handed,
-                                                      step.request), asked=None, waiting=None)
+                                                      step.request, designed),
+                        asked=None, waiting=None)
                 else:
                     pipeline.keep_draft(root, it, handed, step.request, found)
                 self._tried(record, it.id, started_at, outcome.seconds, 'kept',

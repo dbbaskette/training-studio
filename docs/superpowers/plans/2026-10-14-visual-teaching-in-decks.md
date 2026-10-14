@@ -2,7 +2,7 @@
 
 Make technical training decks explain concepts through diagrams, approved icons, and useful images. Harness Slides owns design, asset handling, compilation, and creative review. Training Studio supplies teaching requirements, presents decisions, and tracks approved inputs and outputs.
 
-Status: planned; implementation has not started.
+Status: in progress. Harness Slides has the design contract on `main`, unreleased (its #46 and #47). Training Studio proposes copy and visuals together at the outline gate, where the installed Harness Slides can take them (#43). Sections, assets and review are still to come.
 
 ## Evidence and intended outcome
 
@@ -39,9 +39,9 @@ Acceptance: an integration test can propose and validate one architecture slide,
 ## Milestone 2 Plan visuals before approval
 
 - [ ] In Harness Slides, reuse or extend the design proposal to include concrete asset candidates and a supported treatment for each teaching claim. Consider diagrams, approved icons, screenshots, charts with sourced data, supplied images, generated illustrations and direct text according to the subject.
-- [ ] In Training Studio, replace the text-only outline review with a combined copy and visual proposal at the existing outline gate. Show proposed visible copy, a wireframe or sufficiently concrete visual description, asset candidates, important caveats and any unresolved needs.
-- [ ] Keep one outline decision for the person. Record that decision against the exact copy and design revision in Harness Slides, through an adapter that accepts actual page decisions rather than simulated worker approval.
-- [ ] Separate learning requirements from verbatim slide copy during drafting. Preserve objective coverage and source qualifications while moving explanation into notes where the visible diagram remains understandable by itself.
+- [x] In Training Studio, replace the text-only outline review with a combined copy and visual proposal at the existing outline gate. Show proposed visible copy, a wireframe or sufficiently concrete visual description, asset candidates, important caveats and any unresolved needs.
+- [x] Keep one outline decision for the person. Record that decision against the exact copy and design revision in Harness Slides, through an adapter that accepts actual page decisions rather than simulated worker approval.
+- [x] Separate learning requirements from verbatim slide copy during drafting. Preserve objective coverage and source qualifications while moving explanation into notes where the visible diagram remains understandable by itself.
 - [ ] Carry the approved design and selected assets into every section brief. Retain the deck direction and shared concept-to-icon mapping across sections.
 - [ ] Remove wording that makes visuals an afterthought. Keep relevance requirements and the freedom to choose direct text when it best teaches the claim.
 
@@ -87,6 +87,8 @@ Acceptance: a prose-card rendering of a reconciliation mechanism receives a spec
 ## State transition matrix
 
 These rows are implementation requirements, not new public status names. Map them to the existing state model and add new names only where necessary.
+
+Implemented: V01, V02, V03 and V13, each a test of its name in Training Studio's `tests/test_runner_deck.py` (`DesignTests`). They map to the runner's own outline gate: "awaiting review" is `waiting` in the run record with the design's revision and question, and "approved" is `approved` holding the outline's hash and the design's hash and revision. The [milestone 4 spec](../specs/2026-10-13-milestone-4-slides.md#the-outline-gate-with-a-design) says how.
 
 | Row | Starting condition | Event | Required result and test |
 | --- | --- | --- | --- |

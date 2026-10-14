@@ -1,6 +1,7 @@
 """A stand-in for the harness-slides command line, for tests.
 
     slides = stand_in()        # the runner's Slides, with StandIn behind it
+    stand_in(design=True)      # the same, with the design session of the next version
     sketch(slide, prefix)      # one content slide of an outline, drawn plainly
 
 `sketch` draws a slide as a section's composer might. StandIn's `fails`, `drive`, `local`
@@ -27,11 +28,14 @@ from xml.sax.saxutils import escape
 
 from runner import slides as tool
 from runner.slides import GALLERY, LEAD, MINIMUM, REFERENCES, RELATIONS
+from stand_ins import design as designs
 
 
-def stand_in() -> tool.Slides:
-    """A Slides that needs nothing installed."""
+def stand_in(design: bool = False) -> tool.Slides:
+    """A Slides that needs nothing installed. With `design`, its tool has the design session
+    of the version after 0.13.1."""
     command = StandIn()
+    command.design = design
     return tool.Slides(runtime=Path('stand-in'), run=command, read=command.read)
 
 
@@ -95,7 +99,15 @@ OPTIONS = {'outline contract': ('brand',), 'outline check': ('file', 'brand'),
            'compose merge': ('file', 'output'),
            'compose preview': ('file', 'output', 'slide', 'file-id', 'renderer'),
            'compose critique': ('file', 'assessment'), 'compose render': ('file', 'output'),
-           'drive check': (), 'drive import': ('file', 'name', 'folder-id')}
+           'drive check': (), 'drive import': ('file', 'name', 'folder-id'),
+           'design propose': ('project', 'file', 'expected'), 'design status': ('project',),
+           'design check': ('project',), 'design respond': ('project', 'file')}
+# What the design commands take after 0.13.1: the question mode, and refusals as JSON.
+LATER = {'design propose': ('mode', 'json'), 'design status': ('json',),
+         'design check': ('json',), 'design respond': ('json',)}
+FLAGS = ('json',)   # options that take no value
+UNKNOWN = ("Unknown option '--mode'. To specify a positional argument starting with a '-', "
+           "place it at the end of the command after '--', as in '-- \"--mode\"")
 PICTURE = 320   # how wide the stand-in draws a slide, in pixels
 BRIEF = (   # what the tool writes for the worker of one section, word for word
     '# Section {number} of {title}\n\n'
@@ -147,6 +159,13 @@ PRESENTATION = (
 
 class _Said(ValueError):
     """What the command would print before exiting with 1."""
+
+
+class _Blocked:
+    """A refusal a caller asked to have as JSON, printed on standard output."""
+
+    def __init__(self, refusal: dict):
+        self.refusal = refusal
 
 
 def _said(problems: list[str]) -> _Said:
@@ -1155,6 +1174,12 @@ class StandIn:
     are there. `fails` makes a command print a line and end with 1: before doing anything,
     except 'compose render', which fails after writing its file and leaves it there, as the
     first build of the tool at this version did.
+
+    `design` makes it the tool after 0.13.1, whose design session takes schema 2, asks one
+    question for a whole plan with `--mode batch` and refuses as JSON with `--json`. That
+    session is stand_ins/design.py, and it stops at the design: nothing is presented for a
+    rendered review. Without `design` it is 0.13.1 as far as the runner asks: `--mode` is an
+    option it has never heard of, and `--json` is not valid for a design command.
     """
 
     def __init__(self):
@@ -1162,6 +1187,7 @@ class StandIn:
         self.files: dict[str, dict] = {}
         self.fails: dict[str, str] = {}
         self.drive, self.local, self.pause, self.at_once = True, True, 0.0, 0
+        self.design = False
         self._busy, self._renders, self._guard = 0, 0, threading.Lock()
 
     def __call__(self, command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
@@ -1171,6 +1197,8 @@ class StandIn:
             result = self._act(args)
         except (_Said, KeyError, TypeError, AttributeError, ValueError, OSError) as said:
             return 1, '', f'{said}\n'  # as the real one does: its lines, and exit code 1
+        if isinstance(result, _Blocked):   # asked for JSON: the refusal is on standard output
+            return 1, json.dumps(result.refusal, indent=2, ensure_ascii=False) + '\n', ''
         if isinstance(result, str):
             return 0, result + '\n', ''
         return 0, json.dumps(result, indent=2, ensure_ascii=False) + '\n', ''
@@ -1192,14 +1220,19 @@ class StandIn:
         name = ' '.join(args[:2])
         if name not in OPTIONS:
             raise _Said('Unknown command/action; run --help')
+        allowed = OPTIONS[name] + (LATER.get(name, ()) if self.design else ())
         options, rest = {}, args[2:]
         while rest:
             key = rest.pop(0).removeprefix('--')
-            if key not in OPTIONS[name]:
+            if key == 'mode' and not self.design:
+                raise _Said(UNKNOWN)    # 0.13.1 parses no such option, for any command
+            if key not in allowed:
                 raise _Said(f'--{key} is not valid for this command')
-            options[key] = rest.pop(0) if rest else None
+            options[key] = True if key in FLAGS else rest.pop(0) if rest else None
         if name in self.fails and name != 'compose render':
             raise _Said(self.fails[name])
+        if name.startswith('design '):
+            return self._design(name.partition(' ')[2], options)
         return getattr(self, '_' + name.replace(' ', '_'))(options)
 
     # --- the brand ---
@@ -1817,6 +1850,42 @@ class StandIn:
                 else 'Fix the major findings in one pass, then preview again. Undo any fix '
                      'that causes a new finding.' if counts['major']
                 else 'Clear to show the user.'}
+
+    # --- the design session ---
+
+    def _design(self, action: str, options: dict):
+        """design propose, status, check or respond. With --json a refusal is a JSON object
+        on standard output; without it, the same sentence on standard error."""
+        session = designs.Session(options.get('project') or '.')
+        try:
+            if not options.get('project'):
+                raise designs.Refusal('Provide --project DIR', {'code': 'input-invalid'})
+            if action == 'propose':
+                return session.propose(self._given(options), options.get('expected'),
+                                       options.get('mode'))
+            if action == 'respond':
+                return session.respond(self._given(options))
+            return session.check() if action == 'check' else session.status()
+        except (designs.Refusal, ValueError) as refused:
+            if not options.get('json'):
+                raise _Said(str(refused))
+            return _Blocked(designs.refusal(refused, session.revision()
+                                            if options.get('project') else None))
+
+    @staticmethod
+    def _given(options: dict):
+        """The JSON file a design command reads, or the refusal the tool gives instead."""
+        if not options.get('file'):
+            raise designs.Refusal('Provide --file', {'code': 'input-invalid'})
+        try:
+            data = Path(options['file']).read_bytes()
+        except OSError:
+            raise designs.Refusal(f"ENOENT: no such file or directory, open "
+                                  f"'{options['file']}'", {'code': 'input-missing'})
+        try:
+            return json.loads(data.decode('utf-8'))
+        except ValueError as wrong:
+            raise designs.Refusal(f'{wrong} is not valid JSON', {'code': 'input-invalid'})
 
     # --- Google Drive ---
 

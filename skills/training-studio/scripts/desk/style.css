@@ -1569,6 +1569,30 @@ summary {
   white-space: pre-wrap;
 }
 
+/* With a design, what a slide says and how it is drawn sit side by side, and stack when the
+   page is narrow. */
+.outline-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem 1.6rem;
+}
+
+.outline-copy > * + *,
+.outline-drawn > * + * {
+  margin-top: 0.55rem;
+}
+
+.outline-drawn {
+  padding-left: 1rem;
+  border-left: 2px solid var(--hair);
+}
+
+.outline-label {
+  font-size: 0.86rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
 /* The place a picture goes. It has the shape of a slide whatever is in it yet: the picture,
    or the words that say it is on its way or could not be fetched. Words that need more room
    than that are given it; a picture of another shape is shown whole inside it. */
