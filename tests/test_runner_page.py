@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import stat
+import subprocess
 import time
 import unittest
 import urllib.error
@@ -293,6 +294,30 @@ class SetUpTests(FirstTimeCase):
                          ('team-repo', str(remote), 'trainings', 'main', 'each-decision',
                           False))
         self.assertEqual(Path(space['path']), gitstate.clones() / 'team-repo')
+        self.assertEqual(self.post('share', {}), {'shared': True, 'notice': None})
+        self.assertEqual(self.get('setup')['workspace']['shared'], True)
+
+    def test_set_up_asked_again_starts_nothing_when_nothing_has_changed(self):
+        remote = self.bare()
+        self.post('setup', {'repository': str(remote), 'folder': None, 'branch': None,
+                            'name': None, 'share_when': 'when-asked', 'agent': 'claude',
+                            'model': None, 'limits': {}})
+        first = self.get('setup')
+        started, looked, real = [], [], subprocess.Popen
+
+        def counted(*given, **named):
+            started.append(given[0] if given else named.get('args'))
+            return real(*given, **named)
+
+        def found():
+            looked.append('found')
+            return []
+
+        with mock.patch.object(subprocess, 'Popen', counted), \
+                mock.patch.object(self.engines.brand_skill, 'found', found):
+            again = [self.get('setup') for _ in range(3)]
+        self.assertEqual((again, started, looked), ([first] * 3, [], []))
+        # Something changed: what was committed here is shared, and set-up says so.
         self.assertEqual(self.post('share', {}), {'shared': True, 'notice': None})
         self.assertEqual(self.get('setup')['workspace']['shared'], True)
 

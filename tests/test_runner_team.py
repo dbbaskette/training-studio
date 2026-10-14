@@ -525,6 +525,27 @@ class TurnTests(StudioCase):
             thread.join(30)
         self.assertEqual(order, ['second', 'third', 'fourth'])
 
+    def test_a_turn_waited_for_reads_the_limit_once_and_again_when_settings_change(self):
+        limit, read = [1], []
+
+        def reading() -> int:
+            read.append(limit[0])
+            return limit[0]
+
+        slots, done = engines._Slots(reading), threading.Event()
+        self.assertTrue(slots.take(lambda: False, 'first'))
+        waiting = threading.Thread(target=lambda: slots.take(lambda: False, 'second')
+                                   and done.set(), daemon=True)
+        waiting.start()
+        self.until(lambda: slots.ahead('second') is not None)
+        time.sleep(1.2)     # a waiting turn looks again every half a second
+        self.assertEqual((read, done.is_set()), ([1, 1], False))
+        limit[0] = 2
+        slots.renew()
+        self.assertTrue(done.wait(30))
+        self.assertEqual(read, [1, 1, 2])
+        waiting.join(30)
+
     def test_a_training_that_waits_says_how_many_are_ahead_and_status_shows_every_run(self):
         settings.save(replace(settings.load(), parallel=1))
         entered, go = threading.Event(), threading.Event()
@@ -549,8 +570,9 @@ class TurnTests(StudioCase):
                          ('Waiting for its turn. It is next.',
                           'Waiting for its turn. 1 training is ahead of it.'))
         found = self.engine.standing()
-        self.assertEqual((sorted(found), found['limit'], found['elsewhere']),
-                         (['elsewhere', 'limit', 'runs'], 1, []))
+        self.assertEqual((sorted(found), found['limit'], found['elsewhere'],
+                          found['background']),
+                         (['background', 'elsewhere', 'limit', 'runs'], 1, [], None))
         runs = {run['id']: run for run in found['runs']}
         self.assertEqual(sorted(runs['blue-green']), ['driver', 'id', 'needs', 'notice', 'path',
                                                       'queue', 'sentence', 'spent', 'state',
@@ -570,6 +592,33 @@ class TurnTests(StudioCase):
         self.assertEqual({run['queue'] for run in runs.values()}, {None})
         order = [job.folder.name.split('--')[0] for _, job, _ in self.workers.jobs]
         self.assertEqual(order, ['rolling-restarts', 'health-checks', 'blue-green'])
+
+
+class StandingTests(StudioCase):
+    def test_status_reads_each_run_and_its_training_once(self):
+        root = self.start()
+        read_record, load, records, sessions = engines.read_record, workspace.load, [], []
+
+        def record(where):
+            records.append(Path(where))
+            return read_record(where)
+
+        def session(where, *given, **named):
+            sessions.append(Path(where))
+            return load(where, *given, **named)
+
+        with mock.patch.object(engines, 'read_record', record), \
+                mock.patch.object(engines.workspace, 'load', session):
+            self.engine.brief(root)
+            briefly = (len(records), len(sessions))
+            records.clear()
+            sessions.clear()
+            found = self.engine.standing()
+        self.assertEqual([run['title'] for run in found['runs']], ['Rolling restarts'])
+        # Status reads no more than the run's own two words and a sentence do: its title is
+        # taken from what that read.
+        self.assertEqual(records, [root])
+        self.assertEqual((len(records), len(sessions)), briefly)
 
 
 class StatusTests(Team):
@@ -677,6 +726,34 @@ class NotifyTests(StudioCase, Asking):
         with mock.patch.object(engines, 'PAGE_OPEN', 0):
             self.assertEqual((self.engine.page_open(), self.engine.tell()),
                              (False, ['Rolling restarts']))
+
+    def test_what_went_wrong_in_the_background_is_said_until_it_goes_right(self):
+        self.start()
+        tried, again, go = [], threading.Event(), threading.Event()
+        self.addCleanup(go.set)
+
+        def tell():
+            tried.append(1)
+            if len(tried) == 1:
+                raise RuntimeError('the notification service fell over.')
+            again.set()
+            go.wait(30)
+            return []
+
+        with mock.patch.object(self.engine, 'tell', tell):
+            self.engine.serving(every=3600, tick=0.01)
+            self.assertTrue(again.wait(30))
+            wrong = self.engine.standing()['background']
+            self.assertEqual(wrong['says'], "The last try at telling you through this "
+                             "computer's notifications did not work: the notification service "
+                             'fell over. It is tried again in a few seconds.')
+            self.assertRegex(wrong['at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            go.set()
+            for _ in range(500):
+                if self.engine.standing()['background'] is None:
+                    break
+                time.sleep(0.01)
+            self.assertIsNone(self.engine.standing()['background'])
 
     def test_any_request_from_the_page_says_one_is_open(self):
         self.person = type('Person', (), {'engine': self.engine})()

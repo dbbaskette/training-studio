@@ -11,6 +11,7 @@ const TOKEN_HEADER = 'X-Training-Studio-Token';
 const POLL_SHOWN = 5000;
 const POLL_HIDDEN = 20000;
 const POLL_RUN = 2000; // while a run is working and its own screen is open
+const SET_UP_SHOWN = ['home', 'settings', 'setup', 'new']; // where set-up is read each time
 const WORKING = 3 * 60000; // with no run to ask, a training that changed this recently is working
 const DRAWING = 'http://www.w3.org/2000/svg'; // the name of the SVG language; nothing is fetched
 const COUNTED = ['Nothing needs', 'One thing needs', 'Two things need', 'Three things need',
@@ -264,6 +265,10 @@ const view = {
   // back was, by stage: each is said until it is tried again or the screen is left. And what
   // is typed in a sheet's note, kept until it is sent, so putting the sheet away loses nothing.
   unmoved: {}, unrestored: {}, notes: {},
+  // The refresh in hand, and whether another was asked for while it was. What the list said
+  // of each run whose asks were read, and of the open training when it was last read: each
+  // is read again only once that has changed.
+  refreshing: null, again: false, asked: {}, recorded: '',
 };
 // Each part of a screen that is drawn in parts, and what it was drawn from.
 const PARTS = new WeakMap();
@@ -934,6 +939,7 @@ function open(next) {
   view.viewer = null;
   view.unmoved = {};
   view.unrestored = {};
+  view.recorded = '';
   letGo();
   view.turn += 1;
   frame();
@@ -1009,8 +1015,13 @@ function setTitle(name) {
 
 // Everything a list screen is drawn from. When none of it has changed, nothing is redrawn.
 function signature() {
-  return JSON.stringify([view.listing, view.computer, view.checking, alerts(), view.setup,
-    view.asks, view.sharing, view.status, view.unnotified, view.fetching, view.fetched]);
+  return JSON.stringify([view.listing, view.asks, ...around()]);
+}
+
+// What a list screen's parts are drawn from, apart from the trainings themselves.
+function around() {
+  return [view.computer, view.checking, alerts(), view.setup, view.sharing, view.status,
+    view.unnotified, view.fetching, view.fetched, Boolean(view.runner)];
 }
 
 function draw(fresh) {
@@ -1365,12 +1376,14 @@ function brokenRow(training) {
   return add(make('li', 'row'), bead('off'), text, go);
 }
 
+// A card with a row for each training, as a part of its screen. A row is built again only
+// when what it is drawn from has changed, so the others keep their place and their focus.
 function rows(title, trainings, build, className) {
   if (!trainings.length) return null;
-  const node = card(title, className);
-  const items = make('ul', 'rows');
-  trainings.forEach((training, index) => items.append(build(training, index)));
-  return add(node, items);
+  return ['rows ' + title, [className], () => add(card(title, className), make('ul', 'rows')),
+    (node) => fit(node.querySelector('.rows'), trainings.map((training, index) => [
+      'row ' + training.path, [training, index, view.asks[training.path] || null,
+        working(training), unclaimed(training)], () => build(training, index)]))];
 }
 
 function invitation() {
@@ -1433,19 +1446,23 @@ function drawHome(fresh) {
   // With the runner, one button starts a new training. It is the filled one when nothing
   // needs the person first.
   const start = view.runner && all.length ? newButton(lead ? '' : 'filled') : null;
-  const nodes = [make('p', 'large-title', greeting())];
+  const said = greeting();
+  const parts = [['greeting', [said], () => make('p', 'large-title', said)]];
   if (!all.length) {
-    nodes.push(invitation());
+    parts.push(['invite', [Boolean(view.runner)], invitation]);
   } else {
-    nodes.push(
+    parts.push(
       rows('Needs you', pick('needs-you'), needsRow, 'card-needs'),
       rows('In progress', pick('in-progress'), (training) => quietRow(training, 'in-progress')),
       rows('Run by your teammates', teammates(), teamRow),
       rows('Finished', pick('finished'), (training) => quietRow(training, 'finished')),
       rows('Cannot be read', all.filter((training) => training.error), brokenRow));
   }
-  nodes.push(add(make('footer', 'foot'), computerLine(), sharingLine(), fetchLine()));
-  place({ title: 'Home', name: '', actions: [start, lead] }, nodes, fresh);
+  parts.push(['foot', around(),
+    () => add(make('footer', 'foot'), computerLine(), sharingLine(), fetchLine())]);
+  placeParts({ title: 'Home', name: '', actions: [start, lead],
+    mark: ['Home', first ? [first.path, first.title, first.waiting] : null, asked || null,
+      Boolean(start), Boolean(lead)] }, parts, fresh);
 }
 
 // --- trainings ---------------------------------------------------------------------
@@ -1468,19 +1485,23 @@ function trainingCard(training) {
 }
 
 function drawTrainings(fresh) {
-  const nodes = [];
+  const parts = [];
   if (!view.listing.length) {
-    nodes.push(invitation());
+    parts.push(['invite', [Boolean(view.runner)], invitation]);
   } else {
-    const grid = make('ul', 'grid');
-    for (const training of view.listing) grid.append(trainingCard(training));
-    nodes.push(make('p', 'intro lede', count(view.listing.length, 'training', 'trainings')
-      + ' on this computer, the one that changed last first.'), grid);
+    const said = count(view.listing.length, 'training', 'trainings')
+      + ' on this computer, the one that changed last first.';
+    // Each card is built again only when its own training has changed.
+    parts.push(['intro', [said], () => make('p', 'intro lede', said)],
+      ['grid', [], () => make('ul', 'grid'), (node) => fit(node, view.listing.map((training) => [
+        'card ' + training.path, [training, working(training), unclaimed(training)],
+        () => trainingCard(training)]))]);
   }
   // With the runner, what the workspace has published is one step from here.
-  place({ title: 'Trainings', actions: [view.runner ? capsule('Published', 'quiet',
+  placeParts({ title: 'Trainings', actions: [view.runner ? capsule('Published', 'quiet',
     () => show('published'), 'published') : null, view.runner && view.listing.length
-    ? newButton('filled') : null] }, nodes, fresh);
+    ? newButton('filled') : null],
+  mark: ['Trainings', Boolean(view.runner), view.listing.length > 0] }, parts, fresh);
 }
 
 // --- status -----------------------------------------------------------------------
@@ -1514,24 +1535,28 @@ function statusRow(training) {
     cell('', go));
 }
 
+// Every training on this computer, as a part of the status screen: a row for each, built
+// again only when its own training has changed.
 function trainingsTable() {
-  const node = card('Trainings');
   // A training a teammate runs is listed apart, under their name.
   const shown = view.listing.filter((training) => !elsewhere(training));
   if (!shown.length) {
-    return add(node, make('p', 'quiet', 'There are no trainings on this computer yet.'));
+    return ['no trainings', [], () => add(card('Trainings'),
+      make('p', 'quiet', 'There are no trainings on this computer yet.'))];
   }
-  const table = make('table', 'table');
-  const head = make('tr');
-  for (const title of ['Training', 'Stage', 'Where it is', 'Last changed', 'In the way', '']) {
-    const top = make('th', '', title);
-    top.scope = 'col';
-    if (!title) add(top, make('span', 'offscreen', 'Open'));
-    head.append(top);
-  }
-  const body = make('tbody');
-  for (const training of shown) body.append(statusRow(training));
-  return add(node, add(table, add(make('thead'), head), body));
+  return ['trainings', [], () => {
+    const table = make('table', 'table');
+    const head = make('tr');
+    for (const title of ['Training', 'Stage', 'Where it is', 'Last changed', 'In the way',
+      '']) {
+      const top = make('th', '', title);
+      top.scope = 'col';
+      if (!title) add(top, make('span', 'offscreen', 'Open'));
+      head.append(top);
+    }
+    return add(card('Trainings'), add(table, add(make('thead'), head), make('tbody')));
+  }, (node) => fit(node.querySelector('tbody'), shown.map((training) => ['row ' + training.path,
+    [training, unclaimed(training)], () => statusRow(training)]))];
 }
 
 function fact(found, optional) {
@@ -1598,8 +1623,17 @@ function drawStatus(fresh) {
   const check = capsule(view.checking ? 'Checking…' : view.computer ? 'Check this computer again'
     : 'Check this computer', 'filled', checkComputer, 'check-computer');
   check.disabled = view.checking;
-  place({ title: 'Status', actions: [check] }, [runsCard(), teammatesCard(), trainingsTable(),
-    computerCard()], fresh);
+  const runs = view.status ? list(view.status.runs).map(statusOf) : [];
+  const theirs = view.status ? list(view.status.elsewhere).map(statusOf)
+    : teammates().map(statusOf);
+  placeParts({ title: 'Status', actions: [check],
+    mark: ['Status', view.checking, Boolean(view.computer)] }, [
+    ['runs', [Boolean(view.runner), view.status && view.status.limit,
+      view.status && view.status.background, Boolean(view.status), runs], runsCard],
+    ['teammates', [Boolean(view.runner), Boolean(view.status), theirs, teamSpace(),
+      view.fetching, view.fetched], teammatesCard],
+    trainingsTable(),
+    ['computer', [view.computer, Boolean(view.runner)], computerCard]], fresh);
   // With the runner, every run and who runs what is asked for as the screen opens.
   if (fresh && view.runner) {
     const turn = view.turn;
@@ -1661,14 +1695,21 @@ function decidedCard() {
   return node;
 }
 
+// Each card is built again only when what it is drawn from has changed: where each training
+// is decided, only when a training's own answer to that has.
 function drawSettings(fresh) {
-  place({ title: 'Settings' }, [workspaceCard(), leftCard(), alertsCard(), notifyCard(),
-    decidedCard(),
-    add(card('This page'),
+  const decided = view.listing.map((training) => [training.path, training.title,
+    training.approval, Boolean(training.error), watched(training), Boolean(training.run),
+    elsewhere(training)]);
+  placeParts({ title: 'Settings', mark: ['Settings'] }, [
+    ['workspace', around(), workspaceCard], ['left', around(), leftCard],
+    ['alerts', [alerts()], alertsCard], ['notify', around(), notifyCard],
+    ['decided', [decided, view.unmoved], decidedCard],
+    ['page', [Boolean(view.runner)], () => add(card('This page'),
       make('p', '', 'It runs on this computer and answers only to the link that opened it. '
         + (view.runner ? 'The page sends what you read and decide nowhere else. The agent that '
           + 'does the drafting is sent what it needs for each step, by its own service.'
-          : 'Nothing you read or decide here is sent anywhere else.')))], fresh);
+          : 'Nothing you read or decide here is sent anywhere else.')))]], fresh);
 }
 
 // --- a gate -----------------------------------------------------------------------
@@ -2663,21 +2704,41 @@ function newButton(kind) {
   return capsule('New training', kind, () => show('new'), 'new');
 }
 
-// The list says that a run needs its person. What it asks is read from the run itself.
+// The list says that a run needs its person. What it asks is read from the run itself: the
+// open run's from what its screen last read, and any other's only when what the list says
+// of it has changed since it was last read.
 async function readAsks() {
+  const open = view.screen === 'run' && view.run ? view.path : null;
   const asking = view.listing.filter((training) => training.run
     && training.state === 'needs-you' && !elsewhere(training));
-  const found = await Promise.all(asking.map((training) => ask('run', { path: training.path })
-    .catch(() => null)));
   const asks = {};
-  asking.forEach((training, index) => {
-    const run = found[index];
-    if (run && (run.question || run.problem || outlining(run))) {
-      asks[training.path] = { question: run.question || null, problem: run.problem || null,
-        outline: outlining(run) ? { level: run.outline.level || null } : null };
+  const asked = {};
+  const reading = [];
+  for (const training of asking) {
+    const path = training.path;
+    const mark = JSON.stringify(training);
+    if (path === open) {
+      if (asksOf(view.run)) asks[path] = asksOf(view.run);
+    } else if (view.asked[path] === mark) {
+      asked[path] = mark;
+      if (view.asks[path]) asks[path] = view.asks[path];
+    } else {
+      reading.push(ask('run', { path }).then((run) => {
+        asked[path] = mark;
+        if (asksOf(run)) asks[path] = asksOf(run);
+      }, () => null));
     }
-  });
+  }
+  await Promise.all(reading);
   view.asks = asks;
+  view.asked = asked;
+}
+
+// What a run asks of its person, in the few words a list needs. Nothing when it asks nothing.
+function asksOf(run) {
+  if (!run || !(run.question || run.problem || outlining(run))) return null;
+  return { question: run.question || null, problem: run.problem || null,
+    outline: outlining(run) ? { level: run.outline.level || null } : null };
 }
 
 // A run that has put what a deck says to its person, and waits for the decision.
@@ -2885,9 +2946,10 @@ function workspaceCard() {
 }
 
 // How previews are made, as it can be on this computer now: the way that was chosen, or
-// else the first way there is, or nothing where there is none.
+// else the first way there is, or nothing where there is none. Drive is not asked about
+// while LibreOffice makes them, and a way not asked about is still offered.
 function previewsNow(found) {
-  const can = PREVIEWS.filter((how) => found[how]);
+  const can = PREVIEWS.filter((how) => found[how] || found[how] === null);
   return can.includes(found.how) ? found.how : can[0] || null;
 }
 
@@ -3248,7 +3310,7 @@ function previewsCard(form) {
     }, 'previews');
   add(node, control, meanings);
   PREVIEWS.forEach((how, index) => {
-    if (found[how]) return;
+    if (found[how] || found[how] === null) return;
     const option = control.querySelectorAll('.seg-option')[index];
     option.disabled = true;
     option.classList.add('seg-absent');
@@ -3673,27 +3735,26 @@ async function startTraining(pressed) {
 // left exactly as it is, so an answer being written stays under the cursor while the rest
 // of the screen keeps up with the run.
 
-function placeParts(spec, parts, fresh) {
-  const holder = main();
-  const active = document.activeElement;
-  const focused = !fresh && active && active.dataset ? active.dataset.key : '';
-  const opened = fresh ? [] : Array.from(holder.querySelectorAll('details'))
-    .filter((node) => node.open).map((node) => node.dataset.key);
-  const bar = JSON.stringify(spec.mark);
-  if (fresh || bar !== view.barred) toolbar(spec);
-  view.barred = bar;
+// Put parts in a holder in order. A part is [name, what it is drawn from, how it is built],
+// and a node already there that was built from the same is kept where it is, untouched.
+// A fourth item fills a part, whether it was kept or built: a list inside it is fitted
+// the same way, one item at a time.
+function fit(holder, parts, fresh) {
   const kept = new Map();
   for (const node of fresh ? [] : Array.from(holder.children)) {
     if (PARTS.has(node)) kept.set(PARTS.get(node), node);
   }
   const nodes = [];
-  for (const [name, from, build] of parts.filter(Boolean)) {
+  for (const [name, from, build, fill] of parts.filter(Boolean)) {
     const mark = name + '\n' + JSON.stringify(from);
     let node = kept.get(mark);
     if (!node) {
       node = build();
+      if (!node) continue;
       PARTS.set(node, mark);
     }
+    kept.delete(mark);
+    if (fill) fill(node);
     nodes.push(node);
   }
   let at = holder.firstChild;
@@ -3706,6 +3767,18 @@ function placeParts(spec, parts, fresh) {
     at.remove();
     at = next;
   }
+}
+
+function placeParts(spec, parts, fresh) {
+  const holder = main();
+  const active = document.activeElement;
+  const focused = !fresh && active && active.dataset ? active.dataset.key : '';
+  const opened = fresh ? [] : Array.from(holder.querySelectorAll('details'))
+    .filter((node) => node.open).map((node) => node.dataset.key);
+  const bar = JSON.stringify(spec.mark);
+  if (fresh || bar !== view.barred) toolbar(spec);
+  view.barred = bar;
+  fit(holder, parts, fresh);
   for (const node of holder.querySelectorAll('details')) {
     if (opened.includes(node.dataset.key)) node.open = true;
   }
@@ -4490,12 +4563,19 @@ async function drawRun(fresh) {
     place({ title: 'Opening', back: true }, [make('p', 'quiet', 'Reading the run.')], true);
   }
   try {
+    // The training's own files and record are read again only when the list says they
+    // changed. The run is what moves while it works, so it is read each time.
+    const record = recordOf(listed(view.path));
+    const reread = fresh || !view.training || !record || record !== view.recorded;
     const [run, training] = await Promise.all([ask('run', { path: view.path }),
-      ask('training', { path: view.path }).catch(() => null)]);
+      reread ? ask('training', { path: view.path }).catch(() => null) : null]);
     if (turn !== view.turn) return;
     const first = fresh || !view.run;
     view.run = run;
-    if (training) view.training = training;
+    if (training) {
+      view.training = training;
+      view.recorded = record;
+    }
     // Someone is in the middle of leaving the deck out. The run waits until they are done.
     if (!view.busy && !view.sheet) paintRun(first);
     // A run just opened is read again at its own pace, not at the list's.
@@ -4746,6 +4826,14 @@ async function decideOutline(decision, note, problem, pressed) {
 
 function listed(path) {
   return list(view.listing).find((training) => training.path === path) || null;
+}
+
+// What the list says of a training's own record: when it last changed, and where it stands.
+// A run's words change while it works, and are read from the run, so they are left out.
+function recordOf(training) {
+  if (!training) return '';
+  const { run, sentence, ...rest } = training;
+  return JSON.stringify(rest);
 }
 
 function nameOf(driver) {
@@ -5203,7 +5291,7 @@ function runsCard() {
     'trainings work') + ' at once on this computer. Any more wait their turn.') : null;
   if (!runs.length) {
     return add(node, make('p', 'quiet', 'Nothing is running on this computer right now.'),
-      turns);
+      turns, backgroundLine());
   }
   const table = make('table', 'table');
   const head = make('tr');
@@ -5231,7 +5319,17 @@ function runsCard() {
         noticeLine(found)),
       cell('Cost so far', spentSays(found.spent)), cell('', go)));
   }
-  return add(node, turns, add(table, add(make('thead'), head), body));
+  return add(node, turns, backgroundLine(), add(table, add(make('thead'), head), body));
+}
+
+// What last went wrong in what the runner does by itself in the background, in its own
+// words, and when. It is said until that work goes right again.
+function backgroundLine() {
+  const wrong = view.status && view.status.background;
+  if (!wrong || !wrong.says) return null;
+  const node = add(make('p', 'fix'), String(wrong.says));
+  if (!Number.isNaN(Date.parse(wrong.at))) add(node, ' This was ', when(wrong.at), '.');
+  return node;
 }
 
 // The trainings teammates run, apart from this computer's own.
@@ -5289,6 +5387,8 @@ async function setNotify(index, node) {
     toast(index ? 'On. This computer tells you when no page is open.'
       : 'Off. This computer says nothing when no page is open.');
   } catch (failure) {
+    // The thumb slides home again: the card is not built again when it says what it said.
+    slide(node, index ? 0 : 1);
     view.unnotified = failure.message + ' Nothing was changed.';
   }
   view.notifying = false;
@@ -5498,15 +5598,49 @@ function later() {
   view.timer = window.setTimeout(refresh, pace());
 }
 
+// One refresh at a time, so an older answer never lands after a newer one. One asked for
+// while another is in hand is done once that one is, and once however often it was asked.
 async function refresh() {
   window.clearTimeout(view.timer);
+  if (view.refreshing) {
+    view.again = true;
+    return view.refreshing;
+  }
+  view.refreshing = (async () => {
+    do {
+      view.again = false;
+      await catchUp();
+    } while (view.again);
+  })();
+  try {
+    await view.refreshing;
+  } finally {
+    view.refreshing = null;
+  }
+  later();
+  return undefined;
+}
+
+// Read what has changed and draw it. A tab nobody is looking at reads only the list, for the
+// count in its title and what to tell; the rest is read when it is looked at again.
+async function catchUp() {
   try {
     if (view.runner === undefined) await discover();
-    if (view.runner) view.setup = await ask('setup');
-    took(await ask('trainings'));
-    await readAsks();
-    if (view.computer === undefined) view.computer = (await ask('computer')).computer;
-    if (view.runner && view.screen === 'status') await readStatus();
+    if (document.hidden && view.listing) {
+      took(await ask('trainings'));
+      notify('');
+      setTitle();
+      return;
+    }
+    // Set-up is read where it is shown, and once to begin with.
+    const setup = Boolean(view.runner) && (!view.setup || SET_UP_SHOWN.includes(view.screen));
+    const [found, listing] = await Promise.all([setup ? ask('setup') : null, ask('trainings')]);
+    if (setup) view.setup = found;
+    took(listing);
+    await Promise.all([readAsks(),
+      view.computer === undefined
+        ? ask('computer').then((seen) => { view.computer = seen.computer; }) : null,
+      view.runner && view.screen === 'status' ? readStatus() : null]);
     notify('');
     setTitle();
     for (const node of document.querySelectorAll('time')) {
@@ -5530,7 +5664,6 @@ async function refresh() {
     // Reading the list needs nothing but the key, so a refusal here is about the link.
     notify(failure.kind === 'refused' ? NOTICES.refused : failure.message);
   }
-  later();
 }
 
 // A highlight on glass that follows the pointer. Not when the person asked for less motion.

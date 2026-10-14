@@ -1191,6 +1191,48 @@ class PageTests(DeckCase):
         self.assertIn('from those found on this computer',
                       self.post('setup', {'brand_skill': '/somewhere/else'}, 409)['error'])
 
+    def test_drive_is_not_asked_while_libreoffice_makes_the_previews(self):
+        self.slides.have['local'] = True
+        self.post('setup', {'previews': 'local'})
+        self.slides.calls.clear()
+        needs = self.engine.deck_needs(fresh=True)
+        self.assertNotIn('drive_check', [name for name, *_ in self.slides.calls])
+        # Drive is said to be not asked, never to be missing, and is still offered at set-up.
+        previews, = [item for item in needs['items'] if item['id'] == 'deck-previews']
+        self.assertEqual((previews['state'], previews['facts'][1]),
+                         ('ok', {'label': 'Google Drive', 'state': 'unknown',
+                                 'detail': 'not asked, as LibreOffice makes them'}))
+        self.assertEqual(needs['missing'], [])
+        self.assertEqual(self.get('setup')['previews'],
+                         {'how': 'local', 'drive': None, 'local': True, 'left': []})
+        # Choosing Drive asks it again.
+        self.post('setup', {'previews': 'drive'})
+        self.assertIn('drive_check', [name for name, *_ in self.slides.calls])
+        self.assertIs(self.get('setup')['previews']['drive'], True)
+
+    def test_one_look_at_this_computer_is_taken_at_a_time_and_reused(self):
+        looked, entered, go = [], threading.Event(), threading.Event()
+        real = slides_tool.ready
+
+        def slow(*given, **named):
+            looked.append(1)
+            entered.set()
+            go.wait(30)
+            return real(*given, **named)
+
+        self.engine._looked = None
+        with mock.patch.object(slides_tool, 'ready', slow):
+            asking = [threading.Thread(target=self.engine.deck_needs, daemon=True)
+                      for _ in range(3)]
+            for thread in asking:
+                thread.start()
+            self.assertTrue(entered.wait(30))
+            go.set()
+            for thread in asking:
+                thread.join(30)
+            self.engine.brand_skills()
+        self.assertEqual(len(looked), 1)
+
     def test_the_brand_is_a_choice_among_those_the_brand_skill_has(self):
         from runner_support import FORM
         wanted = {**FORM, 'deck_target': 'pptx'}
