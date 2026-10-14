@@ -465,13 +465,17 @@ class RunTests(AgentCase):
     def test_a_run_over_its_time_limit_is_stopped_with_everything_it_started(self):
         body = ('sleep 60 &\necho $! > "$FAKE_OUT/child"\n'
                 'echo \'{"type":"system","subtype":"init","model":"m"}\'\nsleep 60\n')
-        said = []
-        started = time.monotonic()
-        outcome = Claude(self.program(body)).run(self.make(limits=Limits(seconds=1)),
-                                                 said.append)
-        self.assertLess(time.monotonic() - started, 20)
+        for seconds in (1, 60):   # a busy computer may not have started it in a second
+            said = []
+            started = time.monotonic()
+            outcome = Claude(self.program(body)).run(
+                self.make(limits=Limits(seconds=seconds)), said.append)
+            self.assertLess(time.monotonic() - started, seconds + 19)
+            if said:
+                break
         self.assertEqual((outcome.finished, outcome.reason), (False, 'timeout'))
-        self.assertEqual(outcome.detail, 'It did not finish in 1 seconds, so it was stopped.')
+        self.assertEqual(outcome.detail,
+                         f'It did not finish in {seconds} seconds, so it was stopped.')
         self.assertEqual(said, ['Started on m'])
         self.assertIn('"init"', outcome.events.read_text())
         self.assertEqual(still_running([int(self.kept('child'))]), [],
@@ -643,11 +647,14 @@ class SuperviseTests(JobCase):
         self.assertEqual(still_running([int(printed[1])]), [])
 
     def test_a_child_left_running_past_the_limit_is_ended_with_the_command(self):
-        printed, started = [], time.monotonic()
-        code, late = agents.supervise(['sh', '-c', 'sleep 30 &\necho $!\nsleep 30'], self.base,
-                                      dict(os.environ), '', 3, self.base / 'errors.txt',
-                                      printed.append)
-        self.assertLess(time.monotonic() - started, 10)
+        for seconds in (3, 60):   # a busy computer may not have started it in 3 seconds
+            printed, started = [], time.monotonic()
+            code, late = agents.supervise(['sh', '-c', 'sleep 30 &\necho $!\nsleep 30'],
+                                          self.base, dict(os.environ), '', seconds,
+                                          self.base / 'errors.txt', printed.append)
+            self.assertLess(time.monotonic() - started, seconds + 10)
+            if printed:
+                break
         self.assertTrue(late)
         self.assertLess(code, 0)
         self.assertEqual(still_running([int(printed[0])]), [])

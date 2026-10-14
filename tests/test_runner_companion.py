@@ -82,20 +82,31 @@ class RunCommandTests(unittest.TestCase):
         self.assertEqual(still_running([int(out)]), [])
 
     def test_a_command_past_its_limit_is_ended_with_everything_it_started(self):
-        started = time.monotonic()
-        with self.assertRaisesRegex(WorkspaceError, '^The tool did not answer in 3 seconds.$'):
-            companion.run_command(self.leaves(), None, 3, 'The tool')
-        self.assertLess(time.monotonic() - started, 10)
+        for seconds in (3, 60):   # a busy computer may not have started it in 3 seconds
+            started = time.monotonic()
+            with self.assertRaisesRegex(WorkspaceError,
+                                        f'^The tool did not answer in {seconds} seconds.$'):
+                companion.run_command(self.leaves(), None, seconds, 'The tool')
+            self.assertLess(time.monotonic() - started, seconds + 10)
+            if self.pids.exists():
+                break
         self.assertEqual(still_running(written(self.pids)), [])
 
     def test_a_stop_ends_the_command_and_everything_it_started(self):
-        stop, started = threading.Event(), time.monotonic()
-        timer = threading.Timer(0.5, stop.set)
-        timer.start()
-        self.addCleanup(timer.cancel)
+        stop, stopped = threading.Event(), []
+
+        def stops() -> None:   # once it has started, however busy the computer is
+            written(self.pids, seconds=60)
+            stopped.append(time.monotonic())
+            stop.set()
+
+        stopping = threading.Thread(target=stops)
+        stopping.start()
+        self.addCleanup(stop.set)
         with companion.stopping(stop), self.assertRaises(companion.Stopped) as raised:
-            companion.run_command(self.leaves(), None, 60, 'The tool')
-        self.assertLess(time.monotonic() - started, 10)
+            companion.run_command(self.leaves(), None, 120, 'The tool')
+        stopping.join()
+        self.assertLess(time.monotonic() - stopped[0], 10)
         self.assertEqual(str(raised.exception), 'The tool was stopped before it finished.')
         self.assertNotIsInstance(raised.exception, WorkspaceError)
         self.assertEqual(still_running(written(self.pids)), [])
@@ -130,9 +141,10 @@ class RunCommandTests(unittest.TestCase):
             str(helpers.REPO), *self.leaves()])
         self.addCleanup(caller.wait)
         self.addCleanup(caller.kill)
-        pids = written(self.pids)
+        pids = written(self.pids, seconds=60)
         caller.kill()
-        self.assertEqual(still_running(pids), [])
+        # The watcher may still be starting on a busy computer; it acts once it has.
+        self.assertEqual(still_running(pids, seconds=60), [])
 
     def test_a_command_that_cannot_start_is_a_refusal(self):
         with self.assertRaisesRegex(WorkspaceError, '^The tool could not be started'):

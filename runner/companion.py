@@ -30,8 +30,9 @@ What a caller needs to know
   process group of its own, and the whole group is killed as soon as the command ends,
   when time runs out, when `stop` is set or when the caller fails. So nothing it started
   is left running, and a process it left behind cannot keep the caller reading. A small
-  watcher kills the group if the caller is itself killed, which is how a preview the
-  worker tools' server started inside an agent ends when that agent is stopped. A process
+  watcher leads the group from before the command starts, and kills it if the caller is
+  itself killed, however soon. That is how a preview the worker tools' server started
+  inside an agent ends when that agent is stopped. A process
   that started a session of its own is out of reach, so reading stops GRACE seconds after
   the rest has been ended. The command is always waited for. Where there are no process
   groups, only the command itself is ended.
@@ -57,15 +58,12 @@ SKILLS = (('.claude', 'skills'), ('.agents', 'skills'), ('.cursor', 'skills'))
 GROUPS = hasattr(os, 'killpg')   # elsewhere only the command itself can be ended
 TICK = 0.05     # seconds between looks at whether a command should be ended
 GRACE = 2       # seconds to read what is left once a command has been ended
-DONE = b'.'     # what the watcher is sent when the caller ends a command itself
-# The watcher: it kills the group named by its argument when the pipe from the caller
-# closes without a word, which is what happens when the caller is killed.
+# The watcher leads the process group a command joins. It kills its own group when the
+# pipe from the caller closes, which happens only when the caller is killed: a caller that
+# ends a command itself kills the group first.
 WATCHER = ('import os, signal, sys\n'
-           'if not sys.stdin.buffer.read(1):\n'
-           '    try:\n'
-           '        os.killpg(int(sys.argv[1]), signal.SIGKILL)\n'
-           '    except OSError:\n'
-           '        pass\n')
+           'sys.stdin.buffer.read()\n'
+           'os.killpg(0, signal.SIGKILL)\n')
 STOP: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
     'stop', default=None)
 
@@ -149,15 +147,25 @@ def run_command(command: list[str], cwd: Path | None, seconds: float,
     return code, _text(b''.join(printed)), _text(complaint)
 
 
-def _watcher(group: int) -> subprocess.Popen | None:
-    """Start the watcher for a process group, in a session of its own so that killing the
-    caller's group does not kill it too. None when it cannot be started."""
+def _watcher() -> subprocess.Popen | None:
+    """Start a watcher at the head of a process group of its own, outside the caller's
+    group so that killing that group does not kill it too. The command joins its group,
+    so the group is known before the command runs. None when it cannot be started."""
     try:
-        return subprocess.Popen([sys.executable, '-I', '-S', '-c', WATCHER, str(group)],
+        return subprocess.Popen([sys.executable, '-I', '-S', '-c', WATCHER],
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, start_new_session=True)
+                                stderr=subprocess.DEVNULL, process_group=0)
     except (OSError, ValueError):
         return None
+
+
+def _dismiss(watcher: subprocess.Popen | None) -> None:
+    """End a watcher that is no longer needed, without waiting for it to have started."""
+    if watcher is not None:
+        watcher.kill()
+        watcher.wait()
+        with contextlib.suppress(OSError):
+            watcher.stdin.close()
 
 
 def supervise(command: list[str], cwd: Path | None, env: dict | None, stdin: str,
@@ -173,16 +181,22 @@ def supervise(command: list[str], cwd: Path | None, env: dict | None, stdin: str
     if isinstance(errors, (str, os.PathLike)):
         with open(errors, 'wb') as complaints:
             return supervise(command, cwd, env, stdin, seconds, complaints, each, stop)
-    process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE, stderr=errors,
-                               start_new_session=GROUPS)
-    watcher = _watcher(process.pid) if GROUPS else None
+    watcher = _watcher() if GROUPS else None
+    grouped = ({'process_group': watcher.pid} if watcher is not None
+               else {'start_new_session': GROUPS})
+    try:
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=errors, **grouped)
+    except BaseException:
+        _dismiss(watcher)
+        raise
+    group = watcher.pid if watcher is not None else process.pid
     over, failed = threading.Event(), []
 
     def kill() -> None:
         try:
             if GROUPS:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(group, signal.SIGKILL)
             else:
                 process.kill()
         except (ProcessLookupError, PermissionError):
@@ -228,11 +242,7 @@ def supervise(command: list[str], cwd: Path | None, env: dict | None, stdin: str
         reader.join(GRACE)   # a process that left the group may still hold the output
         over.set()
         writer.join(GRACE)
-        if watcher is not None:
-            with contextlib.suppress(OSError):
-                watcher.stdin.write(DONE)
-                watcher.stdin.close()
-            watcher.wait()
+        _dismiss(watcher)
         process.wait()
     if failed:
         raise failed[0]

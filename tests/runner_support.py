@@ -105,8 +105,8 @@ class JobCase(unittest.TestCase):
 
 # A command that leaves a sleep behind holding its output open, writes its own process ID
 # and the sleep's to the file it is given, and waits.
-LEAVES = ('sleep 30 &\nprintf "%s\\n%s\\n" $$ $! > "$1.part" && mv "$1.part" "$1"\n'
-          'sleep 30\n')
+LEAVES = ('sleep 300 &\nprintf "%s\\n%s\\n" $$ $! > "$1.part" && mv "$1.part" "$1"\n'
+          'sleep 300\n')
 
 
 def gone(pid: int) -> bool:
