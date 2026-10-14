@@ -820,6 +820,23 @@ class Index:
         return report
 
 
+class Notifier:
+    """Stands in for the computer's own notifications: `sent` lists each title told.
+    `way` is the sentence it gives when a test says this computer has no way to notify."""
+
+    def __init__(self):
+        self.sent, self.way = [], None
+
+    def can(self) -> tuple:
+        return (self.way is None, self.way)
+
+    def send(self, title: str) -> bool:
+        if self.way is not None:
+            return False
+        self.sent.append(title)
+        return True
+
+
 class StudioCase(unittest.TestCase):
     """A person with a data folder and a git identity of their own, a workspace, scripted
     workers, a pretend web and the stand-in for harness-research. Nothing real is started
@@ -840,6 +857,7 @@ class StudioCase(unittest.TestCase):
         self.web = Web()
         self.web.page(URL, PAGE)
         self.documents, self.copies, self.index = Documents(), Copies(), Index()
+        self.notifier = Notifier()
         # Nothing on this computer makes a deck until a test gives it the two stand-ins.
         self.slides, self.brand = None, None
         self.real = (engines.slides_tool.Slides, engines.brand_skill.Brand)
@@ -857,6 +875,8 @@ class StudioCase(unittest.TestCase):
             # through these two, so no test can reach a real one.
             mock.patch.object(engines.slides_tool, 'Slides', self.the_slides),
             mock.patch.object(engines.brand_skill, 'Brand', self.the_brand),
+            # No test ever reaches the computer's own notifications.
+            mock.patch.object(engines.team, 'Notifier', lambda *given, **named: self.notifier),
             mock.patch.object(engines.brand_skill, 'found', lambda: [] if self.brand is None
                               else [{'name': self.brand.name,
                                      'runtime': str(self.brand.runtime),
@@ -985,3 +1005,69 @@ class StudioCase(unittest.TestCase):
 
     def record(self, root: Path) -> dict:
         return json.loads((root / '.training-studio' / 'run.json').read_text())
+
+
+class Person:
+    """One of two people who share a workspace: a data folder, a git identity, a clone of
+    the workspace and an engine of their own."""
+
+    def __init__(self, name: str, env: dict):
+        self.name, self.env = name, env
+        self.space = self.engine = None
+
+
+class TeamCase(StudioCase):
+    """Two people on one computer, standing in for two: each has a data folder and a git
+    identity, and both have joined one bare repository. `self.engine` is Alex's. Anything
+    done as one of them is done inside `with self.be(person):`."""
+
+    def set_up(self):
+        self.remote = self.base / 'team-repo.git'
+        self.remote.mkdir()
+        self.git('init', '--quiet', '--bare', repo=self.remote)
+        self.git('symbolic-ref', 'HEAD', 'refs/heads/main', repo=self.remote)
+        return self.gitstate.join(str(self.remote))
+
+    def setUp(self):
+        super().setUp()
+        self.alex = Person('Alex', {name: os.environ[name] for name in (
+            'TRAINING_STUDIO_DATA', 'GIT_CONFIG_GLOBAL')})
+        self.alex.space, self.alex.engine = self.space, self.engine
+        with self.be(self.alex):
+            self.engine.share()     # the workspace's own files, so a teammate finds them
+        self.blake = self.person('Blake')
+
+    def person(self, name: str) -> Person:
+        """Someone else, who joins the same repository from a computer of their own."""
+        folder = self.base / name.lower()
+        folder.mkdir()
+        (folder / 'gitconfig').write_text(
+            f'[user]\n\tname = {name}\n\temail = {name.lower()}@example.com\n[init]\n\t'
+            f"defaultBranch = main\n\ttemplateDir = {self.base / 'no-templates'}\n")
+        made = Person(name, {'TRAINING_STUDIO_DATA': str(folder / 'data'),
+                             'GIT_CONFIG_GLOBAL': str(folder / 'gitconfig')})
+        with self.be(made):
+            made.space = self.gitstate.join(str(self.remote))
+            made.engine = self.make()
+        return made
+
+    def be(self, person: Person):
+        """Act as one of them: their data folder and their git identity."""
+        return mock.patch.dict(os.environ, person.env)
+
+    def as_(self, person: Person, action, *args, **named):
+        with self.be(person):
+            return action(*args, **named)
+
+    def theirs(self, person: Person, root: Path) -> Path:
+        """The same training in someone else's copy of the workspace."""
+        return person.space.training(Path(root).name)
+
+    def shared(self) -> list[str]:
+        """What the team's repository has been sent, newest first."""
+        if not self.git('for-each-ref', 'refs/heads/main', repo=self.remote):
+            return []
+        return self.git('log', '--format=%s', 'main', repo=self.remote).splitlines()
+
+    def tags(self) -> list[str]:
+        return self.git('tag', '--list', repo=self.remote).splitlines()

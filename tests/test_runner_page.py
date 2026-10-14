@@ -35,8 +35,9 @@ GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
          '/api/documents', '/api/copies', '/api/share')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
-RUN_KEYS = ['agent', 'copies', 'deck', 'deck_left', 'documents', 'finished', 'model',
-            'outline', 'problem', 'question', 'sentence', 'spent', 'state', 'steps', 'workers']
+RUN_KEYS = ['agent', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'finished', 'mine',
+            'model', 'notice', 'outline', 'problem', 'question', 'queue', 'sentence', 'spent',
+            'state', 'steps', 'taken', 'workers']
 STEP_KEYS = ['attempts', 'dollars', 'error', 'id', 'kind', 'label', 'seconds', 'status']
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -247,6 +248,7 @@ class SetUpTests(FirstTimeCase):
             'agent': {'default': 'claude', 'model': None},
             'limits': {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 2},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
+            'notify': {'on': False, 'can': True, 'problem': None},
             'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
                       'problem': NO_BRAND_SKILL}})
         said = self.post('trainings', FORM, 409)
@@ -268,6 +270,7 @@ class SetUpTests(FirstTimeCase):
             'agent': {'default': 'codex', 'model': 'a-model'},
             'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
+            'notify': {'on': False, 'can': True, 'problem': None},
             'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
                       'problem': NO_BRAND_SKILL}})
         self.assertEqual(self.get('setup'), made)

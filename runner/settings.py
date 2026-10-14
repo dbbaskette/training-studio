@@ -16,6 +16,9 @@ What a caller needs to know
   this computer, or `drive`, through Google Drive. None until the person chooses.
 - `brand_skill` is where the brand skill to use is, when the person named one of those
   found. None for the first that is found.
+- `notify` is whether the runner tells the person, through the computer's own
+  notifications, that a training needs a decision while no page is open. Off until they
+  turn it on.
 - A value that makes no sense is refused with a sentence, not corrected silently.
 """
 from __future__ import annotations
@@ -45,6 +48,7 @@ class Settings:
     parallel: int = 2
     previews: str | None = None
     brand_skill: str | None = None
+    notify: bool = False
 
     @property
     def limits(self) -> dict:
@@ -87,6 +91,12 @@ def check_place(place) -> str | None:
     return place
 
 
+def check_notify(wanted) -> bool:
+    if not isinstance(wanted, bool):
+        raise WorkspaceError('Notifications are on or off: give notify as true or false.')
+    return wanted
+
+
 def number(value, label: str, least: float, most: float, whole: bool):
     """A limit a person typed, which must be a number in a sensible range."""
     plain = isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -104,7 +114,8 @@ def check(chosen: Settings) -> Settings:
         number(chosen.training_dollars, 'What a training may spend, in dollars,', 0.01,
                DOLLARS, False),
         number(chosen.parallel, 'How many trainings run at once', *PARALLEL, True),
-        check_previews(chosen.previews), check_place(chosen.brand_skill))
+        check_previews(chosen.previews), check_place(chosen.brand_skill),
+        check_notify(chosen.notify))
 
 
 def load() -> Settings:

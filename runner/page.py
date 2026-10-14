@@ -10,10 +10,35 @@ What a caller needs to know
   local machine only, checks the `Host` header, needs the key for every call, and takes a
   change only as a POST with a JSON body from the page's own origin. Those rules live in
   the desk's `Page`; `RunnerPage` adds addresses and never loosens a rule.
-- What it adds is the contract in the appendices of the milestone 2, 3 and 4
+- What it adds is the contract in the appendices of the milestone 2, 3, 4 and 5
   specifications: whether the runner is here, set-up, the agents, starting a training, a
   run, an answer to a worker's question, the person's documents, the copies, sharing,
-  the decision about what a deck says, and a slide's picture.
+  the decision about what a deck says, a slide's picture, who drives a training, the
+  status of every run, publishing, and bringing a training in.
+- A training in a shared workspace is run from one computer. List items and `GET /api/run`
+  carry `driver`: null when nobody drives it, else {"name", "here", "since"}. A run also
+  carries `mine`, whether this computer may change it; `queue`, {"ahead": n} while it
+  waits its turn; `taken`, {"by", "at", "kept"} for one that was taken from this computer,
+  until it is taken back; and `notice`, a sentence saying that, or that the training was
+  changed on two computers at once. Every address that changes a training someone else drives, or
+  nobody does, answers 409 with who has it: a decision, a move of its decisions, a run's
+  actions, an answer, its documents, its copies, and what its deck says. A training
+  driven elsewhere never counts as needing the person here.
+- `POST /api/drive` with {"path", "action"} takes a training (`take`), which also takes
+  one over, or hands it over (`hand-over`), and answers the run. `POST /api/fetch` brings
+  in what teammates shared and sends nothing: {"reached", "received", "notice"}.
+- `GET /api/status` answers {"limit", "runs", "elsewhere"}: each run on this computer as
+  {"path", "id", "title", "state", "sentence", "driver", "needs", "queue", "spent",
+  "notice"}, and each training a teammate drives as the first six of those.
+- `POST /api/publish` with {"path"} answers {"revision", "ready", "shared", "notice"}.
+  `GET /api/published` answers {"published": [{"path", "id", "title", "revision", "at",
+  "by", "ready", "current"}]}, each training's latest revision; `current` is false when
+  the training has changed here since. A training someone else drives is
+  not published from here.
+- `POST /api/adopt` with {"path"} copies a training this computer knows, started in a
+  conversation, into the workspace, and answers {"path", "id"} of the copy.
+- Every request that passes the rules tells the engine a page is open, which is how the
+  runner knows not to notify through the computer instead.
 - `POST /api/documents` alone may carry up to DOCUMENT_LIMIT bytes, because it carries a
   document, and only when it is asked with the key. Every other address keeps the desk's
   limit, and every one of the desk's rules still applies to this one.
@@ -65,9 +90,11 @@ from workspace import WorkspaceError
 from runner import engine as engines
 from runner import gitstate, pipeline, setup
 
-READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run', '/api/slide')
+READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run', '/api/slide',
+         '/api/status', '/api/published')
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
-          '/api/documents', '/api/copies', '/api/share', '/api/outline')
+          '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
+          '/api/publish', '/api/adopt', '/api/fetch')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 DOCUMENT_LIMIT = 12_000_000     # bytes: one document of the largest size, in base64
@@ -98,6 +125,11 @@ class RunnerPage(desk.Page):
     # --- reads ---------------------------------------------------------------------------
 
     def read(self, path: str, one):
+        self.engine.seen()
+        if path == '/api/status':
+            return desk.as_json(HTTPStatus.OK, self.engine.standing())
+        if path == '/api/published':
+            return desk.as_json(HTTPStatus.OK, {'published': self.engine.published()})
         if path == '/api/capabilities':
             return desk.as_json(HTTPStatus.OK, {'runner': True,
                                                 'version': gitstate.installed()})
@@ -232,9 +264,14 @@ class RunnerPage(desk.Page):
         a problem makes the training one that needs the person."""
         found = self.engine.brief(item['path'])
         item['run'] = found and {'state': found['state'], 'sentence': found['sentence']}
+        item['driver'] = found and found['driver']
         if found is None or 'error' in item:
             return item
-        if found['needs'] and item.get('state') != 'needs-you':
+        if not found['mine']:   # it waits for whoever drives it, not for the person here
+            if item.get('state') == 'needs-you' or (item.get('state') == 'in-progress'
+                                                    and found['state'] != 'done'):
+                item.update(state='in-progress', sentence=found['sentence'], waiting=None)
+        elif found['needs'] and item.get('state') != 'needs-you':
             item.update(state='needs-you', sentence=found['sentence'],
                         waiting={'artifact': None, 'label': None,
                                  'question': found['question'], 'recorded': False})
@@ -249,6 +286,7 @@ class RunnerPage(desk.Page):
         """Record a decision as the desk does. For a training a run is driving it is then
         committed, shared if that is wanted, and the run is woken."""
         with self.engine.files:
+            self.engine.hold(path)
             reply = super().decide(path, target, decision, note, seen)
             driven = self.engine.decided(path, reply['decided'])
         if not driven:
@@ -267,10 +305,12 @@ class RunnerPage(desk.Page):
         """Move a training's decisions as the desk does, except away from the page while a
         run is driving the training. The change is committed for a training a run drove."""
         desk.registered(path)
+        self.engine.hold(path)
         found = self.engine.brief(path)
         if found is not None and mode == 'chat' and found['state'] != 'done':
             raise desk.Refusal(HTTPStatus.CONFLICT, RUNNER_DECIDES)
         with self.engine.files:
+            self.engine.hold(path)
             reply = super().move_approval(path, mode)
             driven = self.engine.changed(path, f'decisions are now made '
                                          f'{workspace.WHERE[mode]}')
@@ -281,6 +321,15 @@ class RunnerPage(desk.Page):
     # --- writes --------------------------------------------------------------------------
 
     def write(self, path: str, sent: dict):
+        self.engine.seen()
+        if path == '/api/drive':
+            return desk.as_json(HTTPStatus.OK, self.drive(sent))
+        if path == '/api/publish':
+            return desk.as_json(HTTPStatus.OK, self.engine.publish(self.known(sent)))
+        if path == '/api/adopt':
+            return desk.as_json(HTTPStatus.OK, self.adopt(sent))
+        if path == '/api/fetch':
+            return desk.as_json(HTTPStatus.OK, self.engine.fetch())
         if path == '/api/setup/check':
             return desk.as_json(HTTPStatus.OK, shaped(setup.check, sent))
         if path == '/api/setup':
@@ -302,6 +351,28 @@ class RunnerPage(desk.Page):
         if path == '/api/outline':
             return desk.as_json(HTTPStatus.OK, self.outline(sent))
         return super().write(path, sent)
+
+    def known(self, sent: dict) -> str:
+        """The training a change names, once this computer knows it and a run drives it."""
+        path = desk.text(sent, 'path')
+        self.run(path)
+        return path
+
+    def drive(self, sent: dict) -> dict:
+        """Take a training, which takes over one someone else drives, or hand it over."""
+        action = desk.text(sent, 'action')
+        if action not in engines.DRIVING:
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'A training can be asked to: '
+                               + ', '.join(engines.DRIVING) + '.')
+        return self.engine.drive(self.known(sent), action)
+
+    def adopt(self, sent: dict) -> dict:
+        """Bring a training this computer knows, started in a conversation, into the
+        workspace. The copy is the one to work on; the folder it came from is left as it
+        was."""
+        path = desk.text(sent, 'path')
+        desk.registered(path)
+        return self.engine.bring(path)
 
     def outline(self, sent: dict) -> dict:
         """Record what the person decided about what a deck says: approve it, or say
@@ -365,6 +436,14 @@ class Studio(desk.Desk):
     def __init__(self, engine: engines.Engine, port: int = 0):
         super().__init__(port, page=lambda chosen: RunnerPage(chosen, engine))
         self.engine = engine
+
+    def serve(self) -> None:
+        self.engine.serving()
+        super().serve()
+
+    def start(self) -> None:
+        self.engine.serving()
+        super().start()
 
     def stop(self) -> None:
         super().stop()

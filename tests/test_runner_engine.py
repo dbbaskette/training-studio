@@ -1005,7 +1005,8 @@ class SharingTests(StudioCase):
 
     def test_work_is_shared_after_each_decision(self):
         root = self.start()
-        self.assertEqual(self.shared(), [], 'nothing is sent until a person decides')
+        self.assertEqual(self.shared()[0], 'Rolling restarts: start the training from the form',
+                         'who drives a training is shared before any work is done for it')
         self.decide(root, 'research-plan')
         self.assertEqual(self.shared()[0],
                          'Rolling restarts: The research plan was approved on the page.')
@@ -1041,7 +1042,8 @@ class SharingTests(StudioCase):
         self.gitstate.share_when('asked')
         root = self.start()
         self.decide(root, 'research-plan')
-        self.assertEqual(self.shared(), [])
+        self.assertEqual(self.shared()[0], 'Rolling restarts: start the training from the form',
+                         'only the claim that starts a training is sent without being asked')
         self.assertEqual(self.engine.shared(), {'shared': False, 'notice': None})
         self.assertEqual(self.engine.share(), {'shared': True, 'notice': None})
         self.assertIn('Rolling restarts: The research plan was approved on the page.',
@@ -1115,7 +1117,7 @@ class LiveTests(StudioCase):
         view = self.view(second)
         self.assertEqual((view['state'], view['sentence'], view['workers'],
                           len(self.workers.jobs)),
-                         ('working', 'Waiting for its turn. Other trainings are working.',
+                         ('working', 'Waiting for its turn. It is next.',
                           [], 1))
         go.set()
         self.until(lambda: self.state(first) == self.state(second) == 'waiting')
