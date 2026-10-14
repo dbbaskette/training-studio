@@ -546,9 +546,10 @@ class UpgradeTests(ReleaseCase):
     def test_the_upgrade_runs_the_fetched_versions_own_installer_beside_this_one(self):
         self.release('v99.0.0')
         self.keep.look()
-        asked, fetched = [], []
+        asked, fetched, going = [], [], threading.Event()
 
         def fetch(repository, ref, into):
+            going.wait(30)   # held until the test has seen it running
             fetched.append((repository, ref))
             tree = into / 'tree'
             (tree / 'skills' / 'training-studio').mkdir(parents=True)
@@ -569,6 +570,7 @@ class UpgradeTests(ReleaseCase):
             shown = self.keep.upgrade(False, '99.0.0')
             self.assertEqual(shown['versions']['upgrade']['state'], 'running')
             self.assertFalse(shown['versions']['upgrade']['offered'])
+            going.set()
             settle(self.keep)
         self.assertEqual(fetched, [(str(self.source), 'refs/tags/v99.0.0')])
         (command, seconds), = asked

@@ -970,7 +970,8 @@ class WholeUpgradeTests(PageCase):
                              'The newest Training Studio is now 99.0.0, not 98.0.0. Look at it '
                              'again before you upgrade.')
             shown = self.post('upgrade', {'version': '99.0.0'})['upkeep']['versions']
-            self.assertEqual(shown['upgrade']['state'], 'running')
+            # Running, unless it was quick enough to have finished already.
+            self.assertIn(shown['upgrade']['state'], ('running', 'restart'))
             for thread in list(keep._threads):
                 thread.join(300)
             upgrade = self.get('setup')['upkeep']['versions']['upgrade']
