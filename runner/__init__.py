@@ -1,5 +1,5 @@
 """The Studio Runner: a program that takes a training from a form to its index, stopping
-at every gate for a decision on the page. The slide deck is the one thing it does not make.
+at every gate for a decision on the page, the slide deck included.
 
     studio         the command line: `studio serve` and `studio status`
     page           the runner's server: the desk's page, with the runner behind it
@@ -15,6 +15,9 @@ at every gate for a decision on the page. The slide deck is the one thing it doe
     documents      the documents a person supplies for a training's research
     copies         the Google Docs and Word files a training asked for
     index          readiness, and README.md written from a training's record
+    deck           the runner's own rules for a slide deck, and what its workers are told
+    slides         the slides tool's command line, called from Python
+    brand          a brand skill on this computer, called from Python
 
 Each module's own docstring says what a caller needs to know. Refusals meant for a person
 are raised as the core's WorkspaceError, with a sentence to show as it is.

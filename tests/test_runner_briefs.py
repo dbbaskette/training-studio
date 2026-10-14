@@ -44,13 +44,17 @@ def own(text: str) -> str:
 class BriefTests(JobCase):
     def test_there_is_a_brief_for_each_job_and_no_other(self):
         self.assertEqual(briefs.JOBS, ('research-plan', 'research-question', 'blueprint',
-                                       'document', 'brief', 'scenario', 'yoodli'))
+                                       'document', 'brief', 'scenario', 'yoodli',
+                                       'deck-outline', 'deck-section', 'deck-review'))
         self.assertEqual(sorted(path.name for path in briefs.HERE.glob('*.md')),
-                         ['blueprint-level.md', 'blueprint.md', 'brief.md', 'document.md',
-                          'level.md', 'research-plan.md', 'research-question.md',
-                          'scenario.md', 'yoodli.md'])
+                         ['blueprint-level.md', 'blueprint.md', 'brief.md', 'deck-outline.md',
+                          'deck-repair.md', 'deck-review.md', 'deck-section.md',
+                          'document.md', 'level.md', 'naming.md', 'research-plan.md',
+                          'research-question.md', 'scenario.md', 'yoodli.md'])
         with self.assertRaisesRegex(WorkspaceError, 'There is a brief for: research-plan'):
             briefs.guidance('deck')
+        with self.assertRaisesRegex(WorkspaceError, 'only a section of a deck is drawn again'):
+            briefs.guidance('blueprint', naming=True)
         for job in ('research-plan', 'scenario', 'yoodli'):
             with self.assertRaisesRegex(WorkspaceError, 'Only a blueprint, a guide and a brief '
                                         'are written for a level'):

@@ -23,7 +23,7 @@ class DefinitionTests(StudioCase):
     def test_the_training_pipeline_is_data_from_the_form_to_the_index(self):
         stages = list(dict.fromkeys(row[0] for row in pipeline.TRAINING))
         self.assertEqual(stages, ['intake', 'research-plan', 'research', 'blueprint',
-                                  'document', 'brief', 'scenario', 'yoodli', 'deck',
+                                  'document', 'brief', 'deck', 'scenario', 'yoodli',
                                   'package'])
         self.assertEqual([(row[1], row[2]) for row in pipeline.TRAINING], [
             ('intake', 'code'), ('documents', 'gate'), ('research-plan', 'agent'),
@@ -31,14 +31,19 @@ class DefinitionTests(StudioCase):
             ('research-report', 'code'), ('gate:research', 'gate'), ('blueprint', 'agent'),
             ('gate:blueprint', 'gate'), ('document', 'agent'), ('gate:document', 'gate'),
             ('copies:document', 'code'), ('brief', 'agent'), ('gate:brief', 'gate'),
-            ('copies:brief', 'code'), ('scenario', 'agent'), ('gate:scenario', 'gate'),
+            ('copies:brief', 'code'), ('deck-handoff', 'code'), ('deck-brand', 'code'),
+            ('deck-outline', 'agent'), ('gate:deck-outline', 'gate'), ('deck-start', 'code'),
+            ('deck-sections', 'agent'), ('deck-whole', 'code'), ('deck-review', 'agent'),
+            ('deck-repair', 'agent'), ('deck-save', 'code'), ('gate:deck', 'gate'),
+            ('scenario', 'agent'), ('gate:scenario', 'gate'),
             ('yoodli', 'agent'), ('gate:yoodli', 'gate'), ('copies:yoodli', 'code'),
             ('deck', 'gate'), ('package', 'code')])
         self.assertEqual([name for name, _ in pipeline.RESEARCH],
                          ['research-start', 'research', 'research-report'])
         self.assertEqual(set(stages), set(workspace.STAGES) - {'done'})
-        self.assertEqual(stages[-2:], ['deck', 'package'], 'the deck is not made here, so a '
-                         'training is taken through every other stage first')
+        self.assertEqual(pipeline.TRAINING[-2][:3], ('deck', 'deck', 'gate'), 'on a computer '
+                         'that cannot make a deck, a training is taken through every other '
+                         'stage first')
 
     def test_a_trainings_steps_are_laid_out_in_the_order_they_are_walked(self):
         plain = pipeline.steps([])
@@ -491,11 +496,12 @@ class SurveyTests(StudioCase):
         found = pipeline.survey(self.root, self.run)
         self.assertEqual((found.next.kind, found.next.step.id, found.next.step.stage),
                          ('deck', 'deck', 'deck'))
-        self.assertEqual(pipeline.deck_says(found), pipeline.DECK_LEFT)
+        self.assertEqual(pipeline.deck_says(found),
+                         pipeline.DECK_LEFT.format(why=pipeline.NOT_LOOKED))
         (self.root / 'deck.pptx').write_bytes(b'PK\x03\x04 a deck\n')
         found = pipeline.survey(self.root, self.run)
         self.assertEqual((found.next.kind, pipeline.deck_says(found)),
-                         ('deck', pipeline.DECK_AGAIN))
+                         ('deck', pipeline.DECK_AGAIN.format(why=pipeline.NOT_LOOKED)))
         workspace.decide(self.root, 'deck', 'skip', 'No slides.', by='page')
         self.assertEqual(self.next().step.id, 'package')
 

@@ -10,14 +10,27 @@ What a caller needs to know
   local machine only, checks the `Host` header, needs the key for every call, and takes a
   change only as a POST with a JSON body from the page's own origin. Those rules live in
   the desk's `Page`; `RunnerPage` adds addresses and never loosens a rule.
-- What it adds is the contract in the appendices of the milestone 2 and milestone 3
+- What it adds is the contract in the appendices of the milestone 2, 3 and 4
   specifications: whether the runner is here, set-up, the agents, starting a training, a
-  run, an answer to a worker's question, the person's documents, the copies, and sharing.
+  run, an answer to a worker's question, the person's documents, the copies, sharing,
+  the decision about what a deck says, and a slide's picture.
 - `POST /api/documents` alone may carry up to DOCUMENT_LIMIT bytes, because it carries a
   document, and only when it is asked with the key. Every other address keeps the desk's
   limit, and every one of the desk's rules still applies to this one.
 - `GET /api/gate` gains `whose` for a practice scenario: who wrote its file. For a Yoodli
-  scenario it gains `beside`, the scenario it was laid out from.
+  scenario it gains `beside`, the scenario it was laid out from. For a deck it gains
+  `slides`, `review`, `audit` and `coverage`; `review` and `audit` are null, and the other
+  two empty, for a deck the runner did not make.
+- `GET /api/slide` answers one slide's picture as `image/png`, and nothing else: of a deck
+  the runner rendered, named by `artifact`, or of a `section`'s latest preview while a
+  deck is drawn, by `number`. It needs the key like every other read. What it sends is
+  never read from an address the request gives: the place is worked out from the
+  training, the deck or the section, and the number, and only a PNG found there, inside
+  the training's own folder or the folder of the worker drawing that section, is sent.
+- `POST /api/outline` records what the person decided about what a deck says, which is the
+  runner's own gate, and answers the run.
+- The page's check of this computer gains what a deck needs here. Asking for a new look
+  also lets the trainings that were waiting on what was missing carry on.
 - `GET /api/file` also answers for `README.md`, the index at the top of a training this
   computer knows, once it is written. The index is derived and is not one of a training's
   own files, so the desk alone refuses it.
@@ -45,15 +58,17 @@ from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
 import desk
+import home
 import workspace
 from workspace import WorkspaceError
 
 from runner import engine as engines
 from runner import gitstate, pipeline, setup
 
-READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
+READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run', '/api/slide')
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
-          '/api/documents', '/api/copies', '/api/share')
+          '/api/documents', '/api/copies', '/api/share', '/api/outline')
+PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 DOCUMENT_LIMIT = 12_000_000     # bytes: one document of the largest size, in base64
 CLOSE = 'You can close this page; it says when it needs you again.'
@@ -94,6 +109,8 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.run(one('path')))
         if path == '/api/gate':
             return desk.as_json(HTTPStatus.OK, self.gate(one('path'), one('artifact')))
+        if path == '/api/slide':
+            return HTTPStatus.OK, PNG, self.slide(one)
         if path == '/api/file' and one('artifact') == pipeline.INDEX:
             return desk.as_json(HTTPStatus.OK, self.index(one('path')))
         return super().read(path, one)
@@ -121,7 +138,57 @@ class RunnerPage(desk.Page):
         elif kind == 'yoodli':
             source = name.replace('yoodli:', 'scenario:', 1)
             shown['beside'] = {'artifact': source, 'label': desk.named(source)}
+        elif kind == 'deck':
+            shown.update(self.engine.deck_gate(path, name))
         return shown
+
+    def slide(self, one) -> bytes:
+        """One slide's picture. The request names a training this computer knows, a deck
+        of it or a section of the deck being drawn, and a number, and nothing else."""
+        def given(name: str) -> str | None:
+            try:
+                return one(name)
+            except desk.Refusal:
+                return None
+
+        path, artifact, section = one('path'), given('artifact'), given('section')
+        if (artifact is None) == (section is None):
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Name the deck as artifact, or the '
+                               'section, and not both.')
+        if not one('number').isascii() or not one('number').isdigit():
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Give number as a whole number.')
+        desk.registered(path)
+        if self.engine.driven(path) is None:
+            raise desk.Refusal(HTTPStatus.NOT_FOUND, 'No run is driving this training.')
+        try:
+            return shaped(self.engine.picture, path, int(one('number')), artifact, section)
+        except OSError:
+            raise desk.Refusal(HTTPStatus.NOT_FOUND, engines.NO_PICTURE)
+
+    def computer(self, look: bool) -> dict | None:
+        """The desk's look at this computer, with what a deck needs here. A new look is a
+        new look at those too, and wakes the trainings that were waiting on them."""
+        seen = super().computer(look)
+        if seen is None:
+            return None
+        needs = self.engine.look_again() if look else self.engine.deck_needs()
+        wanted = self.uses_deck()
+        items = [{**item, 'optional': not wanted} for item in needs['items']]
+        wrong = [*seen['wrong'], *(item['name'] for item in items
+                                   if item['state'] != 'ok' and wanted)]
+        return {**seen, 'items': [*seen['items'], *items], 'wrong': wrong,
+                'ready': seen['ready'] and not wrong}
+
+    @staticmethod
+    def uses_deck() -> bool:
+        """Whether any training on this computer wants a deck."""
+        for entry in home.trainings():
+            try:
+                if 'deck' in pipeline.wanted(workspace.load(Path(entry['path']))):
+                    return True
+            except (WorkspaceError, OSError):
+                continue
+        return False
 
     def body_limit(self, target: str, headers) -> int:
         """A document may be sent whole, to its own address, by whoever holds the key.
@@ -220,7 +287,7 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK,
                                 setup.apply(self.engine, shaped(setup.read, sent)))
         if path == '/api/trainings':
-            form = shaped(pipeline.check_form, sent)
+            form = shaped(pipeline.check_form, sent, self.engine.brands())
             return desk.as_json(HTTPStatus.OK, self.engine.start(form))
         if path == '/api/run':
             return desk.as_json(HTTPStatus.OK, self.act(sent))
@@ -232,7 +299,23 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.copied(sent))
         if path == '/api/share':
             return desk.as_json(HTTPStatus.OK, self.engine.share())
+        if path == '/api/outline':
+            return desk.as_json(HTTPStatus.OK, self.outline(sent))
         return super().write(path, sent)
+
+    def outline(self, sent: dict) -> dict:
+        """Record what the person decided about what a deck says: approve it, or say
+        what should change. It is theirs alone to decide, and decided here."""
+        path, decision = desk.text(sent, 'path'), desk.text(sent, 'decision')
+        level, note = desk.text(sent, 'level', False), desk.text(sent, 'note', False)
+        if decision not in engines.DECIDING:
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'What a deck says can be decided '
+                               'as: ' + ', '.join(engines.DECIDING) + '.')
+        if decision == 'revise' and not (note or '').strip():
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Say what should change.')
+        self.run(path)
+        return self.engine.outline(path, level or None, decision, note,
+                                   desk.text(sent, 'seen', False))
 
     def act(self, sent: dict) -> dict:
         path, action = desk.text(sent, 'path'), desk.text(sent, 'action')

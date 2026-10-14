@@ -9,10 +9,11 @@ checked here before anything is kept. Each job has a folder that only the runner
     inputs/       the job's inputs, one file each
     sources/      saved sources: index.json, a text snapshot of each, and its original
     accepted/     what the worker handed back and the checks let through
+    shown/        a deck's job: the pictures of its last preview, one a slide, by number
     state.json    how often each thing was handed back, and why the last one was refused
     tools.log     every call, one JSON object a line
 
-    prepare(folder, inputs=, artifacts=, finding=, sources=, fetch=, ask=)   set a job up
+    prepare(folder, inputs=, artifacts=, finding=, sources=, fetch=, ask=, ...)   set a job up
     command(folder)        the command an agent starts the server with
     WorkerTools(folder)    the same tools in this process; every tool answers (ok, text)
     collect(folder)        what was handed back, for the engine to keep
@@ -45,10 +46,35 @@ checked here before anything is kept. Each job has a folder that only the runner
   failed: `collect(folder)['problems']` says why the last one was refused.
 - A question (`ask_person`) ends the job: every later call is refused. Pass `ask=False`
   for a job nobody can answer, such as one research question among many.
+- A tool's answer may carry pictures. It is then a `Shown`: the same (ok, text) pair, with
+  the PNG files to show after the text in `.pictures`. The server sends each as an image.
+- A deck's jobs have tools of their own, and these and no others beside the inputs:
+  an 'outline' (what each slide says) has `check_outline` and `submit_outline`; a 'section'
+  (some slides, drawn) has `check_section`, `preview_section`, `search_icons` and
+  `submit_section`; a review, set up with `review=`, has `look_at_slide`,
+  `submit_assessment` and `submit_coverage`. `look=` gives any job slides to look at.
+- An 'outline' takes 'brand' (the exported brand contract's path) and 'blueprint' (its
+  text). It is checked with the slides tool's own check and with `deck.rules`. A 'section'
+  takes 'brand' and what `deck.fixed` returned, and how its previews are taken:
+  'previews' (how many it has), 'renderer', 'lock' and 'kept'. It is checked with
+  `deck.kept` and with the slides tool's compiler. What is handed in must be the version
+  last previewed; a hand-in that is not costs nothing and is sent back.
+- Previews are taken one at a time on this computer, whatever is drawn side by side:
+  `render` waits for the file named by 'lock'. 'kept' names the file that remembers the one
+  preview file a deck keeps in Google Drive, so that it is written again and no second
+  one is made.
+- `review` is {'preview', 'deck', 'slides', 'objectives', 'recorded'}: the previewed deck's
+  folder and hash, its slides as {'number', 'id', 'title', 'image'}, the blueprint's
+  objective IDs, and where an accepted assessment is also kept. The slides tool takes one
+  assessment for one render, so one that is already there stands.
+- `runtimes` is {'slides', 'brand'}: where the slides tool and the brand skill are, when
+  this computer was told. The server runs apart from the runner and finds them again.
+- Nothing a deck's tool answers names a folder on this computer.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import functools
 import hashlib
 import html.parser
@@ -56,16 +82,20 @@ import http.client
 import inspect
 import ipaddress
 import json
+import os
 import re
+import secrets
 import shutil
 import socket
 import ssl
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
+from contextlib import contextmanager
 from pathlib import Path
 
 if not __package__:  # started as the server, by its path
@@ -74,6 +104,8 @@ import runner  # noqa: F401,E402  puts the core on the import path
 import checks  # noqa: E402
 import home  # noqa: E402
 from workspace import BRIEF_KINDS, WorkspaceError  # noqa: E402
+
+from runner import deck  # noqa: E402
 
 SCHEMA = 1
 PART = 20_000           # characters of an input in one read
@@ -89,6 +121,10 @@ NOTES = 4000
 QUESTION = 1000
 PASSAGES = 20
 ADDRESS = 2000
+ICONS = 8               # the most icons one search returns
+RENDER_WAIT = 900       # seconds a preview waits for its turn at the renderer
+PNG = b'\x89PNG\r\n\x1a\n'
+PICTURE = 12_000_000    # bytes: the largest picture that is shown
 STATUSES = ('supported', 'contradicted', 'insufficient', 'unavailable')
 SCOPES = ('public-web', 'supplied-only')
 QUESTION_ID = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
@@ -455,17 +491,215 @@ def check_yoodli(text: str, spec: dict) -> tuple[list[str], list[dict], list[str
     return held(outcomes), outcomes, [], as_kept(text)
 
 
+def as_json(value, what: str) -> tuple[object, str]:
+    """Something a worker sent as JSON, and as the text it is kept as. An agent may send
+    the text or the object itself."""
+    if isinstance(value, (dict, list)):
+        given = value
+    elif not isinstance(value, str) or not value.strip():
+        raise Refusal(f'Send the whole {what} as JSON text.')
+    else:
+        try:
+            given = json.loads(value)
+        except ValueError as failure:
+            raise Refusal(f'The {what} is not valid JSON ({failure}).')
+    return given, json.dumps(given, indent=2, ensure_ascii=False) + '\n'
+
+
+def said_no(refusal: WorkspaceError) -> list[str]:
+    """The lines the slides tool or the brand skill gave when it said no. Anything else,
+    such as a tool that is not on this computer, is not the worker's to fix: it is raised."""
+    lines = getattr(refusal, 'problems', None)
+    if not isinstance(lines, list):
+        raise refusal
+    return [str(line) for line in lines] or [str(refusal)]
+
+
+def _draft(scratch: Path, name: str, text: str) -> Path:
+    """Keep one draft where the slides tool can read it, under a name of its own."""
+    path = scratch / f'{name}-{secrets.token_hex(4)}.json'
+    _write(path, text)
+    return path
+
+
+def check_outline(text: str, spec: dict, slides,
+                  scratch: Path) -> tuple[list[str], list[dict], list[str], str]:
+    """An outline: what each slide of a deck says. The slides tool checks its shape and
+    its own limits, and the runner's own rules are checked on top, with the tool's budget
+    of words counted against everything a slide shows."""
+    try:
+        outline, kept = as_json(text, 'outline')
+    except Refusal as refusal:
+        return [str(refusal)], [], [], text
+    budget = spec.get('budget')
+    try:
+        report = slides.outline_check(_draft(scratch, 'outline', kept), spec['brand'])
+    except WorkspaceError as refusal:
+        found = said_no(refusal)
+    else:
+        budget = report.get('wordBudget') or budget
+        found = [f"{finding.get('slide')}: {finding.get('detail') or finding.get('code')}"
+                 for finding in report.get('findings') or ()]
+    outcomes = [checks.result('outline.tool', found),
+                checks.result('outline.rules', deck.rules(outline, spec.get('blueprint') or '',
+                                                          budget))]
+    return held(outcomes), outcomes, [], kept
+
+
+def check_section(text: str, spec: dict, slides,
+                  scratch: Path) -> tuple[list[str], list[dict], list[str], str]:
+    """A section: some slides of a deck, drawn. What was fixed before its composer started
+    must be as it was, with every approved word kept, and the slides tool must compile it."""
+    try:
+        section, kept = as_json(text, 'section')
+    except Refusal as refusal:
+        return [str(refusal)], [], [], text
+    ours, found = deck.kept(section, spec), []
+    if isinstance(section, dict):
+        try:
+            slides.compile(_draft(scratch, 'section', kept), spec['brand'])
+        except WorkspaceError as refusal:
+            found = said_no(refusal)
+    outcomes = [checks.result('section.rules', ours), checks.result('section.compile', found)]
+    return held(outcomes), outcomes, [], kept
+
+
 VALIDATORS = {'research-plan': check_plan, 'blueprint': check_blueprint,
               'document': check_document, 'brief': check_brief, 'scenario': check_scenario,
-              'yoodli': check_yoodli}
-EXTENSIONS = {'research-plan': '.json'}
+              'yoodli': check_yoodli, 'outline': check_outline, 'section': check_section}
+DRAWN = ('outline', 'section')      # the kinds whose check asks the slides tool
+EXTENSIONS = {'research-plan': '.json', 'outline': '.json', 'section': '.json'}
+
+
+# --- pictures, and the renderer ----------------------------------------------------------
+
+class Shown(tuple):
+    """A tool's answer that carries pictures: the same (ok, text) pair every tool gives,
+    with the PNG files to show after the text in `pictures`."""
+
+    def __new__(cls, ok: bool, text: str, pictures=()):
+        made = super().__new__(cls, (ok, text))
+        made.pictures = tuple(Path(picture) for picture in pictures)
+        return made
+
+
+def picture(path: Path) -> bytes:
+    """A picture as it is shown: a PNG of a sensible size, and nothing else."""
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > PICTURE:
+        raise Refusal('That picture cannot be shown.')
+    data = path.read_bytes()
+    if not data.startswith(PNG):
+        raise Refusal('That picture cannot be shown.')
+    return data
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+@contextmanager
+def one_at_a_time(lock: Path, wait: float = RENDER_WAIT):
+    """Hold a computer's one turn at the renderer. Whoever else wants it waits here,
+    in this process or another. A turn left behind by a process that has ended is taken."""
+    lock, until = Path(lock), time.monotonic() + wait
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                holder = lock.read_text(encoding='utf-8').strip()
+            except OSError:
+                continue  # let go of between the two looks
+            if holder.isdigit() and not _alive(int(holder)):
+                lock.unlink(missing_ok=True)
+            elif time.monotonic() > until:
+                raise Refusal('Another preview has been rendering for a long time, so this '
+                              'one was not taken. Try it again.')
+            else:
+                time.sleep(0.05)
+            continue
+        os.write(handle, f'{os.getpid()}'.encode())
+        os.close(handle)
+        break
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def render(slides, compiled: Path, folder: Path, how: dict) -> dict:
+    """Preview compiled slides, when it is this preview's turn. `how` is {'renderer',
+    'lock', 'kept', 'named'}: 'kept' names the file that remembers a deck's one preview
+    file in Google Drive, which is written again each time, and 'named' is what to
+    remember of it beside its ID and address. A preview that fails after it made that
+    file says so in its refusal's `left`, and the file is remembered all the same. Returns
+    what the slides tool returned."""
+    kept = Path(how['kept']) if how.get('kept') else None
+    with one_at_a_time(Path(how['lock'])):
+        known = home.read_json(kept, {}) if kept else {}
+        known = known if isinstance(known, dict) else {}
+        def remember(ident, url) -> None:
+            if kept and ident and ident != known.get('id'):
+                home.write_json(kept, {**(how.get('named') or {}), 'id': ident, 'url': url})
+
+        try:
+            found = slides.preview(compiled, folder, how['renderer'],
+                                   file_id=known.get('id'))
+        except WorkspaceError as refusal:  # a preview that failed may have made its file
+            left = getattr(refusal, 'left', None) or {}
+            remember(left.get('id'), left.get('url'))
+            raise
+        remember(found.get('fileId'), found.get('url'))
+    return found
+
+
+def pictures(found: dict, folder: Path, target: Path) -> list[dict]:
+    """Keep the pictures of one preview under `target`, one a slide, named by its number.
+    Only a PNG the renderer wrote inside `folder` is taken. Returns each slide as
+    {'number', 'id', 'title', 'findings'}."""
+    folder, kept = Path(folder).resolve(), []
+    shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True)
+    for slide in found.get('slides') or ():
+        image = Path(str(slide.get('image'))).resolve()
+        if folder not in image.parents or type(slide.get('number')) is not int:
+            raise WorkspaceError('The renderer named a picture outside its own folder, so '
+                                 'the preview was not kept.')
+        (target / f"{slide['number']}.png").write_bytes(picture(image))
+        kept.append({'number': slide['number'], 'id': str(slide.get('id')),
+                     'title': str(slide.get('title') or ''),
+                     'findings': [finding for finding in slide.get('findings') or ()
+                                  if isinstance(finding, dict)]})
+    return kept
+
+
+def the_slides(runtime: str | None = None):
+    """The slides tool on this computer. Imported here, so a job with no deck never
+    loads it."""
+    from runner import slides
+    return slides.Slides(runtime=runtime) if runtime else slides.Slides()
+
+
+def the_brand(runtime: str | None = None):
+    """The brand skill on this computer."""
+    from runner import brand
+    return brand.Brand(runtime=runtime) if runtime else brand.Brand()
 
 
 # --- a job's folder --------------------------------------------------------------------
 
 def prepare(folder: Path, inputs: dict[str, str] | None = None,
             artifacts: dict[str, dict] | None = None, finding: str | None = None,
-            sources=(), fetch: bool = False, ask: bool = True) -> Path:
+            sources=(), fetch: bool = False, ask: bool = True, review: dict | None = None,
+            look=None, runtimes: dict | None = None) -> Path:
     """Set a job's folder up: what the worker may read, and what it must hand back."""
     folder = Path(folder)
     if (folder / 'job.json').exists():
@@ -480,6 +714,12 @@ def prepare(folder: Path, inputs: dict[str, str] | None = None,
         if spec.get('brief_kind') not in (None, *BRIEF_KINDS):
             raise WorkspaceError(f"{name}: the kind of brief is one of "
                                  f"{', '.join(BRIEF_KINDS)}.")
+        if spec['kind'] in DRAWN and not spec.get('brand'):
+            raise WorkspaceError(f'{name} needs the brand it is checked against.')
+    if review is not None and not all(review.get(key) for key in (
+            'preview', 'deck', 'slides', 'recorded')):
+        raise WorkspaceError('A review needs the preview it is of, its deck, its slides '
+                             'and where its assessment is kept.')
     if finding is not None and not QUESTION_ID.match(finding):
         raise WorkspaceError(f'"{finding}" is not a research question ID.')
     listed = []
@@ -491,7 +731,9 @@ def prepare(folder: Path, inputs: dict[str, str] | None = None,
     home.write_json(folder / 'sources' / 'index.json', index)
     home.write_json(folder / 'job.json', {
         'schema': SCHEMA, 'inputs': listed, 'artifacts': artifacts or {}, 'finding': finding,
-        'fetch': bool(fetch), 'ask': bool(ask), 'prepared_at': home.now()})
+        'fetch': bool(fetch), 'ask': bool(ask), 'review': review,
+        'look': list(look or (review or {}).get('slides') or ()),
+        'runtimes': dict(runtimes or {}), 'prepared_at': home.now()})
     return folder
 
 
@@ -534,7 +776,9 @@ def collect(folder: Path) -> dict:
     `artifacts` maps each accepted draft to its kind, text, checks and warnings. `sources`
     lists every source with `path`, where its snapshot is in the job's folder, and `file`,
     where a finding says it is in the training. `problems` holds why the last hand-back of
-    anything not accepted was refused.
+    anything not accepted was refused. For a deck's jobs, `shown` is the last preview a
+    composer took, as {'previews', 'slides'} with each slide's picture at `path`;
+    `assessment` and `coverage` are what a reviewer handed in.
     """
     folder = Path(folder)
     _job(folder)
@@ -550,7 +794,13 @@ def collect(folder: Path) -> dict:
         sources.append({**entry, 'path': folder / entry['local'],
                         'original_path': folder / original if original else None})
     state = home.read_json(folder / 'state.json', {})
-    return {'artifacts': artifacts,
+    shown = None if not state.get('shown') else {
+        'previews': state.get('previews', 0),
+        'slides': [{**slide, 'path': folder / 'shown' / f"{slide['number']}.png"}
+                   for slide in state['shown']]}
+    return {'artifacts': artifacts, 'shown': shown,
+            'assessment': home.read_json(kept / 'assessment.json', None),
+            'coverage': home.read_json(kept / 'coverage.json', None),
             'review': review.read_text(encoding='utf-8') if review.is_file() else None,
             'finding': home.read_json(kept / 'finding.json', None),
             'question': asked.get('question') if isinstance(asked, dict) else None,
@@ -592,12 +842,26 @@ class WorkerTools:
     """One job's tools. `opener`, `resolver` and `pdf` are replaceable, so tests never
     touch the network or need a PDF reader."""
 
-    def __init__(self, folder: Path, opener=None, resolver=None, pdf=None):
+    def __init__(self, folder: Path, opener=None, resolver=None, pdf=None, slides=None,
+                 brand=None):
         self.folder = Path(folder)
         self.job = _job(self.folder)
         self.opener = opener or fetch_once
         self.resolver = resolver or resolve
         self.pdf = pdf or pdf_text
+        self._slides, self._brand = slides, brand
+
+    def slides(self):
+        """The slides tool, found the first time a deck's job needs it."""
+        if self._slides is None:
+            self._slides = the_slides((self.job.get('runtimes') or {}).get('slides'))
+        return self._slides
+
+    def brand(self):
+        """The brand skill, found the first time a composer searches its icons."""
+        if self._brand is None:
+            self._brand = the_brand((self.job.get('runtimes') or {}).get('brand'))
+        return self._brand
 
     # --- bookkeeping ---
 
@@ -622,7 +886,8 @@ class WorkerTools:
     def _log(self, name: str, given: dict, outcome: tuple[bool, str]) -> None:
         entry = {'at': home.now(), 'tool': name, 'ok': outcome[0],
                  'given': {key: clip(value) for key, value in given.items()},
-                 'answer': clip(outcome[1], 300)}
+                 'answer': clip(outcome[1], 300),
+                 'pictures': len(getattr(outcome, 'pictures', ()))}
         with open(self.folder / 'tools.log', 'a', encoding='utf-8') as stream:
             stream.write(json.dumps(entry) + '\n')
 
@@ -651,8 +916,17 @@ class WorkerTools:
     def offered(self) -> list[dict]:
         """The tools this job has a use for, as an agent is told about them."""
         job, names = self.job, ['list_inputs', 'read_input']
-        if job['artifacts']:
+        kinds = {spec['kind'] for spec in job['artifacts'].values()}
+        if 'outline' in kinds:
+            names += ['check_outline', 'submit_outline', 'submit_review']
+        elif 'section' in kinds:
+            names += ['check_section', 'preview_section', 'search_icons', 'submit_section']
+        elif job['artifacts']:
             names += ['submit_artifact', 'submit_review']
+        if job.get('look'):
+            names.append('look_at_slide')
+        if job.get('review'):
+            names += ['submit_assessment', 'submit_coverage']
         if job['fetch']:
             names.append('save_source')
         if job['fetch'] or self._index():
@@ -733,9 +1007,32 @@ class WorkerTools:
                           'that name.')
         if not isinstance(text, str) or not text.strip():
             raise Refusal('The text is empty. Hand back the whole draft.')
+        if wanted[name]['kind'] == 'section':
+            raise Refusal('Hand a section in with submit_section.')
+        return self._hand_in(name, text)
+
+    def _validate(self, spec: dict, text: str) -> tuple[list[str], list[dict], list[str], str]:
+        """Check one draft with its kind's validator. What the slides tool says is given
+        to the worker without the name of any folder here."""
+        if spec['kind'] not in DRAWN:
+            return VALIDATORS[spec['kind']](text, spec)
+        problems, ran, warnings, kept = VALIDATORS[spec['kind']](
+            text, spec, self.slides(), self.folder / 'drafts')
+        for outcome in ran:
+            outcome['problems'] = [self._plainly(problem) for problem in outcome['problems']]
+        return [self._plainly(problem) for problem in problems], ran, warnings, kept
+
+    def _plainly(self, text: str) -> str:
+        """What a tool said, without the name of a folder on this computer."""
+        for folder in (self.folder / 'drafts', self.folder):
+            text = text.replace(f'{folder.resolve()}{os.sep}', '').replace(str(folder), '.')
+        return text.replace(str(Path.home()), '~')
+
+    def _hand_in(self, name: str, text: str) -> tuple[bool, str]:
+        """Check a draft and keep it if the checks let it through."""
         self._allowed(name, name)
-        spec = wanted[name]
-        problems, ran, warnings, kept = VALIDATORS[spec['kind']](text, spec)
+        spec = self.job['artifacts'][name]
+        problems, ran, warnings, kept = self._validate(spec, text)
         left = self._count(name, problems)
         if problems:
             return self._refused(problems, left)
@@ -766,6 +1063,241 @@ class WorkerTools:
         _write(self.folder / 'accepted' / 'review.md', text.strip() + '\n')
         return True, ('Your notes were kept. The person who reviews the draft will see them '
                       'as your judgment.')
+
+    # --- a deck: what it says ---
+
+    def _spec(self, kind: str) -> tuple[str, dict]:
+        """The name and the particulars of the one draft of this kind the job hands in."""
+        for name, spec in self.job['artifacts'].items():
+            if spec['kind'] == kind:
+                return name, spec
+        raise Refusal(f'This job has no {kind} to work on.')
+
+    def _tried(self, kind: str, given) -> tuple[bool, str]:
+        """Check a draft and say what was found. Nothing is kept and nothing is counted."""
+        _, spec = self._spec(kind)
+        problems = self._validate(spec, as_json(given, kind)[1])[0]
+        if problems:
+            return True, 'To put right before you hand it in:\n- ' + '\n- '.join(problems)
+        return True, (f'Nothing to put right. '
+                      + ('Hand it in with submit_outline.' if kind == 'outline' else
+                         'Preview it with preview_section before you hand it in.'))
+
+    @tool
+    def check_outline(self, outline):
+        """Check a draft of the outline. Nothing is kept."""
+        return self._tried('outline', outline)
+
+    @tool
+    def submit_outline(self, outline):
+        """Hand the outline in. It is checked the same way and kept when nothing is left
+        to put right."""
+        name, _ = self._spec('outline')
+        return self._hand_in(name, as_json(outline, 'outline')[1])
+
+    # --- a deck: how it is drawn ---
+
+    @staticmethod
+    def _digest(drawn) -> str:
+        return hashlib.sha256(json.dumps(drawn, sort_keys=True).encode('utf-8')).hexdigest()
+
+    @tool
+    def check_section(self, section):
+        """Compile a draft of the section without rendering it. Free."""
+        return self._tried('section', section)
+
+    @tool
+    def preview_section(self, section):
+        """Render a draft of the section and return a picture of every slide."""
+        _, spec = self._spec('section')
+        most, state = spec.get('previews') or deck.PREVIEWS, self._state()
+        used = state.get('previews', 0)
+        if used >= most:
+            raise Refusal(f'You have used all {most} previews. Hand in the version you last '
+                          'previewed, with submit_section.')
+        drawn, text = as_json(section, 'section')
+        problems, _, _, kept = self._validate(spec, text)
+        if problems:
+            return False, ('Nothing was rendered, and this did not use up a preview. Put '
+                           'these right first:\n- ' + '\n- '.join(problems))
+        build = self.folder / 'builds' / f'{used + 1}-{secrets.token_hex(3)}'
+        taken = self.folder / 'previews' / build.name
+        try:
+            self.slides().compile(_draft(self.folder / 'drafts', 'preview', kept),
+                                  spec['brand'], folder=build)
+            found = render(self.slides(), build, taken, spec)
+            slides = pictures(found, taken, self.folder / 'shown')
+        except WorkspaceError as refusal:
+            lines = [self._plainly(line) for line in said_no(refusal)]
+            return False, ('The slides compile but could not be rendered, and this did not '
+                           'use up a preview:\n- ' + '\n- '.join(lines))
+        finally:  # a build and a render hold a deck of several megabytes each
+            shutil.rmtree(build, ignore_errors=True)
+            shutil.rmtree(taken, ignore_errors=True)
+        home.write_json(self.folder / 'state.json', {
+            **self._state(), 'previews': used + 1, 'previewed': self._digest(drawn),
+            'shown': [{key: slide[key] for key in ('number', 'id', 'title')}
+                      for slide in slides]})
+        lines = [f'Preview {used + 1} of {most}.']
+        for slide in slides:
+            seen = '; '.join(f"{finding.get('severity')} {finding.get('code')}: "
+                             f"{finding.get('detail')}" for finding in slide['findings'])
+            lines.append(f"- Slide {slide['number']}, `{slide['id']}`. The renderer found: "
+                         + (self._plainly(seen) if seen else 'nothing'))
+        lines.append('The pictures follow in slide order. What the renderer found is a '
+                     'prompt to look, not approval: a slide with no finding is not '
+                     'thereby a good one.')
+        return Shown(True, '\n'.join(lines),
+                     [self.folder / 'shown' / f"{slide['number']}.png" for slide in slides])
+
+    @tool
+    def search_icons(self, words, limit=5):
+        """Search the brand's icons by a word or two."""
+        self._spec('section')
+        words = ' '.join(str(words).split())
+        if not words or len(words) > 80:
+            raise Refusal('Search with one or two plain words.')
+        found = self.brand().icons(words, min(max(1, whole(limit, 'limit')), ICONS))
+        if not found:
+            return True, (f'No icon matches "{words}". Every word has to match: try one '
+                          'plain noun.')
+        return True, (f'Icons for "{words}". Use an ID as the icon of an icon node:\n'
+                      + '\n'.join(f"- {icon.get('id')}: {icon.get('name')}"
+                                  for icon in found if isinstance(icon, dict)))
+
+    @tool
+    def submit_section(self, section, changed='', bothers=''):
+        """Hand the section in. It must be the version last previewed."""
+        name, spec = self._spec('section')
+        drawn, text = as_json(section, 'section')
+        state = self._state()
+        left = (spec.get('previews') or deck.PREVIEWS) - state.get('previews', 0)
+        if state.get('previewed') != self._digest(drawn):
+            if not state.get('previewed'):
+                raise Refusal('Preview the section first: what you hand in is what you '
+                              'last looked at.')
+            raise Refusal('This is not the version you last previewed, and it was not '
+                          'counted as a hand-in. Hand in exactly that version'
+                          + (f', or preview this one first: you have {left} '
+                             f'preview{"" if left == 1 else "s"} left.' if left > 0
+                             else '. You have no previews left.'))
+        accepted = self._hand_in(name, text)
+        if accepted[0]:
+            notes = [f'{label}: {said.strip()}' for label, said in (
+                ('What I changed after looking', changed), ('What still bothers me', bothers))
+                if isinstance(said, str) and said.strip()]
+            if notes:
+                _write(self.folder / 'accepted' / 'review.md',
+                       '\n'.join(notes)[:NOTES] + '\n')
+        return accepted
+
+    # --- a deck: what a reviewer sees ---
+
+    @tool
+    def look_at_slide(self, number):
+        """One slide as it was rendered, at full size."""
+        slides = self.job.get('look') or []
+        if not slides:
+            raise Refusal('This job has no rendered slides to look at.')
+        wanted = whole(number, 'number')
+        slide = next((slide for slide in slides if slide['number'] == wanted), None)
+        if slide is None:
+            raise Refusal('The slides you can look at are numbered '
+                          + ', '.join(str(slide['number']) for slide in slides) + '.')
+        picture(slide['image'])
+        state = self._state()
+        home.write_json(self.folder / 'state.json', {
+            **state, 'looked': sorted({*state.get('looked', []), wanted})})
+        return Shown(True, f"Slide {wanted}, `{slide['id']}`: \"{slide['title']}\".",
+                     [slide['image']])
+
+    def _review(self) -> dict:
+        review = self.job.get('review')
+        if not review:
+            raise Refusal('This job is not a review of a deck.')
+        return review
+
+    @tool
+    def submit_assessment(self, findings, weakest=None):
+        """Hand in every "no" of the review. It is recorded against this exact render."""
+        review = self._review()
+        self._allowed('assessment', 'The assessment')
+        unseen = [str(slide['number']) for slide in review['slides']
+                  if slide['number'] not in self._state().get('looked', [])]
+        if unseen:
+            raise Refusal('Look at every slide first. Not looked at yet: '
+                          + ', '.join(unseen) + '.')
+        given = as_json(findings if findings not in (None, '') else [], 'list of findings')[0]
+        named = as_json(weakest if weakest not in (None, '') else [], 'list of slides')[0]
+        if not isinstance(given, list) or not isinstance(named, list):
+            raise Refusal('findings and weakest are each a list.')
+        problems, kept = [], []
+        for finding in given:
+            found, why = deck.checked(finding, review['slides'])
+            kept += [found] if found else []
+            problems += [why] if why else []
+        ids = [slide['id'] for slide in review['slides']]
+        if len(named) > 3 or any(ident not in ids for ident in named):
+            problems.append('weakest names up to three slides of this deck by ID, the '
+                            'weakest first.')
+        recorded, said = Path(review['recorded']), ''
+        if not problems and recorded.is_file():
+            kept, named = (home.read_json(recorded, {}).get(key) or []
+                           for key in ('findings', 'weakest'))
+            said = (' An assessment was already recorded for this render, and a render '
+                    'takes only one, so that one stands.')
+        elif not problems:
+            problems = self._record(review, kept, named, recorded)
+        left = self._count('assessment', problems)
+        if problems:
+            return self._refused(problems, left)
+        home.write_json(self.folder / 'accepted' / 'assessment.json',
+                        {'findings': kept, 'weakest': named})
+        return True, (f'Recorded: {len(kept)} finding{"" if len(kept) == 1 else "s"}.{said} '
+                      'Now say which slides address each objective, with submit_coverage.')
+
+    def _record(self, review: dict, kept: list, named: list, recorded: Path) -> list[str]:
+        """Record an assessment with the slides tool, against the render it is of. Returns
+        what the tool refused in it."""
+        assessment = {'deckSha256': review['deck'], 'reviewer': 'independent',
+                      'weakest': named, 'findings': [
+                          {key: finding[key] for key in ('slide', 'question', 'severity',
+                                                         'note', 'fix')
+                           if finding[key] is not None} for finding in kept]}
+        path = _draft(self.folder / 'drafts', 'assessment',
+                      json.dumps(assessment, indent=2, ensure_ascii=False) + '\n')
+        try:
+            self.slides().critique(Path(review['preview']), path)
+        except WorkspaceError as refusal:
+            return [self._plainly(line) for line in said_no(refusal)]
+        home.write_json(recorded, {'findings': kept, 'weakest': named})
+        return []
+
+    @tool
+    def submit_coverage(self, coverage, reasons=''):
+        """Say which slides address each objective, from what the slides show."""
+        review = self._review()
+        self._allowed('coverage', 'The coverage')
+        given = as_json(coverage, 'coverage')[0]
+        wanted, most = list(review.get('objectives') or ()), len(review['slides'])
+        problems = []
+        if not isinstance(given, dict) or sorted(given) != sorted(wanted):
+            problems.append('Give every objective and nothing else: ' + ', '.join(wanted)
+                            + '.')
+        else:
+            problems += [f'{objective}: a list of slide numbers from 1 to {most}, or an '
+                         'empty list when no slide addresses it.'
+                         for objective, numbers in given.items()
+                         if not isinstance(numbers, list) or any(
+                             type(number) is not int or not 1 <= number <= most
+                             for number in numbers)]
+        left = self._count('coverage', problems)
+        if problems:
+            return self._refused(problems, left)
+        home.write_json(self.folder / 'accepted' / 'coverage.json', {
+            'objectives': {objective: sorted(set(given[objective])) for objective in wanted},
+            'reasons': str(reasons or '').strip()[:NOTES]})
+        return True, 'Kept.'
 
     # --- sources ---
 
@@ -1042,6 +1574,41 @@ TOOLS = [
     _described('submit_review', 'After your draft is accepted, give your own honest notes '
                'on it for the person who will review it: where it is weakest, what is '
                'missing, what to look at.', {'text': TEXT}, ['text']),
+    _described('check_outline', 'Check a draft of the outline. Returns what to put right. '
+               'Nothing is kept: use it until nothing is left to put right.',
+               {'outline': TEXT}, ['outline']),
+    _described('submit_outline', 'Hand the outline in, whole, as JSON text. It is checked '
+               'the same way and kept only when nothing is left to put right.',
+               {'outline': TEXT}, ['outline']),
+    _described('check_section', 'Compile a draft of your section, whole, as JSON text, '
+               'without rendering it. Returns every problem to put right. Free to use as '
+               'often as you need.', {'section': TEXT}, ['section']),
+    _described('preview_section', 'Compile and render your section and return a picture of '
+               'every slide, with what the renderer found. Slow, and limited in number.',
+               {'section': TEXT}, ['section']),
+    _described('search_icons', "Search the brand's icons by one or two plain words. "
+               'Returns the ID to use for each.', {'words': TEXT, 'limit': NUMBER},
+               ['words']),
+    _described('submit_section', 'Hand your section in. It must be exactly the version you '
+               'last previewed. Say what you changed after looking at the pictures, and '
+               'what still bothers you.',
+               {'section': TEXT, 'changed': TEXT, 'bothers': TEXT}, ['section']),
+    _described('look_at_slide', 'Look at one rendered slide at full size, by its number.',
+               {'number': NUMBER}, ['number']),
+    _described('submit_assessment', 'Hand in your review: one finding for each question '
+               'you answered no. It is recorded against this exact render.',
+               {'findings': {'type': 'array', 'items': {
+                   'type': 'object', 'properties': {
+                       'slide': TEXT, 'question': NUMBER,
+                       'severity': {'type': 'string', 'enum': list(deck.SEVERITIES)},
+                       'about': {'type': 'string', 'enum': list(deck.ABOUT)},
+                       'note': TEXT, 'fix': TEXT},
+                   'required': ['slide', 'question', 'severity', 'note']}},
+                'weakest': {'type': 'array', 'items': TEXT}}, ['findings']),
+    _described('submit_coverage', 'Say which slides address each objective, from what the '
+               'slides show: slide numbers for each objective, and an empty list where no '
+               'slide addresses it.',
+               {'coverage': {'type': 'object'}, 'reasons': TEXT}, ['coverage']),
     _described('save_source', 'Fetch a public web page or PDF, keep it, and return the '
                'start of its text. Only sources saved this way count as evidence.',
                {'url': TEXT}, ['url']),
@@ -1072,6 +1639,19 @@ EMPTY = {'resources/list': {'resources': []}, 'prompts/list': {'prompts': []},
          'resources/templates/list': {'resourceTemplates': []}, 'ping': {}}
 
 
+def shown(outcome) -> dict:
+    """A tool's answer as an agent is sent it: the text, then each picture it carries."""
+    content = [{'type': 'text', 'text': outcome[1]}]
+    try:
+        content += [{'type': 'image', 'mimeType': 'image/png',
+                     'data': base64.b64encode(picture(path)).decode('ascii')}
+                    for path in getattr(outcome, 'pictures', ())]
+    except (WorkspaceError, OSError) as failure:
+        return {'content': [{'type': 'text', 'text': f'A picture could not be shown '
+                             f'({failure}).'}], 'isError': True}
+    return {'content': content, 'isError': not outcome[0]}
+
+
 def answer(tools: WorkerTools, message) -> dict | None:
     """The reply to one message from an agent, or None when it expects none."""
     if not isinstance(message, dict) or message.get('id') is None:
@@ -1085,8 +1665,7 @@ def answer(tools: WorkerTools, message) -> dict | None:
     elif method == 'tools/list':
         result = {'tools': tools.offered()}
     elif method == 'tools/call':
-        ok, text = tools.call(params.get('name'), params.get('arguments'))
-        result = {'content': [{'type': 'text', 'text': text}], 'isError': not ok}
+        result = shown(tools.call(params.get('name'), params.get('arguments')))
     elif method in EMPTY:
         result = EMPTY[method]
     else:

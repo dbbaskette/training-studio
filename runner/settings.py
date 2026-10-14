@@ -1,4 +1,5 @@
-"""What this computer remembers for the runner: the agent to use by default, and the limits.
+"""What this computer remembers for the runner: the agent to use by default, the limits, and
+how a deck's previews are rendered.
 
 What a caller needs to know
 ---------------------------
@@ -11,6 +12,10 @@ What a caller needs to know
 - `step_seconds` is how long one worker may run. `training_dollars` is what one training
   may spend, where the agent reports spending, before it stops and asks. `parallel` is how
   many trainings work at once.
+- `previews` is how a deck's slides are rendered to look at: `local`, with LibreOffice on
+  this computer, or `drive`, through Google Drive. None until the person chooses.
+- `brand_skill` is where the brand skill to use is, when the person named one of those
+  found. None for the first that is found.
 - A value that makes no sense is refused with a sentence, not corrected silently.
 """
 from __future__ import annotations
@@ -27,6 +32,7 @@ SECONDS = (60, 7200)        # the shortest and longest time one worker may be gi
 DOLLARS = 1000              # the most one training may be allowed to spend
 PARALLEL = (1, 8)           # the fewest and most trainings that work at once
 MODEL = 100                 # characters in a model's name
+PREVIEWS = ('drive', 'local')   # how a deck's previews are rendered
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,8 @@ class Settings:
     step_seconds: int = 900
     training_dollars: float = 20.0
     parallel: int = 2
+    previews: str | None = None
+    brand_skill: str | None = None
 
     @property
     def limits(self) -> dict:
@@ -65,6 +73,20 @@ def check_model(model) -> str | None:
     return model
 
 
+def check_previews(how) -> str | None:
+    if how is not None and how not in PREVIEWS:
+        raise WorkspaceError('Previews are rendered one of these ways: '
+                             + ', '.join(PREVIEWS) + '.')
+    return how
+
+
+def check_place(place) -> str | None:
+    if place is not None and (not isinstance(place, str) or not place.strip()
+                              or len(place) > 2000 or '\0' in place):
+        raise WorkspaceError('Give the brand skill as one of those found on this computer.')
+    return place
+
+
 def number(value, label: str, least: float, most: float, whole: bool):
     """A limit a person typed, which must be a number in a sensible range."""
     plain = isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -81,7 +103,8 @@ def check(chosen: Settings) -> Settings:
         number(chosen.step_seconds, 'The time for one step, in seconds,', *SECONDS, True),
         number(chosen.training_dollars, 'What a training may spend, in dollars,', 0.01,
                DOLLARS, False),
-        number(chosen.parallel, 'How many trainings run at once', *PARALLEL, True))
+        number(chosen.parallel, 'How many trainings run at once', *PARALLEL, True),
+        check_previews(chosen.previews), check_place(chosen.brand_skill))
 
 
 def load() -> Settings:

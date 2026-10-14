@@ -20,7 +20,8 @@ from unittest import mock
 from urllib.parse import urlencode
 
 import helpers
-from runner_support import FORM, SCENARIO, StudioCase, asks, fails
+from runner_support import (CHOSEN, FORM, NO_BRAND_SKILL, SCENARIO, Brand, Slides, StudioCase,
+                            asks, fails, left)
 
 import computer
 import desk
@@ -34,8 +35,8 @@ GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
          '/api/documents', '/api/copies', '/api/share')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
-RUN_KEYS = ['agent', 'copies', 'deck', 'documents', 'finished', 'model', 'problem',
-            'question', 'sentence', 'spent', 'state', 'steps', 'workers']
+RUN_KEYS = ['agent', 'copies', 'deck', 'deck_left', 'documents', 'finished', 'model',
+            'outline', 'problem', 'question', 'sentence', 'spent', 'state', 'steps', 'workers']
 STEP_KEYS = ['attempts', 'dollars', 'error', 'id', 'kind', 'label', 'seconds', 'status']
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -244,7 +245,10 @@ class SetUpTests(FirstTimeCase):
         self.assertEqual(self.get('setup'), {
             'configured': False, 'workspace': None,
             'agent': {'default': 'claude', 'model': None},
-            'limits': {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 2}})
+            'limits': {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 2},
+            'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
+            'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
+                      'problem': NO_BRAND_SKILL}})
         said = self.post('trainings', FORM, 409)
         self.assertIn('No workspace is set up on this computer yet', said['error'])
         self.assertIn('No workspace is set up', self.post('share', {}, 409)['error'])
@@ -262,7 +266,10 @@ class SetUpTests(FirstTimeCase):
                           'folder': 'courses', 'branch': 'main', 'share_when': 'when-asked',
                           'shared': False, 'notice': None},
             'agent': {'default': 'codex', 'model': 'a-model'},
-            'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3}})
+            'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3},
+            'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
+            'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
+                      'problem': NO_BRAND_SKILL}})
         self.assertEqual(self.get('setup'), made)
         marker = json.loads((folder / 'courses' / 'hub.json').read_text())
         self.assertEqual((marker['tool'], marker['name'], marker['folder'], marker['branch']),
@@ -566,7 +573,7 @@ class StartTests(PageCase):
     def test_the_form_starts_a_training_and_its_run_at_once(self):
         made = self.post('trainings', {**FORM, 'levels': ['101', '201'], 'agent': 'codex',
                                        'model': 'a-model', 'brief_kind': 'competitive',
-                                       'deck_target': 'google', 'brand': 'Neutral',
+                                       'deck_target': 'google', 'brand': CHOSEN,
                                        'copies': ['google'], 'yoodli': True})
         root = self.space.training('rolling-restarts')
         self.assertEqual(made, {'path': str(root), 'id': 'rolling-restarts', 'gates': 8})
@@ -577,7 +584,7 @@ class StartTests(PageCase):
         self.assertEqual((status['levels'], status['approval'], status['gate']),
                          (['101', '201'], 'page', 'research-plan'))
         self.assertEqual(status['settings'], {
-            'approval': 'page', 'brand': 'Neutral', 'brief_kind': 'competitive',
+            'approval': 'page', 'brand': 'example-co/light', 'brief_kind': 'competitive',
             'copies': ['google'], 'deck_target': 'google',
             'stages': ['document', 'brief', 'deck', 'scenario', 'yoodli']})
         self.assertEqual(self.post('trainings', {'title': 'Health checks', 'topic': 'Health '
@@ -870,18 +877,18 @@ class DecideTests(PageCase):
         for name in ('research-plan', 'research', 'blueprint', 'document', 'brief'):
             self.approve(path, name)
         said = self.approve(path, 'scenario:main')
-        self.assertEqual(said['said'], f'Approved. {pipeline.DECK_LEFT}')
+        self.assertEqual(said['said'], f'Approved. {left(pipeline.DECK_LEFT)}')
         run = self.get('run', path=path)
-        self.assertEqual((run['state'], run['deck']), (
-            'done', {'says': pipeline.DECK_LEFT, 'artifact': 'deck'}))
+        self.assertEqual((run['state'], run['deck_left']), (
+            'done', {'says': left(pipeline.DECK_LEFT), 'artifact': 'deck'}))
         item = self.get('trainings')['trainings'][0]
         self.assertEqual((item['state'], item['run']['state'], item['sentence']),
-                         ('in-progress', 'done', pipeline.DECK_LEFT))
-        left = [stage['stage'] for stage in item['stages']
-                if stage['state'] not in ('done', 'left-out')]
-        self.assertEqual(left, ['deck', 'package'],
+                         ('in-progress', 'done', left(pipeline.DECK_LEFT)))
+        open_stages = [stage['stage'] for stage in item['stages']
+                       if stage['state'] not in ('done', 'left-out')]
+        self.assertEqual(open_stages, ['deck', 'package'],
                          'the deck is the only stage left besides the wrap-up')
-        said = self.post('decide', {'path': path, 'artifact': run['deck']['artifact'],
+        said = self.post('decide', {'path': path, 'artifact': run['deck_left']['artifact'],
                                     'decision': 'skip', 'note': 'No slides for this one.'})
         self.assertEqual(said['said'], 'This stage is left out. You can bring it back from '
                          'the training at any time. This training is finished, with 1 thing '
@@ -1166,7 +1173,8 @@ class WireTests(WireCase):
         status, headers, body = self.ask('/api/capabilities')
         self.assertEqual((status, json.loads(body)),
                          (200, {'runner': True, 'version': VERSION}))
-        self.assertEqual(headers['Content-Security-Policy'], "default-src 'self'")
+        self.assertEqual(headers['Content-Security-Policy'],
+                         "default-src 'self'; img-src 'self' blob:")
         self.assertEqual(self.ask('/api/capabilities', token=False)[0], 403)
         self.assertTrue(self.server.url.endswith(f'#token={self.server.token}'))
         self.assertNotIn(self.server.token, self.server.address)

@@ -1,8 +1,10 @@
-"""Setting this computer up for the runner: the workspace, the agent and the limits.
+"""Setting this computer up for the runner: the workspace, the agent, the limits and how a
+deck's previews are rendered.
 
 What a caller needs to know
 ---------------------------
-    setup.describe(engine)        the workspace, the default agent and the limits, as saved
+    setup.describe(engine)        the workspace, the default agent and the limits, as saved,
+                                  with what this computer has for previews and for a brand
     setup.check(sent)             whether a repository or a folder can be used; changes nothing
     wanted = setup.read(sent)     what the set-up screen sent, once it all makes sense
     setup.apply(engine, wanted)   set the workspace up, save the settings, and describe them
@@ -18,6 +20,12 @@ What a caller needs to know
   for again.
 - When to share is written `each-decision` or `when-asked` here; `gitstate` calls them
   `decision` and `asked`.
+- `previews` is the person's choice between LibreOffice on this computer (`local`) and
+  Google Drive (`drive`), with which of the two this computer can use, and the preview
+  files the runner has left in Drive. It never deletes one, so it lists them. `brand` is
+  the brand skill that was found and the brands it has, with every brand skill found
+  under `skills` as {'name', 'path', 'chosen'}; `brand_skill` names one of those paths to
+  use. Both are asked of the engine, which looks at this computer and reuses the look.
 """
 from __future__ import annotations
 
@@ -48,9 +56,13 @@ def describe(engine) -> dict:
         'name': space.name, 'repository': space.address, 'path': str(space.repo),
         'folder': space.folder, 'branch': space.branch, 'share_when': WHEN[space.share],
         **engine.shared()}
+    needs = engine.deck_needs()
     return {'configured': space is not None, 'workspace': found,
             'agent': {'default': chosen.agent, 'model': chosen.model},
-            'limits': chosen.limits}
+            'limits': chosen.limits,
+            'previews': {'how': chosen.previews, 'drive': needs['drive'],
+                         'local': needs['local'], 'left': engine.previews_left()},
+            'brand': {**needs['brand'], 'skills': engine.brand_skills()}}
 
 
 # --- what was sent -----------------------------------------------------------------------
@@ -262,7 +274,10 @@ def chosen(sent: dict) -> settings.Settings:
     model = sent['model'] if 'model' in sent else (kept.model if agent == kept.agent else None)
     wanted = {name: (limits or {}).get(name, getattr(kept, name))
               for name in ('step_seconds', 'training_dollars', 'parallel')}
-    return settings.check(replace(kept, agent=agent, model=model, **wanted))
+    previews = sent['previews'] if sent.get('previews') is not None else kept.previews
+    skill = sent['brand_skill'] if sent.get('brand_skill') is not None else kept.brand_skill
+    return settings.check(replace(kept, agent=agent, model=model, previews=previews,
+                                  brand_skill=skill, **wanted))
 
 
 def read(sent: dict) -> dict:
@@ -278,6 +293,7 @@ def read(sent: dict) -> dict:
     if when is not None and when not in SHARE:
         raise WorkspaceError('Sharing is one of: ' + ', '.join(SHARE) + '.')
     return {'repository': repository, 'path': whole(path) if path else None,
+            'brand_skill': sent.get('brand_skill'),
             'folder': folder, 'branch': branch, 'name': name,
             'share': SHARE[when] if when else None, 'settings': chosen(sent)}
 
@@ -289,6 +305,9 @@ def apply(engine, wanted: dict) -> dict:
     and when to share change.
     """
     repository, path, share = wanted['repository'], wanted['path'], wanted['share']
+    named = wanted.get('brand_skill')
+    if named is not None and named not in [skill['path'] for skill in engine.brand_skills()]:
+        raise WorkspaceError('Choose the brand skill from those found on this computer.')
     before = engine.workspace
     if not repository and not path:
         if share:
@@ -309,5 +328,6 @@ def apply(engine, wanted: dict) -> dict:
                 gitstate.local(path, wanted['folder'], wanted['branch'], wanted['name'],
                                share)
     settings.save(wanted['settings'])
+    engine.deck_needs(fresh=True)
     engine.resume()
     return describe(engine)
