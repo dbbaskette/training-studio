@@ -392,6 +392,18 @@ class RunnerTests(InstallerCase):
         state = json.loads((self.root / 'installation.json').read_text())
         self.assertEqual(state['runner'], str(self.root / 'current' / 'runner' / 'studio.py'))
 
+    def test_each_version_keeps_this_installer_and_the_pins_it_was_installed_with(self):
+        result = self.run_installer('install', '--yes')
+        staged = self.root / 'versions' / result['version']
+        # Beside the runner, where they are in a checkout too: the runner asks them when it
+        # starts whether the skills are in place, and brings a companion with them.
+        self.assertEqual((staged / 'installer' / 'install.py').read_bytes(),
+                         (helpers.REPO / 'installer' / 'install.py').read_bytes())
+        self.assertEqual(install.read_pins(staged / 'installer' / 'companions.json'),
+                         self.pins)
+        self.assertEqual(set(path.name for path in (staged / 'installer').iterdir()),
+                         {'install.py', 'companions.json'})
+
     def test_the_runner_finds_the_helper_in_a_checkout_and_in_an_installed_version(self):
         result = self.run_installer('install', '--yes')
         staged = self.root / 'versions' / result['version']
@@ -822,6 +834,42 @@ class CompanionTests(InstallerCase):
         self.assertEqual(self.fetched('harness-slides'), [])
         self.assertTrue(any('Node 20 or newer is needed by the companion skills; found '
                             'v18.19.0' in note for note in result['notes']))
+
+    @unittest.skipUnless(NODE, 'a companion installs itself with Node')
+    def test_companions_brings_only_the_companions_for_the_assistants_installed_for(self):
+        self.run_installer('install', '--yes', '--target', 'claude')
+        before = (os.readlink(self.root / 'current'),
+                  (self.root / 'installation.json').read_text())
+        result = self.run_installer('companions', '--companions', 'install')
+        self.assertEqual(result['harnesses'], ['claude'])
+        for name, version in zip(COMPANIONS, ('0.8.0', '0.13.1')):
+            self.assertEqual(result['companions'][name]['state'], 'installed', result['notes'])
+            self.assertEqual(result['companions'][name]['found'], {'claude': version})
+        state = json.loads((self.root / 'installation.json').read_text())
+        self.assertEqual({name: one['commit'] for name, one in state['companions'].items()},
+                         {name: self.pins[name]['commit'] for name in COMPANIONS})
+        self.assertEqual(os.readlink(self.root / 'current'), before[0])
+        self.assertEqual({key: value for key, value in state.items() if key != 'companions'},
+                         json.loads(before[1]))
+        again = self.run_installer('companions', '--companions', 'install')
+        self.assertEqual([one['state'] for one in again['companions'].values()],
+                         ['left alone', 'left alone'])
+
+    def test_companions_asks_about_each_and_refuses_underneath_a_runner_unless_it_asks(self):
+        self.run_installer('install', '--yes')
+        nobody = self.run_installer('companions')
+        self.assertEqual([one['state'] for one in nobody['companions'].values()],
+                         ['waiting', 'waiting'])
+        self.assertTrue(any('because no one was there to answer' in note
+                            for note in nobody['notes']))
+        self.assertEqual(self.fetched('harness-slides'), [])
+        (self.root / 'runner.pid').write_text(f'{os.getpid()}\n')   # this test is "serving"
+        refusal = self.run_installer('companions', '--companions', 'install', expect=1)
+        self.assertIn('Training Studio is open on this computer', refusal['error'])
+        asked = self.run_installer('companions', '--companions', 'skip', '--while-open')
+        self.assertEqual(asked['harnesses'], ['claude', 'codex'])
+        self.assertEqual([one['state'] for one in asked['companions'].values()],
+                         ['waiting', 'waiting'])
 
     def test_a_companions_installer_is_only_told_of_a_home_that_is_not_the_persons_own(self):
         pin, checkout = self.pins['harness-slides'], self.base / 'kept'

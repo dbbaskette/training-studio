@@ -32,6 +32,10 @@ What a caller needs to know
   computer's own notifications when no page is open, whether this computer has a way to,
   and a sentence when it has none. It is sent as true or false, and cannot be turned on
   where there is no way.
+- `updates` is {'look'}: whether the runner looks online, at most once a day, for newer
+  releases. It is sent as `look_for_updates`, true or false. `upkeep` is what the runner
+  found when it last looked at Training Studio and its skills on this computer, or None
+  where it does not look (see `upkeep.Upkeep.report`).
 """
 from __future__ import annotations
 
@@ -66,6 +70,9 @@ def describe(engine) -> dict:
     can, problem = engine.notifier.can()
     return {'configured': space is not None, 'workspace': found,
             'notify': {'on': chosen.notify, 'can': can, 'problem': problem},
+            'updates': {'look': chosen.look_for_updates},
+            'upkeep': keeping.report() if (keeping := getattr(engine, 'upkeep', None))
+            else None,
             'agent': {'default': chosen.agent, 'model': chosen.model,
                       'effort': chosen.effort},
             'limits': chosen.limits,
@@ -288,9 +295,11 @@ def chosen(sent: dict) -> settings.Settings:
     previews = sent['previews'] if sent.get('previews') is not None else kept.previews
     skill = sent['brand_skill'] if sent.get('brand_skill') is not None else kept.brand_skill
     notify = sent['notify'] if sent.get('notify') is not None else kept.notify
+    look = sent['look_for_updates'] if sent.get('look_for_updates') is not None \
+        else kept.look_for_updates
     return settings.check(replace(kept, agent=agent, model=model, effort=effort,
-                                  previews=previews,
-                                  brand_skill=skill, notify=notify, **wanted))
+                                  previews=previews, brand_skill=skill, notify=notify,
+                                  look_for_updates=look, **wanted))
 
 
 def read(sent: dict) -> dict:

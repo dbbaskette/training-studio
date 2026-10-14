@@ -61,14 +61,15 @@ def subcommand(args: tuple[str, ...]) -> str | None:
     return args[at] if at < len(args) else None
 
 
-def run(repo: Path, *args: str, input: str | None = None) -> subprocess.CompletedProcess:
+def run(repo: Path, *args: str, input: str | None = None,
+        timeout: float = TIMEOUT) -> subprocess.CompletedProcess:
     """Run git in `repo` without prompting, and without reaching a repository above it.
 
     git has no terminal to ask on: it runs in a session of its own, and ssh is told not
     to ask for a passphrase or about a host key, unless the user chose their own ssh
     command. `input` is what git reads, when it reads anything. A command that cannot
-    start or does not finish comes back as a failed one, so a slow remote is handled like
-    an unreachable one.
+    start or does not finish in `timeout` seconds comes back as a failed one, so a slow
+    remote is handled like an unreachable one.
     """
     env = {key: value for key, value in os.environ.items() if key not in INHERITED}
     env.update(GIT_TERMINAL_PROMPT='0', GIT_EDITOR='true',
@@ -79,9 +80,9 @@ def run(repo: Path, *args: str, input: str | None = None) -> subprocess.Complete
         return subprocess.run(['git', *args], cwd=repo, env=env, capture_output=True,
                               stdin=subprocess.DEVNULL if input is None else None,
                               input=input, encoding='utf-8', errors='replace',
-                              timeout=TIMEOUT, start_new_session=True)
+                              timeout=timeout, start_new_session=True)
     except subprocess.TimeoutExpired:
-        problem = f'git {subcommand(args)} did not finish in {TIMEOUT} seconds'
+        problem = f'git {subcommand(args)} did not finish in {timeout:g} seconds'
     except OSError as failure:
         if shutil.which('git') is None:
             raise WorkspaceError('A hub needs git, which is not installed. Install it and '

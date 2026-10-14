@@ -172,6 +172,7 @@ runner/
   slides.py                 the harness-slides command line, called from Python
   brand.py                  a brand skill on this computer, called from Python
   team.py                   sharing a workspace: the driver, notifications, publishing, bringing in
+  upkeep.py                 on start: the installer's links put back, the companions, the releases
   briefs/                   what a worker is told for each kind of job
 ```
 
@@ -212,6 +213,11 @@ No test starts a real agent, the real harness-research, the slides tool or a bra
 - **A sentence a person reads is the runner's.** That a training was taken, or was changed on two computers, is `notice` on the run, the list and the status. The page shows it and keeps nothing of its own about it, so it is the same after a reload.
 - **Two people are two data folders.** `TeamCase` in `tests/runner_support.py` gives each person a data folder and a git identity against one bare repository, and `tests/test_runner_team.py` drives two engines through it. `TeamScreenTests` in `tests/test_desk.py` drives the page against answers written out in the runner's shapes; when a shape changes, both change.
 - **The installer brings the runner.** `installer/install.py` copies `runner/` beside the helper's scripts in each installed version, where `runner/__init__.py` finds them, and writes the launchers. Each companion is fetched at the commit `installer/companions.json` pins and installed by its own installer; `install.py pin` moves a pin.
+- **The runner asks the installer.** Each installed version also holds `installer/install.py` and the `companions.json` it was installed with, the same layout as a checkout's. `runner/upkeep.py` loads that file and uses its own `read_state`, `replace_link`, `companion_found`, `wanting` and `write_launchers`. It does not use a second copy of them.
+  - Its Update runs `install.py companions --while-open` as a command of its own, under `companion.supervise`.
+  - The online look is `git ls-remote --tags` through `hub.run`, at most once a day. Its result is kept in `updates.json` in the data folder.
+  - `tests/test_runner_upkeep.py` installs into a temporary home against the installer tests' stand-in companions and bare repositories with tags.
+  - `studio serve` and `studio status` are the only places an `Upkeep` is made, so no other test reads a real home or asks the network.
 
 ## What is not yet verified
 
