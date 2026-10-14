@@ -62,6 +62,15 @@ What a caller needs to know
   answers `upkeep`. It is 409 while a training here is working, while an update is in
   hand, and when there is nothing to bring. The page asks for it only after the person
   said yes in its confirmation.
+- `upkeep.versions` has a row each for Training Studio and its companions, with what is
+  installed, the newest, the pins and a state. `POST /api/upgrade` with {"version"}
+  installs that newer Training Studio beside this one, in the background, and answers
+  `upkeep`; it is 409 from a checkout, while a training is working, while anything else is
+  in hand, and when `version` is not the newest known. Once it is installed, `POST
+  /api/restart` with {} stops the runner, which then opens the newer version on the same
+  port with the same key; it is 409 while a training is working. `POST /api/versions` with
+  {"dismiss": key} stops Home showing the versions until a newer one is out. The page asks
+  for each only after the person said yes.
 - `POST /api/adopt` with {"path"} copies a training this computer knows, started in a
   conversation, into the workspace, and answers {"path", "id"} of the copy.
 - Every request that passes the rules tells the engine a page is open, which is how the
@@ -111,6 +120,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
@@ -129,7 +139,7 @@ READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
           '/api/publish', '/api/adopt', '/api/fetch', '/api/delete', '/api/companions',
-          '/api/asset')
+          '/api/asset', '/api/upgrade', '/api/restart', '/api/versions')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 ASSET = '/api/asset'
@@ -387,6 +397,16 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.engine.fetch())
         if path == '/api/companions':
             return desk.as_json(HTTPStatus.OK, {'upkeep': self.update()})
+        if path == '/api/upgrade':
+            version = desk.text(sent, 'version')
+            return desk.as_json(HTTPStatus.OK, {'upkeep': self.keeper().upgrade(
+                self.working(), version)})
+        if path == '/api/restart':
+            return desk.as_json(HTTPStatus.OK, {'upkeep': self.keeper().restart(
+                self.working())})
+        if path == '/api/versions':
+            return desk.as_json(HTTPStatus.OK, {'upkeep': self.keeper().dismiss(
+                desk.text(sent, 'dismiss'))})
         if path == '/api/delete':
             title = desk.text(sent, 'title')
             return desk.as_json(HTTPStatus.OK, self.engine.delete(
@@ -418,13 +438,20 @@ class RunnerPage(desk.Page):
     def update(self) -> dict:
         """Bring the companion skills that are missing or older, unless a training here is
         working: a step in hand keeps using the skill it started with."""
+        return self.keeper().update(self.working())
+
+    def keeper(self):
+        """What looks after the skills here, or a refusal where nothing does."""
         keep = getattr(self.engine, 'upkeep', None)
         if keep is None:
             raise desk.Refusal(HTTPStatus.CONFLICT, 'This runner does not look after the '
                                'skills on this computer. Run the installer to update them.')
-        working = any((self.engine.brief(root) or {}).get('state') == 'working'
-                      for root in self.engine.trainings())
-        return keep.update(working)
+        return keep
+
+    def working(self) -> bool:
+        """Whether any training on this computer is working now."""
+        return any((self.engine.brief(root) or {}).get('state') == 'working'
+                   for root in self.engine.trainings())
 
     def known(self, sent: dict) -> str:
         """The training a change names, once this computer knows it and a run drives it."""
@@ -532,13 +559,19 @@ class RunnerPage(desk.Page):
 class Studio(desk.Desk):
     """The runner's server: the desk's, with a page that also answers for the runner."""
 
-    def __init__(self, engine: engines.Engine, port: int = 0):
+    def __init__(self, engine: engines.Engine, port: int = 0, token: str | None = None):
         super().__init__(port, page=lambda chosen: RunnerPage(chosen, engine))
         self.engine = engine
+        if token:   # a runner opened again in its own place keeps the key its page holds
+            self.page.token = self.token = token
 
     def serve(self) -> None:
         self.engine.serving()
         super().serve()
+
+    def leave(self, after: float = 0.5) -> None:
+        """Stop serving shortly, once what is being answered has gone out."""
+        threading.Timer(after, self.server.shutdown).start()
 
     def start(self) -> None:
         self.engine.serving()

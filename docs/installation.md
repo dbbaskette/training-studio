@@ -89,7 +89,7 @@ A companion you said no to, skipped, or were not there to be asked about is name
 sh installer/install.sh --companions install
 ```
 
-To bring only the companions and change nothing else, use `companions` in place of `install`. Each is still offered one at a time. The runner's "Update the skills" runs this from the installed version, once you have said yes on the page. It is the one change the installer makes while the runner is open, and the runner refuses it while a training is working.
+To bring only the companions and change nothing else, use `companions` in place of `install`. Each is still offered one at a time. The runner's "Update the skills" runs this from the installed version, once you have said yes on the page. Besides the runner's own upgrade, it is the one change the installer makes while the runner is open, and the runner refuses it while a training is working.
 
 ### Why this is safe, and where it stops
 
@@ -141,9 +141,11 @@ sh installer/install.sh install --dry-run
 
 ## Update
 
-Once a day the runner checks whether a newer Training Studio is out. If one is, Home says so, with the command to run; see [keeping it current](runner.md#keeping-it-current). Close Training Studio if it is open. Get the newer version of this repository and run the installer again. The new copy is installed beside the old one, the runner with it, and the links move to it. Trainings you have already made are not touched; they live in your own folders.
+Once a day the runner checks whether a newer Training Studio is out. If one is, Home says so with an "Upgrade" button; see [keeping it current](runner.md#keeping-it-current). After your yes, the runner fetches that version and runs its own installer, then asks you to restart. The new copy is installed beside the old one, the runner with it, and the links move to it. Trainings you have already made are not touched; they live in your own folders.
 
-The installer never changes anything while the runner is working. It says so and stops. Close the runner's window, or press Ctrl-C in it, and run the installer again. This holds for going back a version and for removing too.
+You can also update by hand: close Training Studio, get the newer version of this repository and run the installer again. An install made before version 0.21.0 has to be updated this way once, since its runner cannot upgrade itself yet. One made before 0.19.0 also shows no versions at all, since it has no installer beside its runner to ask.
+
+The installer never changes anything while the runner is working. It says so and stops. Close the runner's window, or press Ctrl-C in it, and run the installer again. This holds for going back a version and for removing too. The one exception is the runner's own upgrade: it asks the newer version's installer, with the hidden `--while-open`, to install beside the version that is running and to move nothing else.
 
 ## Go back a version
 

@@ -678,16 +678,21 @@ def pin(path: Path, name: str, revision: str) -> dict:
 def install(source: Path, home: Path, root: Path, harnesses: list[str], link_only: bool,
             replace: bool, bootstrap: Path = BOOTSTRAP, runner: Path = RUNNER,
             pins: dict | None = None, agree=None, declined: str | None = None,
-            pins_file: Path | None = None) -> dict:
+            pins_file: Path | None = None, while_open: bool = False) -> dict:
     """Install the skill and the runner, link the skill into each assistant's skill folder,
     write the ways to open the runner, and bring the companion skills the person agrees to.
-    `pins_file` is where `pins` were read from, which the installed copy keeps."""
+    `pins_file` is where `pins` were read from, which the installed copy keeps.
+
+    `while_open` is for the runner's own upgrade: a new version is laid beside the one it
+    runs from, which is left whole, and `current` moves. A link to a checkout is never made
+    while it is open."""
     verify(source)
     if not (runner / 'studio.py').is_file():
         raise InstallError(f'The runner is missing: {runner}')
     if not link_only and not bootstrap.is_file():
         raise InstallError(f'The installer entry file is missing: {bootstrap}')
-    not_while_serving(home)
+    if link_only or not while_open:
+        not_while_serving(home)
     blocked = blocked_links(home, harnesses)
     if blocked and not replace:
         raise InstallError('These exist and are not links, so they were left alone:\n  '
@@ -1105,7 +1110,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='say what an install would do; change nothing')
     parser.add_argument('--json', action='store_true', help='print the result as JSON')
     parser.add_argument('--revision', help=argparse.SUPPRESS)   # with pin: a tag or commit
-    # With companions: the runner asks, while it is open, having seen no training working.
+    # With companions, or install of a new version: the runner asks, while it is open,
+    # having seen no training working.
     parser.add_argument('--while-open', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--home', type=Path, default=Path.home(), help=argparse.SUPPRESS)
     parser.add_argument('--root', type=Path, help=argparse.SUPPRESS)
@@ -1153,7 +1159,7 @@ def main(argv: list[str] | None = None) -> int:
                 agree, declined = agreement(args.companions)
                 result = install(source, home, root, harnesses, args.link, args.replace,
                                  pins=pins, agree=agree, declined=declined,
-                                 pins_file=pins_path)
+                                 pins_file=pins_path, while_open=args.while_open)
             elif args.action == 'rollback':
                 result = rollback(root, home)
             elif args.action == 'pin':

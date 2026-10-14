@@ -6,8 +6,11 @@ WireTests talks to a real server on a local port and is skipped where that is no
 Nothing starts an agent, looks at the real computer or touches the network.
 """
 import base64
+import contextlib
+import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import threading
@@ -40,7 +43,8 @@ LISTED = [{'name': 'gpt-6-sol', 'label': 'GPT-6-Sol (gpt-6-sol)', 'family': None
            'about': None, 'default_level': None, 'levels': ['low', 'medium', 'high']}]
 GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
-         '/api/documents', '/api/copies', '/api/share', '/api/companions', '/api/asset')
+         '/api/documents', '/api/copies', '/api/share', '/api/companions', '/api/asset',
+         '/api/upgrade', '/api/restart', '/api/versions')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
 RUN_KEYS = ['agent', 'clash', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'effort',
             'finished', 'kept', 'last_shared', 'mine', 'model', 'notice', 'outline', 'problem',
@@ -169,7 +173,9 @@ class RuleTests(PageCase):
                        '/api/documents': {'path': self.path, 'action': 'add',
                                           'name': 'handbook.txt', 'content': 'V29yZHMu'},
                        '/api/copies': {'path': self.path},
-                       '/api/share': {}, '/api/companions': {},
+                       '/api/share': {}, '/api/companions': {}, '/api/restart': {},
+                       '/api/upgrade': {'version': '99.0.0'},
+                       '/api/versions': {'dismiss': 'training-studio 99.0.0'},
                        '/api/asset': {'path': self.path, 'asset': 'console_view',
                                       'content': 'iVBORw0KGgo=', 'alt': 'A console',
                                       'source': 'Course author'}}
@@ -803,6 +809,20 @@ class Keeper:
             raise WorkspaceError(self.refuse)
         return {'stand_in': True, 'update': {'state': 'running'}}
 
+    def upgrade(self, working: bool, version: str) -> dict:
+        self.asked.append(('upgrade', working, version))
+        if self.refuse:
+            raise WorkspaceError(self.refuse)
+        return {'stand_in': True}
+
+    def restart(self, working: bool) -> dict:
+        self.asked.append(('restart', working))
+        return {'stand_in': True}
+
+    def dismiss(self, key: str) -> dict:
+        self.asked.append(('dismiss', key))
+        return {'stand_in': True}
+
 
 class UpkeepTests(PageCase):
     """What the runner found of Training Studio and its skills, and the update of the
@@ -847,6 +867,36 @@ class UpkeepTests(PageCase):
                                         ('update', True)],
                          'a training working in the background is said to be working')
 
+    def test_upgrading_restarting_and_dismissing_are_asked_of_what_looks_after_the_skills(self):
+        for endpoint, sent in (('upgrade', {'version': '99.0.0'}), ('restart', {}),
+                               ('versions', {'dismiss': 'training-studio 99.0.0'})):
+            self.assertIn('does not look after the skills on this computer',
+                          self.post(endpoint, sent, 409)['error'])
+        keeper = self.engine.upkeep = Keeper()
+        self.assertEqual(self.post('upgrade', {}, 400)['error'], 'Give version as text.')
+        self.assertEqual(self.post('versions', {'dismiss': 3}, 400)['error'],
+                         'Give dismiss as text.')
+        for endpoint, sent in (('upgrade', {'version': '99.0.0'}), ('restart', {}),
+                               ('versions', {'dismiss': 'training-studio 99.0.0'})):
+            self.assertEqual(self.post(endpoint, sent), {'upkeep': {'stand_in': True}})
+        keeper.refuse = 'A training on this computer is working now.'
+        self.assertEqual(self.post('upgrade', {'version': '99.0.0'}, 409)['error'],
+                         keeper.refuse)
+        keeper.refuse, seen = None, []
+
+        def looks(tools, job):
+            seen.append(self.post('upgrade', {'version': '99.0.0'}))
+            seen.append(self.post('restart', {}))
+            self.workers.research_plan(tools, job)
+
+        self.workers.then('research-plan', looks)
+        self.started()
+        self.assertEqual(keeper.asked, [
+            ('upgrade', False, '99.0.0'), ('restart', False),
+            ('dismiss', 'training-studio 99.0.0'), ('upgrade', False, '99.0.0'),
+            ('upgrade', True, '99.0.0'), ('restart', True)],
+            'a training working in the background is said to be working')
+
     def test_checking_this_computer_again_looks_at_the_skills_again(self):
         keeper = self.engine.upkeep = Keeper()
         seen = {'checked_at': '2026-10-14T09:00:00Z', 'ready': True, 'assistants': ['Codex'],
@@ -856,6 +906,98 @@ class UpkeepTests(PageCase):
             self.assertEqual(keeper.asked, [], 'reading the last look looks at nothing')
             self.post('computer', {})
         self.assertEqual(keeper.asked, ['again'])
+
+
+class WholeUpgradeTests(PageCase):
+    """An older Training Studio, installed into a temporary home, upgraded through the page
+    to the newer one its repository has. The repository is a local bare one holding the
+    parts of this checkout an install needs, at a higher version. Nothing is fetched from
+    anywhere else, and the home is the test's own."""
+
+    PARTS = ('skills/training-studio', 'runner', 'installer', 'bootstrap', 'guidance')
+
+    def git(self, cwd: Path, *args: str) -> str:
+        return subprocess.run(['git', '-c', 'user.name=A Test', '-c',
+                               'user.email=test@example.com', *args], cwd=cwd, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def repository(self, version: str) -> Path:
+        """Training Studio's repository, released at `version`, with a tag and on main."""
+        work, bare = self.base / 'training-studio-work', self.base / 'training-studio.git'
+        for part in self.PARTS:
+            shutil.copytree(helpers.REPO / part, work / part,
+                            ignore=shutil.ignore_patterns('__pycache__'))
+        (work / 'skills' / 'training-studio' / 'VERSION').write_text(f'{version}\n')
+        self.git(self.base, 'init', '-q', '-b', 'main', str(work))
+        self.git(work, 'add', '-A')
+        self.git(work, 'commit', '-q', '-m', f'Release {version}')
+        self.git(work, 'tag', f'v{version}')
+        self.git(self.base, 'init', '-q', '--bare', str(bare))
+        self.git(work, 'push', '-q', '--tags', str(bare), 'main')
+        return bare
+
+    def test_an_older_install_is_upgraded_from_the_page_and_asks_for_a_restart(self):
+        from test_installer import install
+        from runner import upkeep
+        home_dir = self.base / 'home'
+        (home_dir / '.claude' / 'skills').mkdir(parents=True)
+        root = home_dir / '.local' / 'share' / 'training-studio'
+        older = self.base / 'older'
+        shutil.copytree(helpers.SKILL, older, ignore=shutil.ignore_patterns('__pycache__'))
+        (older / 'VERSION').write_text('0.1.0\n')
+        printed = io.StringIO()
+        with mock.patch.object(install, 'PLATFORM', 'linux'), \
+                mock.patch.object(install, 'prerequisites', lambda *a, **k: {'notes': []}), \
+                contextlib.redirect_stdout(printed):
+            self.assertEqual(install.main(['install', '--yes', '--companions', 'skip', '--json',
+                                           '--home', str(home_dir), '--source', str(older)]),
+                             0, printed.getvalue())
+        first = json.loads(printed.getvalue())['version']
+        running = root / 'versions' / first
+        source = self.repository('99.0.0')
+        with mock.patch.dict(os.environ, {'TRAINING_STUDIO_SOURCE': str(source),
+                                          'HOME': str(home_dir), 'PATH': '/usr/bin:/bin'}):
+            keep = self.engine.upkeep = upkeep.Upkeep(
+                home_dir=home_dir, root=root, installer=running / 'installer' / 'install.py')
+            keep.check()
+            self.assertTrue(keep.look())
+            versions = self.get('setup')['upkeep']['versions']
+            own = versions['rows'][0]
+            self.assertEqual((own['installed'], own['newest'], own['state']),
+                             ('0.1.0', '99.0.0', 'update'))
+            self.assertTrue(versions['upgrade']['offered'])
+            self.assertEqual(self.post('upgrade', {'version': '98.0.0'}, 409)['error'],
+                             'The newest Training Studio is now 99.0.0, not 98.0.0. Look at it '
+                             'again before you upgrade.')
+            shown = self.post('upgrade', {'version': '99.0.0'})['upkeep']['versions']
+            # Running, unless it was quick enough to have finished already.
+            self.assertIn(shown['upgrade']['state'], ('running', 'restart'))
+            for thread in list(keep._threads):
+                thread.join(300)
+            upgrade = self.get('setup')['upkeep']['versions']['upgrade']
+            self.assertEqual((upgrade['state'], upgrade['restart']), ('restart', True),
+                             upgrade['says'])
+            self.assertEqual(upgrade['says'], 'Training Studio 99.0.0 is installed, checked '
+                             'and in place. Restart to use it. This page comes back by itself.')
+            current = Path(os.readlink(root / 'current'))
+            self.assertTrue(current.name.startswith('99.0.0-'))
+            self.assertEqual((current / 'VERSION').read_text().strip(), '99.0.0')
+            self.assertTrue((running / 'runner' / 'studio.py').is_file(),
+                            'the version this runner runs from is left whole')
+            state = install.read_state(root)
+            self.assertEqual(state['history'], [first, current.name])
+            self.assertEqual(os.readlink(home_dir / '.claude' / 'skills' / 'training-studio'),
+                             str(root / 'current'))
+            self.assertFalse((home_dir / '.agents').exists(), 'only the assistant it had')
+            self.assertTrue(install.ours(root / 'studio'))
+            self.assertEqual(list(root.glob('*.pending*')), [])
+
+            left = []
+            keep.leave = lambda: left.append('left')
+            restarted = self.post('restart', {})['upkeep']['versions']['upgrade']
+        self.assertEqual(restarted['state'], 'restarting')
+        self.assertEqual((keep.restarting, left),
+                         (['/bin/sh', str(root / 'studio'), 'serve'], ['left']))
 
 
 class RunTests(PageCase):

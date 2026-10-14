@@ -34,7 +34,7 @@ From a copy of the repository, without installing, it is `python3 runner/studio.
 
 The window prints one line with a link, and opens it for you. The part of the link after `#` is a key, and the page does not work without it. If you open the page yourself, use the link exactly as it is printed. The runner works for as long as that window is open. Press Ctrl-C in it, or close it, to end. Nothing is lost: start it again and every training carries on from where its files say it is.
 
-One runner serves on a computer at a time. The installer will not update, go back a version or remove while it is open: close it first.
+One runner serves on a computer at a time. The installer will not update, go back a version or remove while it is open: close it first. The one exception is the runner's own upgrade, below, which installs a new version beside the one it runs.
 
 ## Keeping it current
 
@@ -49,10 +49,22 @@ Each time the runner starts, and each time you press "Check this computer again"
 - A companion's own links belong to its own installer, so the runner does not put those back. A missing one is brought with Update instead.
 
 **Newer releases.** Once a day, the runner asks where Training Studio and each companion are kept which releases there are. It reads only their names, with `git ls-remote`, without a terminal and with a short time limit. Nothing is downloaded or run.
-- When Training Studio has a newer release, Home says so with the command that installs it. Close Training Studio before you run it.
-- A companion released after the version this Training Studio was made with arrives with Update, once a Training Studio made with it is installed.
-- A look that fails is said in one line on the Status screen, and is tried again a day later.
+- A look that fails is said in one line on the Status screen, and is tried again a day later. What was known before is still shown, with when it was known.
 - **Turning it off.** "Look for updates once a day", in Settings, is on until you turn it off. With it off, the runner asks nothing online. It still puts links back and compares the companions, since neither needs the network.
+
+**Versions.** The Status screen has a row each for Training Studio, harness-research and harness-slides: what is installed, the newest, what this Training Studio is pinned to, and whether each is up to date, has an update, is missing or is not known yet. "See the versions", in Settings, goes there.
+- Training Studio's newest is its newest release tag (`vX.Y.Z`). Until it has one, it is the version on `main` when guidance was last fetched.
+- A companion's newest is its newest release tag. It is only ever installed at a version a Training Studio is pinned to. Which versions the newest Training Studio is pinned to is read from the copy of `main` the guidance is fetched into, so it needs no network.
+- A companion released beyond that pin is shown as newer than Training Studio supports yet, and nothing is offered for it.
+- Where the companion's tool is found, its row also says which version the tool itself reports, and what harness-slides says it can do.
+
+**Upgrading Training Studio.** When a newer Training Studio is out, Home says so with the versions and "Upgrade" ("Upgrade everything" when skills come with it). "Dismiss" hides that until a newer version is out. It counts as one thing beside Home, and the browser tells you once if its notifications are on.
+- Nothing happens until you say yes in the sheet. The sheet says what is fetched and what happens next.
+- After your yes, the runner fetches that version from Training Studio's repository into a temporary folder, with the same isolated git the guidance uses, and runs that version's own installer. The installer checks it, installs it beside the version you have and moves `current` to it. The version you have stays where it is, so the runner keeps running from it and trainings carry on.
+- It is refused while a training on this computer is working.
+- Then the page says "Restart to use version X". Restart stops the runner and opens the newer one with the installer's `studio` command, at the same address. The page comes back by itself. A runner with no such command asks you to open Training Studio again.
+- The companion skills the newer version is made with come next: after the restart, Home offers them with "Update the skills", for one more yes.
+- A runner started from a copy of the repository, such as `python3 runner/studio.py serve`, shows the versions but upgrades nothing: run `git pull` in that copy, then start it again.
 
 **Guidance.** Guidance is still fetched from `main` when a training starts. The Status screen says which revision new trainings get.
 
