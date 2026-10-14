@@ -54,6 +54,11 @@ def bundled() -> Path:
 
 
 def helper() -> str:
+    """How to run the helper: the installer's `training` command when that is what ran this,
+    since it finds a Python new enough; otherwise training.py itself."""
+    command = os.environ.get('TRAINING_STUDIO_HELPER')
+    if command and Path(command).is_file():
+        return command
     return str(RUNTIME / 'scripts' / 'training.py')
 
 

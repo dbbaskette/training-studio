@@ -25,12 +25,14 @@ A teammate who only wants to make trainings needs nothing else: install, open Tr
 5. Links the skill into each assistant it finds:
    - Claude Code: `~/.claude/skills/training-studio`
    - Codex: `~/.agents/skills/training-studio`
-6. Writes the ways to open the runner. See [Open Training Studio](#open-training-studio).
+6. Writes the ways to open the runner, and the command your assistant runs the helper with. See [Open Training Studio](#open-training-studio) and [The helper's command](#the-helpers-command).
 7. Offers each companion skill that is missing or older than the one Training Studio was made with. See [The companion skills](#the-companion-skills).
-8. Reports what else is needed and is not there, each with how to get it:
-   - git, and whether it knows your name and email. The runner keeps trainings in a git repository and records who decided what.
+8. Reports what else is needed and is not there, each with how to get it and the exact command where there is one. What stops the most comes first:
    - Claude Code or Codex. Codex can be asked whether it is signed in. Claude Code cannot be asked without starting it, so the report reminds you to run `claude` once.
-   - Node 20 or newer, which the companion skills run on.
+   - git. The runner keeps trainings in a git repository.
+   - harness-research, without which research cannot run; Node 20 or newer, which the companion skills run on; then harness-slides.
+   - Whether git knows your name and email. The runner records who decided what.
+   - A `python3` older than 3.11, as on a stock Mac. Nothing needs changing: the commands the installer writes find a newer Python themselves.
    - A brand skill, for slide decks. A brand skill is your organisation's own. It is not installed from here, and without one everything is made except the deck.
    - `pandoc`, which matters only if you ask for Word copies.
 
@@ -49,6 +51,16 @@ sh ~/.local/share/training-studio/studio
 The page works only with its key, which the runner makes each time it starts. The key goes to your own terminal and your own browser and is never written to a file. That is why the runner is started by you, in a window of yours, and not in the background. If the same line is run by something that is not a terminal, such as an assistant, the address is printed without the key and only your browser is given it.
 
 Both launchers open whichever version is current, so updating or going back a version needs no change to them. A file of your own with the same name is never overwritten.
+
+## The helper's command
+
+Your assistant drives a small helper program. The installer writes a command for it beside the runner's:
+
+```bash
+~/.local/share/training-studio/training status
+```
+
+It looks for Python 3.11 or newer in the same places the installer does, so it works where `python3` is older, as on a stock Mac. Like the launchers, it follows the current version, and a linked checkout gets one too. The installed skill finds its guidance with `training guidance start`. You need it yourself only to open [the page](desk.md).
 
 ## The companion skills
 
@@ -70,6 +82,12 @@ Training Studio's installer therefore does not lay a companion out itself. A cop
 4. What it left is checked: each assistant you chose must now have the skill, at that version, with exactly the entry that was checked.
 
 A companion that is already there at the pinned version or newer is left alone and not fetched. One that is there some other way, so that its version cannot be read, is also left alone, and the report says so.
+
+A companion you said no to, skipped, or were not there to be asked about is named in the report, with why it was not fetched and the command that brings it. From this repository's folder that is:
+
+```bash
+sh installer/install.sh --companions install
+```
 
 ### Why this is safe, and where it stops
 
@@ -137,7 +155,7 @@ This points the links at the version that was installed before the current one, 
 sh installer/install.sh uninstall
 ```
 
-This removes the links and the launchers the installer placed. It leaves alone any link that has since been pointed somewhere else. The installed copies stay in `~/.local/share/training-studio/versions`, and the fetched copies of the companions in `~/.local/share/training-studio/companions`; delete those folders yourself if you no longer want them.
+This removes the links, the launchers and the helper's command the installer placed. It leaves alone any link that has since been pointed somewhere else. The installed copies stay in `~/.local/share/training-studio/versions`, and the fetched copies of the companions in `~/.local/share/training-studio/companions`; delete those folders yourself if you no longer want them.
 
 The companion skills stay installed, because other tools may use them. Each one's own README says how it is managed.
 
@@ -155,7 +173,7 @@ To work on the skill and have your assistant use your changes straight away, lin
 sh installer/install.sh install --link
 ```
 
-Nothing is copied, the launchers open the checkout's own runner, and there is nothing to roll back to.
+Nothing is copied, the launchers open the checkout's own runner, the helper's command runs the checkout's own helper, and there is nothing to roll back to.
 
 ## Options
 

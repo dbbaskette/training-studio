@@ -5,7 +5,7 @@ description: Turn a topic into researched training in the current directory, wit
 
 # Training Studio
 
-One directory is one training: the directory the harness was launched in. The helper is `training.py` in the installed skill's `scripts` folder; a bootstrap entry gives its full path as `helper`. Run it with `python3`. Never read its source.
+One directory is one training: the directory the harness was launched in. The helper is `training.py`. Run it as the bootstrap entry's `helper` command or `~/.local/share/training-studio/training`, never with `python3`. Never read its source.
 
 ## Start
 
