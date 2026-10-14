@@ -7,23 +7,23 @@ Every stage ends at a gate. Nothing downstream starts until the user approves.
 1. Run `training.py check` and `training.py status`.
 2. Fix any failed check that is yours to fix, and check again.
 3. Review the content yourself: does the prose teach what its coverage comment claims, does each assessment ask for the behaviour its objective names, and does the research support every factual statement? Say what you found and label it as your judgment. A passing check does not answer these.
-4. Show the user, briefly, and append the same to `reviews/<artifact>.md`, writing `:` and `@` as `-`:
+4. `training.py checkpoint --gate <artifact> --question "<the question you will ask>" --next "Waiting for approval of <artifact>"`, so a resumed session asks again. It returns `review`, the file for step 5.
+5. Show the user, briefly, and append the same to `review`:
    - the file to open,
    - what it contains, in five lines or fewer,
    - each check that failed or could not run, by name and reason, and the count that passed,
    - anything stale, and what changed upstream,
    - open gaps and limitations.
-5. Offer the choices: approve, revise (they say what), rebuild, or skip the stage.
-6. `training.py checkpoint --gate <artifact> --question "<the question you asked>" --next "Waiting for approval of <artifact>"`, so a resumed session asks again.
+6. Offer the choices: approve, revise (they say what), rebuild, or skip the stage.
 
 ## Decide
 
 If `status` shows `approval: page`, the user decides on the page, not here: follow the desk reference.
 
-- **Approve.** Only on a clear yes from the user, in chat, about this artifact. Run `training.py approve <artifact>`, then `training.py checkpoint --stage <next stage> --next "<next step>"`.
+- **Approve.** Only on a clear yes from the user, in chat, about this artifact. Run `training.py approve <artifact>`. Once its stage is finished, the training moves on by itself; `next_step` says what comes next.
 - **Revise or rebuild.** Write the new version to a scratch file outside the directory, save it with `training.py save <artifact> --from <file>`, check, and present again. A file another tool writes in place is saved as its stage reference says.
 - **Stale.** Say so at the gate. The user either has it rebuilt or accepts it as it is: `training.py approve <artifact> --accept-stale "<their reason>"`. The reason is recorded. Accepting one artifact approves nothing below it.
-- **Skip.** `training.py skip <stage> --reason "<their reason>"`.
+- **Skip.** `training.py skip <stage> --reason "<their reason>"`. Skipping the current stage moves on too.
 
 An approval covers the content and what it was built from. Rebuilding against changed inputs needs approval again, even if the text came out the same.
 

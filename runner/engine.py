@@ -1955,7 +1955,7 @@ class Engine:
             ahead = found.next.step
             if found.next.kind in WORK and ahead.stage != found.session['stage']:
                 workspace.checkpoint(root, stage=ahead.stage, level=self._level(ahead))
-            self._commit(root, outcome.get('next_step') or 'a decision was made on the page')
+            self._commit(root, outcome.get('said') or 'a decision was made on the page')
         return True
 
     def changed(self, path, what: str) -> bool:

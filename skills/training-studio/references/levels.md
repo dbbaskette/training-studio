@@ -23,10 +23,7 @@ Levels are independent: editing one never makes another stale. A scenario file a
 2. Draft the blueprint for every level before any is approved, and present them together. Overlap and gaps between levels show only here.
 3. Then finish one level at a time, lowest first: document, brief, deck, scenarios.
 
-Stage files end with a checkpoint written for a plain training. With levels, use these where they differ:
-
-- After every blueprint is approved: `training.py checkpoint --no-question --stage document --level 101 --next "Write the 101 learner guide"`.
-- After a level's scenario gate, if a level remains: the same command with the next level. After the last level, go on to `--stage package`.
+`approve` keeps this order itself: once every blueprint is approved it moves to the lowest level's document, after a level's last stage to the next level, and after the last level to the package.
 
 One `README.md` covers the whole training, at the top. `deck-handoff.md` sits in the level's folder, and each level's deck is its own `harness-slides` task, as the deck-handoff reference describes.
 
@@ -38,6 +35,6 @@ One `README.md` covers the whole training, at the top. `deck-handoff.md` sits in
 
 ## Adding a level later
 
-`training.py checkpoint --levels 101,301` adds 301 and leaves 101 as it is. A plain training cannot be given levels; it needs a new directory.
+`training.py checkpoint --add-level 301` adds 301 and leaves 101 as it is. A training past its blueprints goes back to the blueprint stage for 301. A level with work in it is never dropped. A plain training cannot be given levels; it needs a new directory.
 
 If the new level needs more research, the top-up changes the shared research. Every existing level's blueprint and brief then show as stale. For a level the new findings do not touch, ask the user, then accept each as it is: `training.py approve blueprint@101 --accept-stale "<their reason>"`, and the same for `brief@101`. That level's document, deck and scenarios then return to approved by themselves, because their own inputs did not change.

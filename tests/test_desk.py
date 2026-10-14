@@ -804,8 +804,9 @@ class DecisionTests(PageCase):
         self.assertIn('You can close this page.', outcome['said'])
         report = self.cli('status')
         self.assertEqual((report['artifacts']['blueprint'], report['gate'],
-                          report['pending_question'], report['next_step']),
-                         ('approved', None, None, 'The blueprint was approved on the page.'))
+                          report['pending_question'], report['stage'], report['next_step']),
+                         ('approved', None, None, 'document', 'Write the learner guide'))
+        self.assertEqual(outcome['decided']['said'], 'The blueprint was approved on the page.')
         record = json.loads((self.root / '.training-studio' / 'session.json').read_text())
         self.assertEqual(record['artifacts']['blueprint']['approved']['by'], 'page')
         self.assertEqual((record['events'][-1]['event'], record['events'][-1]['by']),

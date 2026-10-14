@@ -23,7 +23,7 @@ A failed guidance fetch or a blocked network is handled by that skill's rules. R
 
 Afterwards a change to any of the three returns research to `draft` and makes everything built from it stale. Never edit `research-report.md`.
 
-Then `training.py checkpoint --no-question --stage blueprint --next "Draft the blueprint"` and read the blueprint reference.
+Then read the blueprint reference.
 
 ## Keeping research current
 
