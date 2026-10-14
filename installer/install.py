@@ -1125,7 +1125,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.action == 'pin' and not (args.companion and args.revision):
             raise InstallError('Name the companion and its revision: '
-                               'pin harness-slides --revision v0.14.0')
+                               'pin harness-slides --revision v0.14.1')
         if args.action != 'pin' and args.companion:
             raise InstallError(f'{args.companion} is one word too many.')
         pins = read_pins(pins_path)

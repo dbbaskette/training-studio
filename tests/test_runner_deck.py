@@ -26,6 +26,7 @@ import workspace
 from runner import brand as brand_skill
 from runner import briefs, deck, page, pipeline, settings, worker_tools
 from runner import slides as slides_tool
+from stand_ins import slides as slides_stand_in
 from workspace import WorkspaceError
 
 MAJOR = {'slide': 'what-it-does', 'question': 3, 'severity': 'major',
@@ -2086,9 +2087,226 @@ class AssetTests(DeckCase):
         self.assertNotIn('assets', self.view(root)['deck'] or {})
 
 
+class AdoptionTests(DeckCase):
+    """What Harness Slides 0.14.1 lists beyond 0.14.0, used where the slides tool lists it,
+    and the way before it where it does not. Each is tried both ways: `listed` is what the
+    tool says it has, and a name taken out of it plays a build without that one."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides.design = self.slides.keeps = self.slides.judges = True
+        self.slides.have['local'] = True
+        self.slides.listed = set(slides_stand_in.CURRENT)
+
+    def without(self, *names: str) -> None:
+        self.slides.listed -= set(names)
+
+    def called(self, name: str) -> list[tuple]:
+        return [call for call in self.slides.calls if call[0] == name]
+
+    def test_what_an_approved_design_still_wants_is_said_by_the_tool_that_reads_it(self):
+        said = {}
+        for title, older in (('Rolling restarts', False), ('Rolling restarts again', True)):
+            if older:
+                self.without('assets-approved-candidates')
+            self.workers.design_said = with_assets(runner_support.designed(OUTLINE))
+            root = self.begin(title=title)
+            view = self.drawn(root)
+            self.assertEqual(view['state'], 'waiting')
+            project = str(root / pipeline.DESIGNS)
+            checks = [call for call in self.called('asset_check') if call[1] == project]
+            self.assertEqual(checks[-1][2:], () if older else (f'design={project}',))
+            said[older] = view['problem']['what']
+        self.assertEqual(said[True], said[False], 'the same words either way')
+        self.assertIn('Slide `what-it-does` needs the screenshot "The restart in the console" '
+                      '(Instances replaced in turn). Supply it on this page.', said[True])
+
+    def test_an_icon_is_named_by_its_library_id_where_the_tool_takes_one(self):
+        design = runner_support.designed(OUTLINE)
+        design['slides'][1]['asset']['candidates'][0].update(ref='icon-server',
+                                                             refType='library-id')
+        self.workers.design_said = design
+        searched = []
+        found = self.brand.icons
+        self.brand.icons = lambda words, limit=5: searched.append(words) or found(words, limit)
+        root = self.begin()
+        self.drawn(root)
+        job, spec = [(job, spec) for kind, job, spec in self.workers.jobs
+                     if kind == 'outline'][-1]
+        self.assertEqual(job.guidance, briefs.guidance('deck-outline', design=True, icons=True))
+        self.assertTrue(spec['artifacts']['outline']['icons'])
+        self.assertIn('## Icons by their exact ID', job.guidance)
+        proposed = self.called('design_propose')
+        self.assertTrue(proposed and all(call[-1].startswith('brand=') for call in proposed))
+        self.assertEqual(pipeline.recorded(root, None)['icon_instance']['ref'], 'icon-server')
+        self.assertEqual(searched, [], 'an icon named by its ID is not searched for')
+        # The tool before it takes no library ID, so neither the writer nor the tool is told.
+        self.without('design-icon-ids')
+        self.workers.design_said = runner_support.designed(OUTLINE)
+        root = self.begin(title='Rolling restarts again')
+        self.drawn(root)
+        job, spec = [(job, spec) for kind, job, spec in self.workers.jobs
+                     if kind == 'outline'][-1]
+        self.assertEqual(job.guidance, briefs.guidance('deck-outline', design=True))
+        self.assertNotIn('icons', spec['artifacts']['outline'])
+        self.assertFalse(self.called('design_propose')[-1][-1].startswith('brand='))
+        self.assertEqual(searched, ['server'], 'a free name is found in the library')
+
+    def test_a_recorded_icon_is_placed_by_its_asset_id_where_the_tool_can(self):
+        self.workers.placing = {'what-it-does': [
+            {'type': 'icon', 'id': 's1_instance', 'asset': 'icon_instance'}]}
+        root = self.begin()
+        self.drawn(root)
+        start = self.built(root)['start']
+        self.assertEqual(start['icons'], 'asset')
+        brief = (root / 'work' / 'deck' / start['folder'] / 'given' / 'section-1.md').read_text()
+        for told in ('Place each by the asset ID it is recorded as',
+                     '"type": "icon", "id": "<your ID>", "asset": "<asset ID>"',
+                     '- An instance: recorded as `icon_instance`, the icon `icon-server`, on'):
+            self.assertIn(told, brief)
+        spec = [spec for kind, _, spec in self.workers.jobs if kind == 'section'][0]
+        self.assertEqual(spec['artifacts']['section']['assets']['icons'], 'asset')
+        drawn = self.built(root)['sections']['section-1']
+        self.assertIn('icon_instance', drawn['assets'], 'what it draws is fingerprinted')
+        compiled = root / 'work' / 'deck' / self.built(root)['rounds'][-1]['compiled']
+        report = json.loads((compiled / 'compose-report.json').read_text())
+        self.assertEqual([(entry['asset'], entry['kind']) for entry
+                          in report['inputs']['assets']], [('icon_instance', 'icon')])
+        # The tool before it places an icon only by its library ID.
+        self.without('compose-icon-assets')
+        self.workers.placing = None
+        root = self.begin(title='Rolling restarts again')
+        self.drawn(root)
+        start = self.built(root)['start']
+        self.assertNotIn('icons', start)
+        brief = (root / 'work' / 'deck' / start['folder'] / 'given' / 'section-1.md').read_text()
+        self.assertIn('Use each ID as the `icon` of an icon node', brief)
+        self.assertNotIn('"asset": "<asset ID>"}`. `search', brief)
+
+    def test_every_slides_packet_comes_in_one_call_where_the_tool_gives_them(self):
+        prompts = {}
+        for title, older in (('Rolling restarts', False), ('Rolling restarts again', True)):
+            if older:
+                self.without('review-packets')
+            self.slides.calls.clear()
+            root = self.begin(title=title)
+            self.drawn(root)
+            self.assertEqual(workspace.status(root)['gate'], 'deck')
+            made = self.built(root)['rounds'][-1]
+            folder = root / 'work' / 'deck' / made['folder']
+            prompts[older] = [packet['slide'] for packet
+                              in json.loads((folder / 'packets.json').read_text())]
+            self.assertEqual((len(self.called('review_packets')),
+                              len(self.called('review_slide'))),
+                             (0, len(OUTLINE['slides']) + 1) if older else (1, 1),
+                             'the one left is the check of the receipts before it is kept')
+            self.assertEqual(made['deck'], workspace.sha256_file(folder / 'review' /
+                                                                 'deck.pptx'))
+            self.assertEqual(made['file'], (folder / 'review' / 'deck.pptx').relative_to(
+                root / 'work' / 'deck').as_posix())
+        self.assertEqual(prompts[True], prompts[False], 'the reviewer is told the same')
+
+    def test_a_review_is_rendered_through_drive_where_previews_go_and_the_tool_can(self):
+        self.slides.have['local'] = False   # no LibreOffice: previews go through Drive
+        self.without('review-google-renderer')
+        root = self.begin()
+        view = self.drawn(root)
+        self.assertEqual(view['state'], 'stopped')
+        self.assertIn('rendering it on this computer, and it cannot', view['problem']['what'])
+        self.slides.listed.add('review-google-renderer')
+        view = self.engine.act(root, 'retry')
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'),
+                         view.get('problem'))
+        [prepared] = [call for call in self.called('review_prepare')
+                      if 'renderer=google' in call]
+        self.assertEqual(prepared[-1], f'file={self.slides.files[-1]}',
+                         "the deck's one file in Drive is written again")
+        self.assertEqual(self.slides.reviewed, [self.slides.files[-1]])
+
+    def test_an_assessment_leaves_its_sources_to_the_slide_where_the_tool_takes_them(self):
+        root = self.begin()
+        self.drawn(root)
+        self.assertEqual({'sources' in check for slide in self.slides.assessed[-1]['slides']
+                          for check in slide['checks']}, {False})
+        record = json.loads((root / 'work' / 'deck' / self.built(root)['rounds'][-1]['preview']
+                             / 'review.json').read_text())
+        self.assertEqual(record['creativeAssessment']['slides'][1]['checks'][0]['sources'],
+                         ['O1'], 'the tool took the slide its own')
+        self.without('review-sources-from-slide')
+        root = self.begin(title='Rolling restarts again')
+        self.drawn(root)
+        self.assertEqual({'sources' in check for slide in self.slides.assessed[-1]['slides']
+                          for check in slide['checks']}, {True})
+
+    def test_a_deck_is_put_to_the_person_with_its_findings_and_their_approval_sent(self):
+        reason = 'The second label wraps onto three lines.'
+        self.workers.found = [[{**DRAWING, 'criterion': 'technical-fit', 'severity': 'minor',
+                                'reason': reason}]]
+        root = self.begin()
+        self.drawn(root)
+        presented = self.record(root)['deck']['']['presented']
+        question = presented['question']
+        self.assertEqual((question['findings'], question['options'][0], presented['deck']),
+                         (1, 'Approve these slides with the findings listed',
+                          workspace.sha256_file(root / 'deck.pptx')))
+        project = pipeline.place(root, None, pipeline.DESIGNS)
+        status = self.slides.design_status(project)
+        self.assertEqual(([found['detail'] for found in status['renderedFindings']],
+                          status['renderedAcceptance']), ([reason], False))
+        # A refusal by the tool keeps the core from recording the approval.
+        self.slides.refuse['design_respond'] = ['Rendered review changed; present current '
+                                                'output']
+        with self.assertRaisesRegex(desk.Refusal, 'did not take your approval of the deck'):
+            self.decide(root, 'deck')
+        self.assertEqual(workspace.status(root)['artifacts']['deck'], 'draft')
+        del self.slides.refuse['design_respond']
+        self.decide(root, 'deck')
+        self.assertEqual(workspace.status(root)['artifacts']['deck'], 'approved')
+        sent = self.slides.replies[-1]
+        self.assertEqual((sent['questionId'], sent['decision'], sent['feedback']),
+                         (question['id'], 'approve',
+                          'Approve these slides with the findings listed'))
+        self.assertTrue(self.slides.design_status(project)['renderedAcceptance'])
+        self.assertTrue(self.record(root)['deck']['']['presented']['answered'])
+        # The tool before it presents nothing, and only the outline's answer is ever sent.
+        self.without('design-present-findings')
+        self.slides.replies.clear()
+        root = self.begin(title='Rolling restarts again')
+        self.drawn(root)
+        self.assertIsNone(self.record(root)['deck']['']['presented'])
+        self.decide(root, 'deck')
+        self.assertEqual(len(self.slides.replies), 1)
+
+    def test_an_intent_is_handed_in_as_written_where_the_tool_ignores_key_order(self):
+        def section(tools, job):
+            made = drawn(tools.job['artifacts']['section'])
+            for slide in made['slides']:    # copied with its keys in another order
+                slide['intent'] = json.loads(json.dumps(slide['intent'], sort_keys=True))
+            made = json.dumps(made)
+            assert tools.preview_section(made)[0]
+            assert tools.submit_section(made, 'Nothing.', 'The second slide.')[0]
+
+        orders = {}
+        for title, older in (('Rolling restarts', False), ('Rolling restarts again', True)):
+            if older:
+                self.without('canonical-digests')
+            self.workers.section = section
+            root = self.begin(title=title)
+            self.drawn(root)
+            self.assertEqual(workspace.status(root)['gate'], 'deck')
+            kept = json.loads((root / 'work' / 'deck' / self.built(root)['sections'][
+                'section-1']['file']).read_text())
+            orders[older] = list(kept['slides'][0]['intent'])
+        approved = approved_plan()['slides'][1]['intent']
+        self.assertEqual((orders[False], orders[True]), (sorted(approved), list(approved)))
+
+
 class CompatibleTests(DeckCase):
     """A slides tool as released, 0.13.1, with no design session, and trainings that were
-    already under way when a newer tool came."""
+    already under way when a newer tool came. Rows V10, V11 and V12 of the state-transition
+    matrix in docs/superpowers/plans/2026-10-14-visual-teaching-in-decks.md: a deck begun
+    without a design carries on as it began, is drawn again from one only when the person
+    asks, and a new deck waits for a tool that has what it needs."""
 
     def test_a_tool_without_a_design_session_puts_the_words_alone_to_the_person(self):
         root = self.begin()
@@ -2170,6 +2388,130 @@ class CompatibleTests(DeckCase):
         self.assertIn('which the slides tool on this computer cannot keep. Update '
                       'harness-slides', view['problem']['what'])
         self.assertTrue((root / pipeline.DESIGN).exists(), 'what was approved is kept')
+
+    # --- rows V10, V11 and V12: a newer slides tool, and decks begun before it ---
+
+    def test_visual_10_upgrade_preserves_existing_work(self):
+        self.workers.then('section', *[fails()] * 6)
+        root = self.begin()
+        self.assertEqual(self.drawn(root)['state'], 'failed', 'approved, and still drawing')
+        workspace.pin(root, 'harness-slides', 'deck', '0.13.1')
+        pins, kept = workspace.load(root)['pins'], self.record(root)['deck']['']
+        start = self.built(root)['start']
+        # Harness Slides 0.14.1 is installed, with everything it lists, and looked at.
+        self.slides.design = self.slides.keeps = self.slides.judges = True
+        self.slides.have['local'] = True
+        self.slides.listed = set(slides_stand_in.CURRENT)
+        self.slides.calls.clear()
+        self.engine.look_again()
+        self.assertEqual(self.record(root)['deck'][''], kept, 'nothing changes by itself')
+        view = self.engine.act(root, 'retry')
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'),
+                         view.get('problem'))
+        self.assertEqual({key: self.record(root)['deck'][''].get(key)
+                          for key in ('outline', 'approved')},
+                         {key: kept.get(key) for key in ('outline', 'approved')})
+        now = self.built(root)['start']
+        self.assertEqual((now['folder'], now['design'], 'review' in now, 'assets' in now),
+                         (start['folder'], None, False, False), 'drawn as it was begun')
+        self.assertEqual([call[0] for call in self.slides.calls if call[0].startswith(
+            ('design', 'review', 'asset', 'preview_design'))], [])
+        self.assertEqual(view['redesign'], [{'level': None, 'artifact': 'deck',
+                                             'label': workspace.label('deck'), 'may': True,
+                                             'why': None}], 'offered, and never done for them')
+        self.assertEqual(self.to_end(root), ['deck', 'scenario:main'])
+        self.assertEqual(workspace.status(root)['artifacts']['deck'], 'approved')
+        self.assertEqual(workspace.load(root)['pins'], pins, 'its pins are its own')
+        self.assertEqual(self.record(root)['deck']['']['approved'], kept['approved'])
+
+    def test_visual_11_explicit_redesign_migrates(self):
+        root = self.begin()
+        self.drawn(root)    # drawn without a design, and saved: the deck waits at its gate
+        old, saved = self.record(root)['deck'][''], (root / 'deck.pptx').read_bytes()
+        said = (root / pipeline.OUTLINE).read_text()
+        others = {name: state for name, state in workspace.status(root)['artifacts'].items()
+                  if name != 'deck'}
+        # A tool that lacks what a new deck needs cannot draw it from a design.
+        self.slides.lacking = ['compose-review']
+        self.engine.deck_needs(fresh=True)
+        [offered] = self.view(root)['redesign']
+        self.assertFalse(offered['may'])
+        self.assertIn(slides_tool.NAMES['compose-review'], offered['why'])
+        with self.assertRaisesRegex(WorkspaceError, 'only where this computer can make one'):
+            self.engine.redesign(root, None)
+        # One that can is installed: nothing happens until the person asks.
+        self.slides.lacking, self.slides.design = [], True
+        self.engine.look_again()
+        self.assertEqual(self.record(root)['deck'][''], old)
+        view = self.engine.redesign(root, None)
+        self.assertTrue(any('draw the slide deck again from a design, as asked on the page'
+                            in line for line in self.log()))
+        shown = view['outline']
+        self.assertEqual((shown['waiting'], bool(shown['design'])), (True, True))
+        kept = self.record(root)['deck']['']
+        [history] = kept['history']
+        self.assertEqual({key: history[key] for key in ('outline', 'approved', 'saved')},
+                         {key: old[key] for key in ('outline', 'approved', 'saved')})
+        self.assertEqual((root / history['folder'] / 'outline.json').read_text(), said)
+        self.assertEqual((root / 'deck.pptx').read_bytes(), saved, 'readable until replaced')
+        job = [job for kind, job, _ in self.workers.jobs if kind == 'outline'][-1]
+        self.assertEqual(job.guidance, briefs.guidance('deck-outline', design=True))
+        self.assertIn(pipeline.REDESIGNED, job.task)
+        self.assertIn('The earlier draft:\n\n' + said.rstrip('\n'), job.task)
+        self.assertEqual({name: state for name, state
+                          in workspace.status(root)['artifacts'].items() if name != 'deck'},
+                         others, 'nothing else changes')
+        # Approved, it is drawn from its design, and the deck it replaces is kept as history.
+        view = self.engine.outline(root, None, 'approve', seen=shown['sha256'],
+                                   design=shown['design']['revision'])
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'),
+                         view.get('problem'))
+        self.assertTrue(self.built(root)['start']['design'])
+        self.assertNotEqual((root / 'deck.pptx').read_bytes(), saved)
+        self.assertEqual(workspace.history_file(root, 'deck', old['saved']['sha256'],
+                                                '.pptx').read_bytes(), saved)
+        self.assertNotIn('redesign', self.record(root)['deck'][''])
+        self.assertEqual(self.view(root)['redesign'], [])
+        with self.assertRaisesRegex(WorkspaceError, 'not one drawn without a design'):
+            self.engine.redesign(root, None)
+
+    def test_visual_12_compatibility_refresh(self):
+        self.slides.lacking = ['design-schema-2', 'design-batch', 'json-refusals',
+                               'compose-review']
+        needs = self.engine.deck_needs(fresh=True)
+        names = [slides_tool.NAMES[name] for name in self.slides.lacking]
+        self.assertEqual(needs['lacks'], names)
+        for words in (*names, f'Update Harness Slides to {slides_tool.RELEASE} or newer from '
+                      'Versions on the Status screen', 'A deck already begun carries on'):
+            self.assertIn(words, needs['update'])
+        self.assertEqual(needs['missing'], [], 'a deck already begun has all it needs')
+        [item] = [item for item in needs['items'] if item['id'] == 'deck-slides']
+        self.assertEqual((item['state'], item['fix'], item['versions'], item['facts'][1]),
+                         ('problem', needs['update'], True,
+                          {'label': 'What a new deck needs', 'state': 'problem',
+                           'detail': 'missing ' + ', '.join(names)}))
+        root = self.begin()
+        self.to_end(root)
+        view = self.view(root)
+        self.assertEqual(view['deck_left']['says'], left(pipeline.DECK_LEFT, needs['update']))
+        self.assertEqual(self.kinds().count('outline'), 0, 'no new deck is begun without it')
+        # A tool with what a new deck needs is installed, and the person checks again.
+        self.slides.lacking, self.slides.design = [], True
+        self.engine.look_again()
+        view = self.view(root)
+        self.assertEqual((view['deck_left'], view['outline']['waiting'],
+                          bool(view['outline']['design'])), (None, True, True),
+                         'the deck waiting on it is begun, with its design')
+        [item] = [item for item in self.engine.deck_needs()['items']
+                  if item['id'] == 'deck-slides']
+        self.assertEqual((item['state'], item['versions']), ('ok', False))
+
+    def test_a_brand_skill_that_cannot_export_a_brand_for_a_deck_is_said_so(self):
+        self.brand.refuse['contracts'] = ['Unknown command: contract.']
+        needs = self.engine.deck_needs(fresh=True)
+        [item] = [item for item in needs['items'] if item['id'] == 'deck-brand']
+        self.assertEqual((item['state'], item['facts'][1]['state']), ('problem', 'problem'))
+        self.assertIn('it has no `contract export` and `contract check`', needs['missing'][0])
 
 
 class TroubleTests(DeckCase):
@@ -2674,6 +3016,25 @@ class DesignPageTests(PageCase):
         self.assertEqual(self.record(root)['deck']['']['approved']['design']['revision'],
                          shown['design']['revision'])
 
+    def test_a_deck_drawn_without_a_design_is_drawn_again_from_one_only_when_asked(self):
+        self.slides.design = False
+        root = self.begin()
+        self.drawn(root)
+        self.slides.design = True
+        run = self.get('run', path=str(root))
+        self.assertEqual(run['redesign'], [{'level': None, 'artifact': 'deck',
+                                            'label': workspace.label('deck'), 'may': True,
+                                            'why': None}])
+        self.assertIn('Give level as text', self.post('redesign', {'path': str(root),
+                                                                   'level': 3}, 400)['error'])
+        run = self.post('redesign', {'path': str(root), 'level': None})
+        self.assertEqual((run['outline']['waiting'], bool(run['outline']['design']),
+                          run['redesign']), (True, True, []))
+        self.assertIn('not one drawn without a design',
+                      self.post('redesign', {'path': str(root)}, 409)['error'])
+        self.assertEqual(self.post('redesign', {'path': str(self.base)}, 403)['error'],
+                         'That folder is not a training this computer knows.')
+
 
 class AssetPageTests(PageCase):
     """A deck waiting for a picture: the run lists what its design uses, and the person
@@ -2763,6 +3124,17 @@ class BriefTests(JobCase):
                          beyond.replace('\n' + briefs.read('deck-repair-beyond'), '', 1))
         with self.assertRaises(WorkspaceError):
             briefs.guidance('deck-section', repair=True, beyond=True)
+
+    def test_the_writer_of_a_design_names_icons_by_their_ids_only_where_the_tool_takes_them(self):
+        exact = briefs.guidance('deck-outline', design=True, icons=True)
+        self.assertEqual(exact, briefs.guidance('deck-outline', design=True).replace(
+            '\n## Hand back\n', '\n' + briefs.read('deck-design-icons') + '\n## Hand back\n'))
+        for told in ('`search_icons`', '`"refType": "library-id"`',
+                     'A picture or a screenshot is still named by what it shows'):
+            self.assertIn(told, exact)
+        self.assertLess(exact.index('## Icons by their exact ID'), exact.index('## Hand back'))
+        with self.assertRaisesRegex(WorkspaceError, 'are told of its design'):
+            briefs.guidance('deck-outline', icons=True)
 
     def test_the_outline_writer_proposes_the_design_only_when_asked_and_before_handing_back(self):
         plain, designed = briefs.guidance('deck-outline'), briefs.guidance('deck-outline',

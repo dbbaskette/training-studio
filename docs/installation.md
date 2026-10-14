@@ -110,7 +110,7 @@ Where it stops:
 For whoever keeps this repository. To move a companion to a newer release:
 
 ```bash
-python3 installer/install.py pin harness-slides --revision v0.14.0
+python3 installer/install.py pin harness-slides --revision v0.14.1
 ```
 
 This fetches that tag or commit, and writes its commit, its version and the SHA-256 of its files into `installer/companions.json`. Read what changed in the companion between the old commit and the new one, run the installer into a temporary home, then commit the file. The pin records the commit, not the tag, so a tag that moves later changes nothing.

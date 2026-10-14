@@ -40,7 +40,10 @@ What a caller needs to know
   run record. Everything a deck is built with stays on this computer under `work/deck/`,
   which the workspace never shares, with `state.json` there saying what was built from
   what. A deck that is saved and current has nothing left to do before its gate, wherever
-  it was built.
+  it was built, unless the person asked for it to be drawn again from a design: then it is
+  made again, and what it was is kept under `deck/history/` and in the run record.
+- `begun` says whether any deck of a training has begun, which a computer whose slides
+  tool lacks what a new deck needs does not hold up.
 - A section is drawn again only for a major or critical finding about how it is drawn,
   and at most `deck.REPAIRS` times. A finding about what a slide says is kept for the
   person, at gate 6, where asking for changes leads back to what the deck says.
@@ -107,6 +110,7 @@ ASSETS = 'deck/.harness-slides/assets.json'   # the tool's record of the deck's 
 SUPPLIED = ('supplied', 'screenshot', 'chart')   # the assets a person gives, on the page
 JUDGED = 'design'   # a start whose deck the slides tool reviews against its approved design
 SHOWS = 'deck/review.json'          # what its gate shows of the deck that was saved
+HISTORY = 'deck/history'            # what a deck was, kept when it is drawn again from a design
 WORK = 'work/deck'                  # what it is built with: never shared
 BUILT = f'{WORK}/state.json'        # what this computer has built, and from what
 SHOTS = f'{WORK}/preview'           # the pictures of the last preview of the whole deck
@@ -857,8 +861,9 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
     asked_of = kept.get('waiting') or {}
     waiting = bool(said) and asked_of.get('sha256') == said \
         and (asked_of.get('design') or {}).get('sha256') == drawn_as
+    # A deck drawn again from a design is made again, whatever was saved before.
     if state.get(name) in CURRENT and name not in asked and entry.get('sha256') \
-            and entry['sha256'] == workspace.sha256_file(file) \
+            and not kept.get('redesign') and entry['sha256'] == workspace.sha256_file(file) \
             and (not rounds or holds(rounds[-1]) and (kept.get('saved') or {}).get('deck')
                  == rounds[-1].get('deck')):
         # Saved and current: nothing is left before its gate, wherever it was built.
@@ -931,6 +936,15 @@ def returned(mine: Deck) -> dict | None:
     last = (kept.get('returns') or [None])[-1]
     return last if last and not kept.get('approved') \
         and last.get('start') == mine.start.get('folder') else None
+
+
+def begun(session: dict, run: dict | None) -> bool:
+    """Whether any deck of a training has begun: what one says has been written here, or
+    the core holds one. Such a training carries on with what its decks began with."""
+    if any(isinstance(kept, dict) and kept.get('outline')
+           for kept in ((run or {}).get('deck') or {}).values()):
+        return True
+    return any(workspace.split(name)[0] == 'deck' for name in session.get('artifacts') or {})
 
 
 def cannot(session: dict, seen: dict | None) -> tuple[str, ...]:
@@ -1099,7 +1113,9 @@ def _again(request: dict | None, earlier: str | None, error: str | None,
     """The part of a task that says why this job is being done again. `dated` says what
     the earlier draft was made from has changed since."""
     parts = []
-    if request and request.get('kind') == 'revise':
+    if request and request.get('kind') == 'redesign':
+        parts.append(REDESIGNED)
+    elif request and request.get('kind') == 'revise':
         parts.append(f'You are revising an earlier draft. What the person asked for:\n\n'
                      f"{request.get('note') or ''}")
     elif request:
@@ -1120,6 +1136,13 @@ def _again(request: dict | None, earlier: str | None, error: str | None,
         parts.append(f'An earlier try at this job did not work: {error}\nTake care not to '
                      'end the same way.')
     return ''.join(f'\n\n{part}' for part in parts)
+
+
+REDESIGNED = ('The person approved what this deck says before decks were drawn from a design, '
+              'and has asked for it to be drawn again from one. The earlier draft below is '
+              'what they approved. Keep its words where they still serve, shorten them only '
+              'where a drawing now carries the meaning, moving the explanation into the '
+              'notes, and propose how each slide is drawn.')
 
 
 def _can_ask(answered: list[dict]) -> bool:
@@ -1522,10 +1545,12 @@ def naming_rules(root: Path, mine: Deck) -> str | None:
 
 
 def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
-                 error: str | None, answered: list[dict], designed: bool = False) -> Work:
+                 error: str | None, answered: list[dict], designed: bool = False,
+                 icons: bool = False) -> Work:
     """The job of writing what one deck says: its outline, from the handoff, the
     blueprint, the guide and the research findings. When `designed`, the worker proposes
-    how each slide is drawn as well, and hands both in together."""
+    how each slide is drawn as well, and hands both in together; with `icons`, it names each
+    icon by its ID in the brand's library, which it may search."""
     session, name = found.session, 'outline'
     level = workspace.split(step.artifact)[1]
     mine = found.decks[level]
@@ -1570,10 +1595,11 @@ def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
                if said else ''))
     prepared = {'inputs': inputs,
                 'artifacts': {name: {'kind': 'outline', 'brand': str(contract(root, mine)),
-                                     'blueprint': blueprint, 'design': designed}},
+                                     'blueprint': blueprint, 'design': designed,
+                                     **({'icons': True} if designed and icons else {})}},
                 'ask': _can_ask(answered)}
-    return Work(briefs.guidance('deck-outline', design=designed), task, 'write', prepared,
-                name)
+    return Work(briefs.guidance('deck-outline', design=designed, icons=designed and icons),
+                task, 'write', prepared, name)
 
 
 def numbered(ident: str | None) -> int:
@@ -1601,7 +1627,8 @@ def section_work(root: Path, found: Survey, step: Step, section: str, error: str
     # for, which is generated art for its own slides drawn as generated art.
     if design is not None and start.get('assets') is not None:
         bound['assets'] = {
-            'project': bound['design'],
+            'project': bound['design'], **({'icons': start['icons']} if start.get('icons')
+                                           else {}),
             'generated': {candidate['asset']: candidate['slide']
                           for candidate in deck.candidates(design)
                           if candidate['kind'] == 'generated' and candidate['slide'] in ids
@@ -1713,16 +1740,16 @@ NAMED = ('document', 'brief', 'scenario')   # the writers a brand's naming rules
 
 def work(root: Path, found: Survey, step: Step, request: dict | None, error: str | None,
          answered: list[dict], sources=None, naming: str | None = None,
-         designed: bool = False) -> Work:
+         designed: bool = False, icons: bool = False) -> Work:
     """The job a drafting step gives a worker. `sources` is what `documents.sources`
     returned, which only the research questions are drafted from. `naming` is how the
     training's brand names the organisation and its products, which the writers of the
     guide, the brief and the scenarios are given. `designed` says the writer of what a deck
-    says proposes its design too."""
+    says proposes its design too, and `icons` that it names each icon by its library ID."""
     if step.id == 'research-plan':
         return plan_work(root, found, request, error, answered, sources)
     if bare(step.id) == 'deck-outline':
-        return outline_work(root, found, step, request, error, answered, designed)
+        return outline_work(root, found, step, request, error, answered, designed, icons)
     if bare(step.id) == 'deck-review':
         return review_work(root, found, step, error)
     kind = workspace.split(step.artifact)[0].partition(':')[0]

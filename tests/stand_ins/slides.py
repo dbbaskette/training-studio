@@ -3,6 +3,7 @@
     slides = stand_in()        # the runner's Slides, with StandIn behind it
     stand_in(design=True)      # the same, with the design session of the next version
     stand_in(assets=True)      # and with its asset manifest, saying what it has in `version`
+    stand_in(current=True)     # Harness Slides 0.14.1, with everything it lists
     sketch(slide, prefix)      # one content slide of an outline, drawn plainly
 
 `sketch` draws a slide as a section's composer might. StandIn's `fails`, `drive`, `local`
@@ -34,12 +35,15 @@ from stand_ins import design as designs
 from stand_ins import review as reviewing
 
 
-def stand_in(design: bool = False, assets: bool = False) -> tool.Slides:
+def stand_in(design: bool = False, assets: bool = False, current: bool = False) -> tool.Slides:
     """A Slides that needs nothing installed. With `design`, its tool has the design session
     of the version after 0.13.1; with `assets`, its asset manifest as well, and it says what
-    it has in `version`."""
+    it has in `version`, as `main` did before 0.14.0. With `current`, it is the 0.14.1 release,
+    with all it lists; take a name out of its `listed` to play a build without that one."""
     command = StandIn()
-    command.design, command.assets = design or assets, assets
+    command.design, command.assets = design or assets or current, assets or current
+    command.listed = set(CURRENT) if current else set(CAPABILITIES) if assets else None
+    command.release = tool.RELEASE if current else MINIMUM
     return tool.Slides(runtime=Path('stand-in'), run=command, read=command.read)
 
 
@@ -129,7 +133,18 @@ REVIEW = ('compiled', 'output', 'design-project', 'refresh', 'mark', 'revision',
           'status', 'assessment', 'slide', 'json')
 CAPABILITIES = ['assets', 'canonical-digests', 'compose-review', 'compose-section',
                 'design-batch', 'design-schema-2', 'json-refusals', 'relative-records']
-FLAGS = ('json', 'section', 'refresh')     # options that take no value
+# What 0.14.1 lists, as its `version` prints it.
+CURRENT = ['assets', 'assets-approved-candidates', 'canonical-digests', 'compose-icon-assets',
+           'compose-review', 'compose-section', 'design-batch', 'design-icon-ids',
+           'design-present-findings', 'design-schema-2', 'json-refusals', 'native-charts',
+           'relative-records', 'review-google-renderer', 'review-input-refusals',
+           'review-packets', 'review-sources-from-slide']
+# What each of those adds to the commands it takes, by command, beyond 0.14.0's.
+NEWEST = {'design-icon-ids': {'design propose': ('brand',)},
+          'design-present-findings': {'design present': ('project', 'output', 'revision',
+                                                         'accept-findings', 'json')}}
+REVIEWED = {'review-packets': ('packets',), 'review-google-renderer': ('renderer', 'file-id')}
+FLAGS = ('json', 'section', 'refresh', 'packets', 'accept-findings')   # options without a value
 NEWER = ('mode', 'section')     # options 0.13.1 does not parse, for any command
 UNKNOWN = ("Unknown option '--{}'. To specify a positional argument starting with a '-', "
            "place it at the end of the command after '--', as in '-- \"--{}\"")
@@ -1280,6 +1295,14 @@ class StandIn:
     and `version` lists nothing. With `assets` it also plays the design-bound review of a
     composition, `review --compiled|--slide|--mark|--assessment`, as stand_ins/review.py
     says; `local` False refuses it as `renderer-unavailable`, as LibreOffice missing does.
+
+    `listed` is what `version` lists, or None for a tool that lists nothing, and `release`
+    the version it says it is. What 0.14.1 added is played only where `listed` names it, so
+    a test can take one name out: `design present --accept-findings`, `--brand` on `design
+    propose` and icons named by library ID, intents compared whatever their key order,
+    `assets status|check --design-project` reading every candidate of the stored plan, icons
+    placed by asset ID, `review --packets`, `review --renderer google`, which writes its deck
+    into `files` as Drive would, and an assessment's sources taken from its slide.
     """
 
     def __init__(self):
@@ -1291,6 +1314,7 @@ class StandIn:
         # The asset manifest: `env` is what the tool would find in its environment, where an
         # image provider's key is looked for, and `made` stands in for the provider.
         self.assets, self.env, self.made = False, {}, None
+        self.listed, self.release = None, MINIMUM
         self.composed = None    # the composition last compiled, to sort its problems by slide
         self._busy, self._renders, self._guard = 0, 0, threading.Lock()
 
@@ -1318,22 +1342,33 @@ class StandIn:
                               indent=2) + '\n'
         return GUIDANCE.get(relative.name) if relative.parent == REFERENCES else None
 
+    def has(self, name: str) -> bool:
+        """Whether `version` lists this capability."""
+        return name in (self.listed or ())
+
     def _act(self, args: list[str]):
         if args == ['--version']:
-            return f'Harness Slides {MINIMUM}'
+            return f'Harness Slides {self.release}'
         if args == ['version']:   # what it can do, from the version that has the manifest on
-            return {'package': 'harness-slides', 'runtimeVersion': MINIMUM,
+            return {'package': 'harness-slides', 'runtimeVersion': self.release,
                     'runtime': '/stand-in/harness-slides',
-                    **({'capabilities': list(CAPABILITIES)} if self.assets else {})}
+                    **({'capabilities': sorted(self.listed)} if self.listed is not None
+                       else {})}
         if args[:1] == ['review']:
             return self._review(args[1:])
         name = ' '.join(args[:2])
         known = {**OPTIONS, **{key: () for key in ASSETS if key not in OPTIONS}} \
-            if self.assets else OPTIONS
+            if self.assets else dict(OPTIONS)
+        newest = {}
+        for capability, commands in NEWEST.items():
+            for command, more in commands.items():
+                if self.has(capability):
+                    known.setdefault(command, ())
+                    newest[command] = newest.get(command, ()) + more
         if name not in known:
             raise _Said('Unknown command/action; run --help')
         allowed = known[name] + (LATER.get(name, ()) if self.design else ()) \
-            + (ASSETS.get(name, ()) if self.assets else ())
+            + (ASSETS.get(name, ()) if self.assets else ()) + newest.get(name, ())
         options, rest = {}, args[2:]
         if name in SUBJECT and rest and not rest[0].startswith('--'):
             options['subject'] = rest.pop(0)
@@ -1626,19 +1661,22 @@ class StandIn:
         data, contract = _read(options['file']), self.contract(options.get('brand'))
         comp, compiler, compiled = _load(options['file']), _Compiler(contract), None
         self.composed, uses, unresolved = comp, {}, []
-        if self.assets:   # an image named by asset ID, from the project's manifest
-            comp, uses, unresolved = manifest.resolve(comp, options.get('asset-project')
-                                                      or project)
+        icons = {}
+        if self.assets:   # an image, or an icon, named by asset ID, from the manifest
+            comp, uses, unresolved, icons = manifest.resolve(
+                comp, options.get('asset-project') or project, self.has('compose-icon-assets'))
         try:
             compiled = compiler.run(comp)
         except _Said as said:
             compiler.problems.append(str(said))
         # Unknown icons and layouts are caught now, not when the deck is rendered.
-        problems = unresolved + compiler.problems + self._asks(comp, contract)
+        problems = unresolved + compiler.problems + self._asks(
+            comp, contract, [ident for ident, found in icons.items() if found is None])
         if problems:
             raise _said(problems)
         scene, structure = compiled
-        approved = designs.bound(scene['slides'], project, bool(options.get('section'))) \
+        approved = designs.bound(scene['slides'], project, bool(options.get('section')),
+                                 self.has('canonical-digests')) \
             if project or options.get('output') else None
         report = {'schema': 1, 'brandRevision': contract['revision'],
                   'measurement': 'estimated; brand font unavailable',
@@ -1655,8 +1693,8 @@ class StandIn:
         if not options.get('output'):
             return {'status': 'fits; nothing written. Add a new --output directory to '
                               'write the build', **summary}
-        placed, copies = manifest.place(scene, Path(options['file']).resolve().parent, uses) \
-            if self.assets else ([], {})
+        placed, copies = manifest.place(scene, Path(options['file']).resolve().parent, uses,
+                                        structure, icons) if self.assets else ([], {})
         output = Path(options['output']).resolve()
         mine = project or options.get('asset-project')
         report['inputs'] = {
@@ -1676,14 +1714,16 @@ class StandIn:
             (output / path).write_bytes(copy)
         return {'output': str(output), 'sceneDigest': report['sceneDigest'], **summary}
 
-    def _asks(self, comp, contract: dict) -> list[str]:
+    def _asks(self, comp, contract: dict, unresolved=()) -> list[str]:
         """What is wrong with the icons and the template layouts a composition asks for,
-        read straight from the file so that it is said even when a slide does not compile."""
+        read straight from the file so that it is said even when a slide does not compile.
+        An icon whose asset did not resolve is said already, and passed by."""
         wrong, icons = [], []
 
         def walk(node):
             if isinstance(node, dict):
-                if node.get('type') == 'icon' and isinstance(node.get('id'), str):
+                if node.get('type') == 'icon' and isinstance(node.get('id'), str) \
+                        and node['id'] not in unresolved:
                     icons.append(node)
                 for kid in node.get('children') or []:
                     walk(kid)
@@ -1845,7 +1885,7 @@ class StandIn:
             raise _Said(f"No slide {wanted}; choose one of {', '.join(ids)}")
         # Checked against the design approved now, before anything is rendered.
         approved = designs.bound(scene['slides'], options['design-project'],
-                                 bool(options.get('section'))) \
+                                 bool(options.get('section')), self.has('canonical-digests')) \
             if options.get('design-project') else None
         if self.assets:
             manifest.verify(options['file'])
@@ -2054,9 +2094,11 @@ class StandIn:
         With --json a refusal is a JSON object on standard output, with the design revision
         of the design project, or for an operation on a review, of the review."""
         options, rest = {}, list(args)
+        newer = tuple(key for capability, keys in REVIEWED.items() if self.has(capability)
+                      for key in keys)
         while rest:
             key = rest.pop(0).removeprefix('--')
-            if key not in REVIEW or not self.assets:
+            if key not in REVIEW + newer or not self.assets:
                 raise _Said(f'--{key} is not valid for this command')
             options[key] = True if key in FLAGS else rest.pop(0) if rest else None
         if 'review' in self.fails:
@@ -2064,12 +2106,18 @@ class StandIn:
         output = options.get('output')
         review = reviewing.Review(output or '.', deck=self._deck,
                                   picture=lambda slide, scene: _png(*_drawn(slide, scene)),
-                                  screens=_screened, local=self.local)
+                                  screens=_screened, local=self.local,
+                                  has=self.listed or (), google=self._google)
         try:
-            later = [key for key in ('mark', 'assessment', 'slide') if options.get(key)]
+            later = [key for key in ('mark', 'assessment', 'slide', 'packets')
+                     if options.get(key)]
             if later and (len(later) > 1 or any(options.get(key) for key in (
-                    'compiled', 'refresh', 'design-project'))):
-                raise ValueError('Prepare and mark are separate operations')
+                    'compiled', 'refresh', 'design-project', 'renderer', 'file-id'))):
+                raise designs.Refusal('Prepare and mark are separate operations', {
+                    'code': 'input-invalid', 'next': 'Prepare in one call (review --compiled, '
+                    '--file or --previews with their inputs), then run --slide, --packets, '
+                    '--mark or --assessment in separate calls, each with --output and its own '
+                    'options only'})
             if options.get('mark'):
                 numbers = [int(part) if part.strip().isdigit() else None
                            for part in options['mark'].split(',')]
@@ -2079,6 +2127,8 @@ class StandIn:
                 return review.assess(options.get('revision'), _load(options['assessment']))
             if options.get('slide'):
                 return review.inspect(options['slide'])
+            if options.get('packets'):
+                return review.packets()
             if not output or not options.get('compiled'):
                 raise designs.Refusal('Provide --output and exactly one of --file, --previews or '
                                       '--compiled', {'code': 'input-invalid'})
@@ -2087,7 +2137,8 @@ class StandIn:
                                       'is checked against the approved design',
                                       {'code': 'input-invalid'})
             return review.prepare(options['compiled'], options['design-project'],
-                                  bool(options.get('refresh')))
+                                  bool(options.get('refresh')),
+                                  options.get('renderer') or 'local', options.get('file-id'))
         except (designs.Refusal, ValueError, KeyError, TypeError) as refused:
             if not options.get('json'):
                 raise _Said(str(refused))
@@ -2101,20 +2152,43 @@ class StandIn:
                     revision = None
             return _Blocked(designs.refusal(refused, revision))
 
+    def _google(self, file_id: str | None, data: bytes, title: str | None) -> dict:
+        """A review's deck put in Drive as `Preview: <title>`, or written again into the
+        file `file_id` names, as `review --renderer google` does."""
+        if not self.drive:
+            raise designs.Refusal('Google Slides could not render the deck: '
+                                  + NO_DRIVE.format(403), {'code': 'provider-failed',
+                                                           'provider': 'google'})
+        with self._guard:
+            if file_id and file_id not in self.files:
+                raise designs.Refusal('Google Slides could not render the deck: '
+                                      + NO_DRIVE.format(404), {'code': 'provider-failed',
+                                                               'provider': 'google'})
+            file_id = file_id or f'stand-in-review-{len(self.files) + 1}'
+            known = self.files.setdefault(file_id, {'name': f'Preview: {title or "Review"}',
+                                                    'uploads': 0})
+            known.update(uploads=known['uploads'] + 1, deckSha256=_digest(data))
+        return {'fileId': file_id, 'url': self._url(file_id)}
+
     # --- the design session ---
 
     def _design(self, action: str, options: dict):
-        """design propose, status, check or respond. With --json a refusal is a JSON object
-        on standard output; without it, the same sentence on standard error."""
-        session = designs.Session(options.get('project') or '.')
+        """design propose, status, check, respond or present. With --json a refusal is a JSON
+        object on standard output; without it, the same sentence on standard error."""
+        session = designs.Session(options.get('project') or '.', self.listed or ())
         try:
             if not options.get('project'):
                 raise designs.Refusal('Provide --project DIR', {'code': 'input-invalid'})
             if action == 'propose':
                 return session.propose(self._given(options), options.get('expected'),
-                                       options.get('mode'))
+                                       options.get('mode'), self._icons(options.get('brand')))
             if action == 'respond':
                 return session.respond(self._given(options))
+            if action == 'present':
+                if not options.get('accept-findings'):
+                    raise designs.Refusal('This stand-in presents only with --accept-findings',
+                                          {'code': 'input-invalid'})
+                return session.present(options.get('output'), options.get('revision'))
             return session.check() if action == 'check' else session.status()
         except (designs.Refusal, ValueError) as refused:
             if not options.get('json'):
@@ -2154,11 +2228,12 @@ class StandIn:
         if name == 'assets icon':
             return manifest.record_icon(project, options.get('subject'), options.get('id'),
                                         options.get('alt'), options.get('brand'))
+        every = self.has('assets-approved-candidates')
         if name == 'assets status':
-            return manifest.status(project, options.get('design-project'), self.env)
+            return manifest.status(project, options.get('design-project'), self.env, every)
         if name == 'assets check':
             return manifest.check(project, options.get('design-project'),
-                                  options.get('brand'), self.env)
+                                  options.get('brand'), self.env, every)
         if action == 'status':
             if (options.get('provider') or 'gemini-api') != 'gemini-api':
                 raise manifest.ImagesError('unknown_provider')
@@ -2175,6 +2250,20 @@ class StandIn:
         return _compact(manifest.generate(
             project, options.get('id'), options.get('prompt-file'), options.get('output'),
             options.get('alt'), options.get('slide'), self.env, self.made))
+
+    @staticmethod
+    def _icons(brand) -> list | None:
+        """The icon index of a brand given with --brand, which design propose checks each icon
+        candidate named by its library ID against; None without one, or for a brand with no
+        hashed icon library."""
+        if not brand:
+            return None
+        contract = StandIn.contract(brand)
+        library = (contract['design']['slides'].get('icon') or {}).get('library') or {}
+        hashed = [source['path'] for source in contract['sources']]
+        if library.get('index') not in hashed:
+            return None
+        return _load(library['index'])['entries']
 
     @staticmethod
     def _given(options: dict):
