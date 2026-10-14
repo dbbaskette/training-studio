@@ -1120,6 +1120,30 @@ code,
   font-size: 0.93rem;
 }
 
+/* A choice this computer cannot make. It is struck through, and the words under it say why. */
+.seg-option.seg-absent {
+  opacity: 0.5;
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+
+/* Fields that belong together, such as a brand and its variant. */
+.fields > * + * {
+  margin-top: 0.8rem;
+}
+
+.card > .field + .fields,
+.card > .fields + .field {
+  margin-top: 1.15rem;
+}
+
+/* The browser's own list to choose one from, on paper like any other box. */
+select.input {
+  max-width: 26rem;
+  font: inherit;
+  cursor: pointer;
+}
+
 .input {
   display: block;
   width: 100%;
@@ -1468,6 +1492,258 @@ summary {
 .diff-row[data-kind="gap"] {
   justify-content: center;
   color: var(--quiet);
+}
+
+/* --- a slide deck: what it says, its slides, and what the review still finds -----------
+   A slide's picture is something to look at, so it sits on paper like anything that is read.
+   The strip to jump by is a row of controls, so each one is glass. */
+
+/* What a deck says, slide by slide, as something to read. */
+.outline {
+  padding: 0;
+  list-style: none;
+}
+
+.outline-slide {
+  padding-top: 1.3rem;
+  border-top: 1px solid var(--hair);
+}
+
+.outline-slide + .outline-slide {
+  margin-top: 1.3rem;
+}
+
+.outline-slide > * + * {
+  margin-top: 0.55rem;
+}
+
+.outline-top {
+  font-size: 0.86rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.outline-title {
+  font-size: 1.22rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.outline-subtitle {
+  color: var(--quiet);
+}
+
+.outline-points {
+  padding-left: 1.35em;
+}
+
+.outline-points li + li {
+  margin-top: 0.3em;
+}
+
+.outline-notes > summary {
+  color: var(--link);
+  font-size: 0.93rem;
+  font-weight: 600;
+}
+
+.outline-said {
+  margin-top: 0.45rem;
+  color: var(--quiet);
+  font-size: 0.95rem;
+  white-space: pre-wrap;
+}
+
+/* The place a picture goes. It has the shape of a slide whatever is in it yet: the picture,
+   or the words that say it is on its way or could not be fetched. Words that need more room
+   than that are given it; a picture of another shape is shown whole inside it. */
+.frame {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 0.5rem;
+  aspect-ratio: 16 / 9;
+  background: var(--well);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+}
+
+.picture {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+
+.frame-says {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  text-align: center;
+}
+
+/* A deck while it is drawn: each section, and its slides as they were last previewed. */
+.section {
+  align-items: flex-start;
+}
+
+.section > .bead {
+  margin-top: 0.15rem;
+}
+
+.thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.thumb {
+  flex: 0 1 8.5rem;
+  min-width: 6.5rem;
+}
+
+.thumb-name {
+  display: block;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* At a deck's gate: one slide at full size, and every slide in a strip to jump by. */
+.stage {
+  padding: clamp(0.4rem, 1.2vw, 0.8rem);
+}
+
+.stage .frame-says {
+  max-width: 34rem;
+  font-size: 1rem;
+}
+
+.slide-moves,
+.strip {
+  margin-top: 0.7rem;
+}
+
+.slide-now {
+  flex: 1 1 12rem;
+  font-weight: 600;
+}
+
+/* At the first slide and the last, the control stays in reach and says it is off. */
+.button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.strip {
+  position: relative;
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.4rem 0.4rem 0.7rem;
+  overflow-x: auto;
+  list-style: none;
+}
+
+.strip > li {
+  flex: none;
+  width: 9rem;
+}
+
+.strip-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.3rem 0.4rem;
+  width: 100%;
+  padding: 0.35rem;
+  background: var(--card);
+  border: 1px solid var(--glass-line);
+  border-radius: 12px;
+  box-shadow: var(--edge), 0 2px 6px rgb(0 0 0 / 0.1);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 180ms var(--ease);
+}
+
+.strip-item:active {
+  transform: scale(0.97);
+}
+
+.strip-item > .frame {
+  grid-column: 1 / -1;
+}
+
+.strip-number {
+  padding: 0 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.strip-title {
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The slide that is shown: a heavier edge and its number filled in, so it does not rest on
+   colour. The edge is a border, so the ring that shows where the keyboard is stays its own. */
+.strip-item[aria-current="true"] {
+  padding: calc(0.35rem - 1px);
+  background: var(--thumb);
+  border: 2px solid var(--ink);
+}
+
+.strip-item[aria-current="true"] > .strip-number {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* What the review still finds, and what the brand's own check says. */
+.findings > li + li {
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--hair);
+}
+
+.finding > * + * {
+  margin-top: 0.3rem;
+}
+
+.tag {
+  padding: 0.05rem 0.55rem;
+  border: 1px solid var(--quiet);
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.audit {
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--hair);
+}
+
+.audit > * + * {
+  margin-top: 0.45rem;
+}
+
+.coverage {
+  padding: 0.95rem 1.05rem;
+}
+
+.coverage > * + * {
+  margin-top: 0.6rem;
+}
+
+.coverage .table td:last-child {
+  text-align: left;
 }
 
 /* --- a sheet: it drops from the toolbar, and what you decide is confirmed in it --------- */

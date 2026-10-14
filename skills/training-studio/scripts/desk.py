@@ -38,7 +38,7 @@ PAGE = {
 }
 JSON = 'application/json; charset=utf-8'
 SECURITY_HEADERS = {
-    'Content-Security-Policy': "default-src 'self'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' blob:",
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',

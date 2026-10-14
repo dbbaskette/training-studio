@@ -12,7 +12,7 @@ from pathlib import Path
 
 import helpers  # noqa: F401
 from runner_support import (BLUEPRINT, BRIEF, DOCUMENT, FORM, QUOTE, SCENARIO, YOODLI,
-                            StudioCase, asks)
+                            NO_BRAND_SKILL, NO_SLIDES, StudioCase, asks, left)
 
 import desk
 import home
@@ -64,7 +64,7 @@ class ToTheEndTests(FlowCase):
         self.assertEqual(view['finished'], {
             'ready': True, 'limitations': ['The deck stage was left out'], 'blocking': [],
             'index': 'README.md'})
-        self.assertEqual((view['deck'], view['documents'], view['copies'], view['problem']),
+        self.assertEqual((view['deck_left'], view['documents'], view['copies'], view['problem']),
                          (None, None, [], None))
         self.assertEqual({step['status'] for step in view['steps']}, {'done'})
         self.assertEqual([step['id'] for step in view['steps']][9:], [
@@ -309,7 +309,7 @@ class ReviewTests(FlowCase):
         root = self.start(yoodli=True, deck_target='pptx', copies=['word'])
         self.to_end(root)
         view = self.view(root)
-        said = [view['sentence'], view['deck']['says'],
+        said = [view['sentence'], view['deck_left']['says'],
                 *(step['label'] for step in view['steps']),
                 *(entry['label'] + (entry['problem'] or '') for entry in view['copies'])]
         self.decide(root, 'deck', 'skip', 'No slides.')
@@ -421,9 +421,11 @@ class DeckTests(FlowCase):
         self.assertEqual(self.to_end(root), PLAIN)
         view, status = self.view(root), workspace.status(root)
         self.assertEqual((view['state'], view['sentence'], view['finished']), (
-            'done', 'Everything but the slide deck is made. The deck is not automated yet: '
-            'make it in a conversation with your assistant, or leave it out.', None))
-        self.assertEqual(view['deck'], {'says': view['sentence'], 'artifact': 'deck'})
+            'done', 'Everything but the slide deck is made. A deck cannot be made on this '
+            f'computer yet: {NO_SLIDES} {NO_BRAND_SKILL} Put that right and check this '
+            'computer again, make the deck in a conversation with your assistant, or leave '
+            'it out.', None))
+        self.assertEqual(view['deck_left'], {'says': view['sentence'], 'artifact': 'deck'})
         steps = self.steps(root)
         self.assertEqual((steps['deck']['status'], steps['deck']['kind'],
                           steps['package']['status']), ('waiting', 'gate', 'to-do'))
@@ -440,13 +442,13 @@ class DeckTests(FlowCase):
     def test_leaving_the_deck_out_at_the_end_finishes_the_training(self):
         root = self.start(deck_target='pptx')
         self.to_end(root)
-        said = self.decide(root, self.view(root)['deck']['artifact'], 'skip',
+        said = self.decide(root, self.view(root)['deck_left']['artifact'], 'skip',
                            'No slides for this one.')
         self.assertEqual(said['said'], 'This stage is left out. You can bring it back from '
                          'the training at any time. This training is finished, with 1 thing '
                          'left out or limited.')
         view = self.view(root)
-        self.assertEqual((view['state'], view['deck'], view['finished']['ready'],
+        self.assertEqual((view['state'], view['deck_left'], view['finished']['ready'],
                           view['finished']['limitations']),
                          ('done', None, True, ['The deck stage was left out']))
         self.assertNotIn('deck', [step['id'] for step in view['steps']])
@@ -457,7 +459,7 @@ class DeckTests(FlowCase):
     def test_with_levels_one_decision_leaves_every_levels_deck_out(self):
         root = self.start(deck_target='google', levels=['101', '201'])
         self.to_end(root)
-        self.assertEqual(self.view(root)['deck']['artifact'], 'deck')
+        self.assertEqual(self.view(root)['deck_left']['artifact'], 'deck')
         self.decide(root, 'deck', 'skip', 'No slides.')
         self.assertEqual(self.view(root)['finished']['ready'], True)
 
@@ -466,14 +468,14 @@ class DeckTests(FlowCase):
         self.to_end(root)
         desk_page = page.RunnerPage(8765, self.engine)
         self.assertEqual(desk_page.move_approval(str(root), 'chat'), {'approval': 'chat'})
-        self.assertEqual(self.view(root)['deck']['artifact'], 'deck')
+        self.assertEqual(self.view(root)['deck_left']['artifact'], 'deck')
         (root / 'deck.pptx').write_bytes(b'PK\x03\x04 a deck made in a conversation\n')
         workspace.save(root, 'deck', built=True,
                        coverage={'O1': [2], 'O2': [3], 'O3': [4, 5]})
         workspace.approve(root, 'deck')
         self.engine.wake(root)
         view = self.view(root)
-        self.assertEqual((view['state'], view['deck'], view['finished']['ready'],
+        self.assertEqual((view['state'], view['deck_left'], view['finished']['ready'],
                           view['finished']['limitations']), ('done', None, True, []))
         self.assertEqual(view['sentence'],
                          'This training is finished. Nothing is left out or limited.')
@@ -484,16 +486,16 @@ class DeckTests(FlowCase):
         root = self.start(deck_target='pptx')
         self.to_end(root)
         (root / 'deck.pptx').write_bytes(b'PK\x03\x04 a deck made in a conversation\n')
-        self.assertEqual(self.view(root)['deck']['says'], pipeline.DECK_AGAIN)
-        self.assertIn('finish it in a conversation with your assistant, or leave it out',
-                      pipeline.DECK_AGAIN)
+        self.assertEqual(self.view(root)['deck_left']['says'], left(pipeline.DECK_AGAIN))
+        self.assertIn('finish the deck in a conversation with your assistant, or leave it out',
+                      left(pipeline.DECK_AGAIN))
 
     def test_bringing_the_deck_back_to_a_finished_training_waits_for_the_deck_again(self):
         root = self.start()
         self.to_end(root)
         self.decide(root, 'deck', 'restore')
         view = self.view(root)
-        self.assertEqual((view['state'], view['finished'], view['deck']['artifact']),
+        self.assertEqual((view['state'], view['finished'], view['deck_left']['artifact']),
                          ('done', None, 'deck'))
         self.assertEqual(workspace.status(root)['stage'], 'deck')
 
@@ -1158,7 +1160,7 @@ class AwayTests(FlowCase):
         guide.write_text(guide.read_text() + '\nA line added in the conversation.\n')
         self.engine.wake(root)
         view, status = self.view(root), workspace.status(root)
-        self.assertEqual((view['state'], view['sentence'], view['deck'], view['finished']), (
+        self.assertEqual((view['state'], view['sentence'], view['deck_left'], view['finished']), (
             'done', "This training's decisions are made in the conversation now, so the "
             'runner is leaving it alone. Move them back to the page to have the runner '
             'carry on.', None, None))

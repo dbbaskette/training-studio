@@ -2,27 +2,29 @@
 
 What a caller needs to know
 ---------------------------
-    form = pipeline.check_form(sent)             # what the page's form may say
+    form = pipeline.check_form(sent, brands)     # what the page's form may say
     root = pipeline.create(space, form)          # a training, through the core's own init
     found = pipeline.survey(root, run, ...)      # where it is, worked out from its files
     found.next                                   # the one thing to do now
     work = pipeline.work(root, found, step, ...) # what a worker is told and given
     pipeline.keep_draft(root, step, handed, ...) # save a checked draft through the core
+    found.decks[level]                           # where one level's deck stands
 
 - TRAINING and RESEARCH are the pipelines as data: each step is code the runner runs, a
   job for an agent, or something a person decides. `steps(levels, ...)` lays a training's
   out in order. Intake and research are done once. Every level's blueprint is drafted
   before the first is put to the person. Everything after that is done for one level at a
-  time, lowest first: the guide, the brief, each practice scenario, each Yoodli scenario.
-  The index is written last, once.
+  time, lowest first: the guide, the brief, the slide deck, each practice scenario, each
+  Yoodli scenario. The index is written last, once.
 - `survey` remembers nothing. It reads the core's record, the requests a person made, the
   research record and the training's files, and says which steps are done. The next step
   is the first that is not. `run` is the training's run record, which holds what the files
   cannot say: which research run the approved plan was handed to, which questions a
   person's request has researched again, how each try at a step went, which scenario files
-  the runner drafted, which copies it has tried to make, and whether the person has said
-  their documents are all added. `copies` is what `copies.wanted` returned and `supplied`
-  what `documents.listed` returned; both are read, never called, here.
+  the runner drafted, which copies it has tried to make, whether the person has said
+  their documents are all added, and what was decided about what each deck says. `copies`
+  is what `copies.wanted` returned, `supplied` what `documents.listed` returned, and
+  `deck` what the engine saw of this computer; all three are read, never called, here.
 - A stage the person left out, or that could not be made, has no steps. Something made
   from a version of its inputs that has since changed is made again, and comes back to
   its gate: a blueprint, a guide, a brief or a Yoodli scenario. Nothing is ever accepted
@@ -30,8 +32,21 @@ What a caller needs to know
 - A practice scenario is drafted only when the blueprint's practice plan names it and it
   has no file. A file the person wrote is taken in as it is. Only a request from them has
   a worker lay it out, in their own words.
-- The slide deck is not made here. A training that wants one stops with `next.kind`
-  `'deck'` when the deck is all that is left; the index is written once the deck is
+- A deck has steps of its own, in DECK_STEPS: the handoff, the brand, what the deck says
+  and the runner's own gate for that, the start, the sections drawn side by side, the
+  whole deck, the review, drawing again what the review found, the deck saved through the
+  core, and the core's gate 6. `Deck` says which are done. What a deck says is kept in its
+  own folder, `deck/`, with what its gate shows; the person's decision about it is in the
+  run record. Everything a deck is built with stays on this computer under `work/deck/`,
+  which the workspace never shares, with `state.json` there saying what was built from
+  what. A deck that is saved and current has nothing left to do before its gate, wherever
+  it was built.
+- A section is drawn again only for a major or critical finding about how it is drawn,
+  and at most `deck.REPAIRS` times. A finding about what a slide says is kept for the
+  person, at gate 6, where asking for changes leads back to what the deck says.
+- On a computer that cannot make a deck, or for a training with no brand chosen, the deck
+  has one step, last: the training stops with `next.kind` `'deck'` when the deck is all
+  that is left, `Survey.missing` says why, and the index is written once the deck is
   approved in a conversation, or left out.
 - A training is made in `page` approval mode, so nothing here can approve a draft. The
   two exceptions are the person's own choices, typed into the form: intake, which the core
@@ -53,7 +68,8 @@ import sync_guidance
 import workspace
 from workspace import WorkspaceError
 
-from runner import briefs, gitstate, settings
+from runner import briefs, deck, gitstate, settings
+from runner import slides as slides_tool
 
 ATTEMPTS = 3            # tries at one step: the first, and two more with the reason added
 QUESTIONS = 3           # questions the workers on one step may put to the person
@@ -71,18 +87,49 @@ SCOPES = ('public-web', 'supplied-only', 'both')
 SOURCES = {'public-web': 'Public web', 'supplied-only': 'Your documents only',
            'both': 'The public web and your documents'}
 NO_DECK = 'No deck was chosen when this training was started.'
-DECK_LEFT = ('Everything but the slide deck is made. The deck is not automated yet: make it '
-             'in a conversation with your assistant, or leave it out.')
+DECK_LEFT = ('Everything but the slide deck is made. A deck cannot be made on this computer '
+             'yet: {why} Put that right and check this computer again, make the deck in a '
+             'conversation with your assistant, or leave it out.')
 DECK_AGAIN = ('Everything but the slide deck is settled. The deck is not approved as it '
-              'stands, and decks are not automated yet: finish it in a conversation with '
-              'your assistant, or leave it out.')
+              'stands, and one cannot be made on this computer yet: {why} Put that right '
+              'and check this computer again, finish the deck in a conversation with your '
+              'assistant, or leave it out.')
+NOT_LOOKED = 'Nobody has looked at what this computer has for making one.'
+NO_BRAND = ('No brand was chosen for the deck when this training was started, and a deck is '
+            'always made with one.')
+# Where a deck's files are, from its training's folder or its level's.
+HANDOFF = 'deck-handoff.md'
+OUTLINE = 'deck/outline.json'       # what the deck says
+SHOWS = 'deck/review.json'          # what its gate shows of the deck that was saved
+WORK = 'work/deck'                  # what it is built with: never shared
+BUILT = f'{WORK}/state.json'        # what this computer has built, and from what
+SHOTS = f'{WORK}/preview'           # the pictures of the last preview of the whole deck
+DRAWN = f'{WORK}/sections'          # the pictures of each section's last preview
+ABOUT = 'about.json'                # beside pictures: which deck they are of
+SEES = ('Your review of what {it} says', 'Waiting for your review of what {it} says')
+SECTION = re.compile(r'^section-[1-9]\d{0,2}$')
+# What of the slides tool's own guidance each worker of a deck is handed, by the names
+# `slides.reading()` gives. A composer also gets the example of each relation it draws.
+DRAFTING = ('drafting guidance',)
+COMPOSING = ('design guidance', 'composition guidance', 'gallery')
+OUTLINE_CHECKED = (
+    'The slides tool checked its shape and its own limits.',
+    'Every content slide names the objectives it serves, and every objective is served by '
+    'some slide.',
+    'No slide shows more words than the budget, counting its title, its points, its caveat '
+    'and its source together.',
+    'The cover carries a title and one subtitle line, and no more.',
+    "Nothing the blueprint lists under its open gaps is on a slide in the blueprint's own "
+    'words.')
+IN_OTHER_WORDS = ('The blueprint lists open gaps. Whether a slide teaches one of them in '
+                  'other words is for you to read.')
 DECLARED = ('Coverage is declared: each section says in a comment what it teaches, and the '
             'check reads only those comments. Whether the prose teaches it is for you to '
             'read.')
 PROVISIONAL = ("Yoodli's limits are provisional: they come from its public help pages and "
                'have not all been confirmed in its live builder.')
-LIMITS = {'title': 120, 'topic': 2000, 'audience': 2000, 'purpose': 500, 'time_limit': 200,
-          'brand': 200}
+LIMITS = {'title': 120, 'topic': 2000, 'audience': 2000, 'purpose': 500, 'time_limit': 200}
+BRAND = 200             # characters in a brand's name or a variant's
 HEADINGS = ('Topic', 'Levels', 'Brief', 'Audience', 'Purpose', 'Source scope', 'Time limit')
 GATE = ('Your review of {it}', 'Waiting for your review of {it}')
 COPIES = ('Make the copies of {it}', 'Making the copies of {it}')
@@ -108,20 +155,40 @@ TRAINING = (
     ('brief', 'brief', 'agent', 'Write {it}', 'Writing {it}'),
     ('brief', 'gate:brief', 'gate', *GATE),
     ('brief', 'copies:brief', 'code', *COPIES),
+    ('deck', 'deck-handoff', 'code', 'Write the handoff for {it}',
+     'Writing the handoff for {it}'),
+    ('deck', 'deck-brand', 'code', 'Export the brand for {it}', 'Exporting the brand for {it}'),
+    ('deck', 'deck-outline', 'agent', 'Write what {it} says', 'Writing what {it} says'),
+    ('deck', 'gate:deck-outline', 'gate', *SEES),
+    ('deck', 'deck-start', 'code', 'Split {it} into sections', 'Splitting {it} into sections'),
+    ('deck', 'deck-sections', 'agent', 'Draw the sections of {it}',
+     'Drawing the sections of {it}'),
+    ('deck', 'deck-whole', 'code', 'Put {it} together and render it',
+     'Putting {it} together and rendering it'),
+    ('deck', 'deck-review', 'agent', 'Review {it}, slide by slide',
+     'Reviewing {it}, slide by slide'),
+    ('deck', 'deck-repair', 'agent', 'Draw again what the review of {it} found',
+     'Drawing again what the review of {it} found'),
+    ('deck', 'deck-save', 'code', 'Keep {it}, with the audit of its brand',
+     'Keeping {it}, with the audit of its brand'),
+    ('deck', 'gate:deck', 'gate', *GATE),
     ('scenario', 'scenario', 'agent', 'Draft {it}', 'Drafting {it}'),
     ('scenario', 'gate:scenario', 'gate', *GATE),
     ('yoodli', 'yoodli', 'agent', 'Lay out {it}', 'Laying out {it}'),
     ('yoodli', 'gate:yoodli', 'gate', *GATE),
     ('yoodli', 'copies:yoodli', 'code', *COPIES),
+    # The one step a deck has on a computer that cannot make one.
     ('deck', 'deck', 'gate', 'The slide deck, made in a conversation or left out',
      'Finishing everything but the slide deck'),
     ('package', 'package', 'code', 'Write the index', 'Writing the index'),
 )
 # How the rows are laid out: once for the training, once for each level, and within a level
 # once for each practice scenario.
-EACH_LEVEL = ('document', 'brief', 'scenario', 'yoodli')
+EACH_LEVEL = ('document', 'brief', 'deck', 'scenario', 'yoodli')
 EACH_SCENARIO = ('scenario', 'yoodli')
 LAST = ('deck', 'package')
+DECK_STEPS = tuple(row[1] for row in TRAINING if row[0] == 'deck' and row[1] != 'deck')
+SIDE_BY_SIDE = ('deck-sections', 'deck-repair')     # one worker for each section
 STAGES = tuple(stage for stage in workspace.SKIPPABLE if stage not in workspace.OPTIONAL)
 # A scenario the person wrote: taken in as it is, and laid out only when they ask.
 OWN = ('Take in {it}, as you wrote it', 'Taking in {it}, as you wrote it')
@@ -140,7 +207,8 @@ ARTIFACTS = {'research-plan': 'research-plan', 'gate:research-plan': 'research-p
              'document': 'document', 'gate:document': 'document',
              'copies:document': 'document', 'brief': 'brief', 'gate:brief': 'brief',
              'copies:brief': 'brief', 'scenario': 'scenario', 'gate:scenario': 'scenario',
-             'yoodli': 'yoodli', 'gate:yoodli': 'yoodli', 'copies:yoodli': 'yoodli'}
+             'yoodli': 'yoodli', 'gate:yoodli': 'yoodli', 'copies:yoodli': 'yoodli',
+             **{step: 'deck' for step in DECK_STEPS}}
 # What each check looks at, for the review a gate shows. Keyed by the kind of file and the
 # last part of the check's name.
 CHECKED = {
@@ -185,10 +253,11 @@ class Step:
 class Next:
     """The one thing to do now."""
     kind: str                         # 'agent', 'code', 'gate', 'wait', 'documents', 'deck',
-    #                                   'done' or 'stuck'
+    #                                   'outline', 'done' or 'stuck'
     step: Step | None = None
     request: dict | None = None       # what the person asked for, when the step answers it
-    questions: tuple[str, ...] = ()   # research: the questions to work on now
+    questions: tuple[str, ...] = ()   # research: the questions to work on now. A deck: the
+    #                                   sections to draw now
     why: str = ''                     # 'stuck': what is wrong, in a sentence
 
 
@@ -213,6 +282,29 @@ class Research:
 
 
 @dataclass(frozen=True)
+class Deck:
+    """Where one level's deck stands, read from its files and the run record."""
+    level: str | None
+    name: str                     # the core's name for it: deck, or deck@301
+    done: frozenset               # which of DECK_STEPS are done
+    kept: dict                    # the run record's part: its outline, and what was decided
+    built: dict                   # what this computer has built of it, and from what
+    outline: dict | None          # what it says, as it lies in its folder
+    waiting: bool = False         # what it says is put to the person, who has not decided
+    todo: tuple[str, ...] = ()    # the sections still to draw
+    again: tuple[str, ...] = ()   # the sections a review sent back, still to draw again
+    rounds: tuple = ()            # each whole deck built from this start, with its review
+
+    @property
+    def start(self) -> dict:
+        return self.built.get('start') or {}
+
+    @property
+    def last(self) -> dict | None:
+        return self.rounds[-1] if self.rounds else None
+
+
+@dataclass(frozen=True)
 class Survey:
     """Where a training is, worked out from its files."""
     session: dict
@@ -226,6 +318,8 @@ class Survey:
     own: frozenset = frozenset()  # the scenarios a person wrote, by the core's name
     copies: tuple = ()            # every copy the training asks for, as `copies.wanted` gave
     scope: str = SCOPE            # where its research may look
+    decks: dict = field(default_factory=dict)      # each level's deck, when one is made here
+    missing: tuple[str, ...] = ()   # why a deck that is wanted cannot be made here
 
 
 # --- the form ----------------------------------------------------------------------------
@@ -255,8 +349,42 @@ def _listed(sent: dict, name: str) -> list[str]:
     return value
 
 
-def check_form(sent: dict) -> dict:
-    """The form's answers, once each makes sense. Refuses with a sentence for a person."""
+def _brand(sent: dict, brands, wanted: bool) -> str | None:
+    """The brand and variant chosen for the deck, as the training's settings keep them.
+    `brands` is what the brand skill on this computer has, or None when there is none."""
+    chosen = sent.get('brand')
+    if chosen is None:
+        if wanted and brands:
+            raise WorkspaceError('Choose a brand for the deck, or choose no deck. A deck is '
+                                 'always made with a brand.')
+        return None
+    names = [chosen.get('brand'), chosen.get('variant') or ''] \
+        if isinstance(chosen, dict) else []
+    if not names or not names[0] or not all(
+            isinstance(name, str) and len(name) <= BRAND and '/' not in name
+            and name == name.strip() for name in names):
+        raise WorkspaceError('Give the brand as its name and its variant, both from the '
+                             'choices offered.')
+    known = {entry.get('brand'): entry.get('variants') or () for entry in brands or ()}
+    if brands is not None and (names[0] not in known or names[1] not in (
+            known[names[0]] or ('',))):
+        raise WorkspaceError('The brand is one of: ' + '; '.join(
+            f"{brand} ({', '.join(variants)})" for brand, variants in known.items()) + '.')
+    return '/'.join(names)
+
+
+def brand_of(session: dict) -> tuple[str, str | None] | None:
+    """The brand and variant a training's deck is made with, or None when none was chosen
+    from a brand skill's own. A brand that has no variants has None for its variant."""
+    kept = session['settings'].get('brand')
+    brand, _, variant = kept.rpartition('/') if isinstance(kept, str) else ('', '', '')
+    return (brand, variant or None) if brand else None
+
+
+def check_form(sent: dict, brands=None) -> dict:
+    """The form's answers, once each makes sense. Refuses with a sentence for a person.
+    `brands` is what `brand.brands()` returned on this computer, or None with no brand
+    skill here: a brand is a choice among those."""
     form = {name: _words(sent, name, name in ('title', 'topic', 'audience', 'purpose'))
             for name in LIMITS}
     form['levels'] = workspace.check_levels(_listed(sent, 'levels'))
@@ -265,6 +393,7 @@ def check_form(sent: dict) -> dict:
     workspace.check_choice(form['brief_kind'], workspace.BRIEF_KINDS, 'The brief kind')
     form['deck_target'] = sent.get('deck_target')
     workspace.check_choice(form['deck_target'], workspace.DECK_TARGETS, 'The deck target')
+    form['brand'] = _brand(sent, brands, form['deck_target'] is not None)
     form['source_scope'] = sent.get('source_scope') or SCOPE
     workspace.check_choice(form['source_scope'], SCOPES, 'The source scope')
     if not isinstance(sent.get('yoodli', False), bool):
@@ -275,12 +404,13 @@ def check_form(sent: dict) -> dict:
     return form
 
 
-def gates(form: dict) -> int:
+def gates(form: dict, deck: bool = False) -> int:
     """The fewest times a training made from this form asks for a decision: the research
-    plan and the research, and a blueprint, a guide and a brief for each level. Each
-    practice scenario adds one, and nobody knows how many there are until a blueprint
-    names them."""
-    return 2 + 3 * max(1, len(form['levels']))
+    plan and the research, and a blueprint, a guide and a brief for each level. `deck`
+    says a deck will be made here, which adds two for each level: what it says, and the
+    deck. Each practice scenario adds one, and nobody knows how many there are until a
+    blueprint names them."""
+    return 2 + (5 if deck else 3) * max(1, len(form['levels']))
 
 
 def intake_text(form: dict) -> str:
@@ -356,13 +486,15 @@ def _step(stage: str, ident: str, kind: str, label: str, doing: str,
 
 
 def steps(levels, stages=STAGES, practice=None, copies=(), documents: bool = False,
-          own=(), laid=()) -> tuple[Step, ...]:
+          own=(), laid=(), deck: bool = False) -> tuple[Step, ...]:
     """Every step of a training, in the order it is walked.
 
     `stages` are the stages it wants, of those a person may leave out. `practice` gives
     each level's scenario IDs, once a blueprint or a file names them. `copies` names what
     a copy is kept of, and `documents` says the person supplies documents. `own` are the
     scenarios a person wrote, and `laid` those of them they have asked to have laid out.
+    `deck` says a deck can be made here: it then has its steps in each level, after the
+    brief, and otherwise one step, last.
     """
     listed, practice = [], practice or {}
 
@@ -386,12 +518,23 @@ def steps(levels, stages=STAGES, practice=None, copies=(), documents: bool = Fal
             lay(row, level)
     for level in levels or [None]:
         for row in TRAINING:
-            if row[0] in EACH_LEVEL and row[0] in stages:
+            if row[0] in EACH_LEVEL and row[0] in stages and (
+                    row[1] in DECK_STEPS and deck or row[0] != 'deck'):
                 lay(row, level)
     for row in TRAINING:
-        if row[0] == 'package' or (row[0] == 'deck' and 'deck' in stages):
+        if row[0] == 'package' or (row[1] == 'deck' and 'deck' in stages and not deck):
             lay(row)
     return tuple(listed)
+
+
+def bare(ident: str) -> str:
+    """A step's ID without its level: `deck-start@301` is `deck-start`."""
+    return ident.partition('@')[0]
+
+
+def place(root: Path, level: str | None, relative: str) -> Path:
+    """One of a deck's files, in its training's folder or its level's."""
+    return root / f'{workspace.prefix(level)}{relative}'
 
 
 def gate_for(artifact: str) -> Step:
@@ -518,6 +661,7 @@ class _Seen:
     copies: dict            # each file a copy is kept of, with its copies
     tried: dict             # each of those, with the approved version copies were tried for
     supplied: bool          # the person's documents are all added, and here if needed
+    decks: dict = field(default_factory=dict)   # each level's deck, when one is made here
 
 
 def _taken_in(seen: _Seen, name: str) -> bool:
@@ -548,6 +692,8 @@ def _done(step: Step, seen: _Seen) -> bool:
                    for level in seen.session['levels'] or [None])
     if step.id == 'package':
         return seen.session['stage'] == 'done' and (seen.root / INDEX).is_file()
+    if step.stage == 'deck':
+        return bare(step.id) in seen.decks[workspace.split(step.artifact)[1]].done
     made = state.get(step.artifact, 'not-started')
     if step.kind == 'gate':
         return made == 'approved'
@@ -579,9 +725,150 @@ def _supplied(root: Path, given: dict | None, supplied, needed: bool) -> bool:
     return bool(given.get('done')) and (not given.get('count') or here or not needed)
 
 
-def survey(root: Path, run: dict | None = None, copies=(), supplied=()) -> Survey:
+def handoff_text(root: Path, session: dict, level: str | None) -> str:
+    """deck-handoff.md for one deck, as the record says it now."""
+    scenarios = None
+    if 'scenario' in wanted(session):
+        scenarios = sorted(workspace.split(name)[0].partition(':')[2]
+                           for name in practice_names(root, session, level))
+    return deck.handoff(
+        session['title'], level,
+        _text(root, session, workspace.qualify('blueprint', level)) or '', answers(root),
+        session['settings']['deck_target'], brand_of(session), 'document' in wanted(session),
+        scenarios)
+
+
+def practice_names(root: Path, session: dict, level: str | None) -> list[str]:
+    """The practice scenarios one level has or plans, by the core's name."""
+    return [workspace.qualify(f'scenario:{ident}', level)
+            for ident in practice(root, session).get(level) or ()]
+
+
+def made_from(root: Path, session: dict, name: str) -> dict:
+    """What a deck says is written from: the blueprint, and the guide or the research."""
+    return {key: value for key, value in workspace.inputs(root, session, name).items()
+            if not key.startswith('setting:')}
+
+
+def read_built(root: Path, level: str | None) -> dict:
+    """What this computer has built of one deck, and from what. Nothing, on a computer
+    that built none of it."""
+    built = home.read_json(place(root, level, BUILT), {})
+    return built if isinstance(built, dict) else {}
+
+
+def write_built(root: Path, level: str | None, built: dict) -> None:
+    home.write_json(place(root, level, BUILT), built)
+
+
+def outline_of(root: Path, level: str | None) -> dict | None:
+    """What a deck says, as it lies in its folder, or None when it cannot be read."""
+    try:
+        outline = json.loads(place(root, level, OUTLINE).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return outline if isinstance(outline, dict) else None
+
+
+def shots(root: Path, level: str | None, of: str | None = None) -> list[dict]:
+    """The slides whose pictures of the whole deck are on this computer. With `of`, only
+    when they are pictures of that rendered deck."""
+    folder = place(root, level, SHOTS)
+    about = home.read_json(folder / ABOUT, None)
+    if not isinstance(about, dict) or (of is not None and about.get('deck') != of):
+        return []
+    return [slide for slide in about.get('slides') or ()
+            if (folder / f"{slide.get('number')}.png").is_file()]
+
+
+def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
+           level: str | None) -> Deck:
+    """Where one level's deck stands. Nothing is run: its files, the core's record and the
+    run record are read as they lie."""
+    name = workspace.qualify('deck', level)
+    kept = dict(((run.get('deck') or {}).get(level or '') or {}))
+    built, outline = read_built(root, level), outline_of(root, level)
+    brand, start = built.get('brand') or {}, built.get('start') or {}
+    work, said = place(root, level, WORK), workspace.sha256_file(place(root, level, OUTLINE))
+    entry = session['artifacts'].get(name) or {}
+    file = root / workspace.artifact(root, session, name)['file']
+    rounds = tuple(made for made in built.get('rounds') or ()
+                   if made.get('start') == start.get('folder'))
+    waiting = bool(said) and (kept.get('waiting') or {}).get('sha256') == said
+    if state.get(name) in CURRENT and name not in asked and entry.get('sha256') \
+            and entry['sha256'] == workspace.sha256_file(file):
+        # Saved and current: nothing is left before its gate, wherever it was built.
+        done = set(DECK_STEPS[:-1]) | ({DECK_STEPS[-1]} if state[name] == 'approved' else set())
+        return Deck(level, name, frozenset(done), kept, built, outline, rounds=rounds)
+    done, drafted, request = set(), kept.get('outline') or {}, asked.get(name)
+    if _read(place(root, level, HANDOFF)) == handoff_text(root, session, level):
+        done.add('deck-handoff')
+    if brand.get('sha256') and not brand.get('changed') \
+            and (brand.get('brand'), brand.get('variant')) == brand_of(session) \
+            and workspace.sha256_file(work / str(brand.get('contract'))) == brand['sha256']:
+        done.add('deck-brand')
+    if said and drafted.get('sha256') == said and not kept.get('asked') \
+            and drafted.get('from') == made_from(root, session, name) \
+            and (request is None or drafted.get('answers') == request.get('at')):
+        done.add('deck-outline')
+    if said and (kept.get('approved') or {}).get('sha256') == said:
+        done.add('gate:deck-outline')
+    if start.get('outline') == said and start.get('brand') == brand.get('sha256') \
+            and (work / str(start.get('folder')) / 'parts.json').is_file():
+        done.add('deck-start')
+    sections = [section['id'] for section in start.get('sections') or ()]
+    drawn = {ident: made for ident, made in (built.get('sections') or {}).items()
+             if made.get('start') == start.get('folder')
+             and (work / str(made.get('file'))).is_file()}
+    first = tuple(ident for ident in sections if ident not in drawn)
+    last = rounds[-1] if rounds else None
+    wanting = deck.to_repair((last.get('review') or {}).get('findings'), start['sections']) \
+        if last and last.get('review') and len(rounds) <= deck.REPAIRS else []
+    again = tuple(ident for ident in wanting
+                  if ident in drawn and drawn[ident].get('round', 0) < len(rounds))
+    if start and not first:
+        done.add('deck-sections')
+    if not again:
+        done.add('deck-repair')
+    current = {ident: drawn[ident].get('sha256') for ident in sections if ident in drawn}
+    whole = bool(last) and not first and (bool(again) or last.get('made_from') == current) \
+        and bool(shots(root, level, last.get('deck')))
+    if whole:
+        done.add('deck-whole')
+    if whole and last.get('review'):
+        done.add('deck-review')
+    return Deck(level, name, frozenset(done), kept, built, outline, waiting, first, again,
+                rounds)
+
+
+def cannot(session: dict, seen: dict | None) -> tuple[str, ...]:
+    """Why a deck that is wanted cannot be made here, in sentences, or nothing when it can
+    or none is wanted. `seen` is what the engine saw of this computer: what it lacks, and
+    the brands its brand skill has."""
+    if 'deck' not in wanted(session):
+        return ()
+    if seen is None:
+        return (NOT_LOOKED,)
+    missing, chosen = list(seen.get('missing') or ()), brand_of(session)
+    if missing:
+        return tuple(missing)
+    if chosen is None:
+        return (NO_BRAND,)
+    if not any(entry.get('brand') == chosen[0]
+               and chosen[1] in (entry.get('variants') or (None,))
+               for entry in seen.get('brands') or ()):
+        return (f'The brand this training names, {chosen[0]}'
+                + (f' in its variant {chosen[1]}' if chosen[1] else '')
+                + ', is not one the brand skill on this computer has.',)
+    return ()
+
+
+def survey(root: Path, run: dict | None = None, copies=(), supplied=(),
+           deck_here: dict | None = None) -> Survey:
     """Where a training is and the one thing to do now, from its files and its run record.
-    `copies` is what `copies.wanted` returned, and `supplied` what `documents.listed` did."""
+    `copies` is what `copies.wanted` returned, and `supplied` what `documents.listed` did.
+    `deck_here` is what the engine saw of this computer for making a deck: {'missing',
+    'brands'}. Left out, a deck is taken to be something this computer cannot make."""
     session, run = workspace.load(root), run or {}
     state = workspace.statuses(root, session)
     asked = {str(request.get('artifact')): request for request in session['requests']}
@@ -593,22 +880,34 @@ def survey(root: Path, run: dict | None = None, copies=(), supplied=()) -> Surve
     kept: dict[str, list] = {}
     for entry in copies:
         kept.setdefault(entry['artifact'], []).append(entry)
+    missing = cannot(session, deck_here)
+    drawn = 'deck' in wanted(session) and not missing
     listed = steps(session['levels'], wanted(session), named, kept, bool(given),
-                   own - asked.keys(), own & asked.keys())
+                   own - asked.keys(), own & asked.keys(), drawn)
+    decks = {level: stands(root, session, state, asked, run, level)
+             for level in session['levels'] or [None]} if drawn else {}
     seen = _Seen(root, session, state, asked, found, own, kept,
-                 (run.get('copies') or {}).get('tried') or {}, True)
+                 (run.get('copies') or {}).get('tried') or {}, True, decks)
     needed = any(not _done(step, seen) for step in listed if step.id in RESEARCHED)
     seen = replace(seen, supplied=_supplied(root, given, supplied, needed))
     done = frozenset(step.id for step in listed if _done(step, seen))
     first = next((step for step in listed if step.id not in done), None)
-    return Survey(session, state, listed, done, _next(first, session, state, asked, found),
-                  found, asked, named, own, tuple(copies), (given or {}).get('scope') or SCOPE)
+    return Survey(session, state, listed, done,
+                  _next(first, session, state, asked, found, decks), found, asked, named,
+                  own, tuple(copies), (given or {}).get('scope') or SCOPE, decks, missing)
 
 
 def _next(first: Step | None, session: dict, state: dict, asked: dict,
-          found: Research) -> Next:
+          found: Research, decks: dict | None = None) -> Next:
     if first is None:
         return Next('done')
+    if first.stage == 'deck' and first.id != 'deck' and bare(first.id) != DECK_STEPS[-1]:
+        mine = decks[workspace.split(first.artifact)[1]]
+        if first.kind == 'gate':  # the runner's own gate: the core has none for it
+            return Next('outline' if mine.waiting else 'gate', first)
+        request = mine.kept.get('asked') or asked.get(first.artifact)
+        return Next(first.kind, first, request, {
+            'deck-sections': mine.todo, 'deck-repair': mine.again}.get(bare(first.id), ()))
     if first.id == 'intake':
         if state['intake'] == 'not-started':
             return Next('stuck', first, why='The answers this training was started from are '
@@ -626,10 +925,18 @@ def _next(first: Step | None, session: dict, state: dict, asked: dict,
 
 
 def deck_says(found: Survey) -> str:
-    """What to say when the deck is all that is left."""
+    """What to say when the deck is all that is left and cannot be made here: what is
+    missing, and what the person can do."""
     begun = any(found.state.get(workspace.qualify('deck', level), 'not-started')
                 != 'not-started' for level in found.session['levels'] or [None])
-    return DECK_AGAIN if begun else DECK_LEFT
+    return (DECK_AGAIN if begun else DECK_LEFT).format(
+        why=' '.join(found.missing or (NOT_LOOKED,)))
+
+
+def subject(step: Step) -> str:
+    """What a gate puts to the person, to read in the middle of a sentence."""
+    it = workspace.label(step.artifact)
+    return f'what {it} says' if bare(step.id) == 'gate:deck-outline' else it
 
 
 def unmade(found: Survey) -> list[dict]:
@@ -866,8 +1173,16 @@ def _earlier(root: Path, session: dict, level: str | None) -> str | None:
     return '\n'.join(lines) if lines else None
 
 
+def _named_by(inputs: dict, naming: str | None) -> bool:
+    """Give a writer the brand's rules for how the organisation and its products are
+    named, when a brand is chosen. Says whether it did."""
+    if naming:
+        inputs['naming rules'] = naming
+    return bool(naming)
+
+
 def document_work(root: Path, found: Survey, step: Step, request: dict | None,
-                  error: str | None, answered: list[dict]) -> Work:
+                  error: str | None, answered: list[dict], naming: str | None = None) -> Work:
     """The job of writing one learner guide, from its level's blueprint and the research."""
     session, name = found.session, 'document'
     level = workspace.split(step.artifact)[1]
@@ -877,6 +1192,7 @@ def document_work(root: Path, found: Survey, step: Step, request: dict | None,
     earlier = _earlier(root, session, level)
     if earlier:
         inputs['earlier levels'] = earlier
+    named = _named_by(inputs, naming)
     task = (f'Write {workspace.label(step.artifact)} for this training.\n\n'
             f'{_about(root, session)}\n'
             + (f'This guide is for level {level}.\n' if level else '')
@@ -887,17 +1203,19 @@ def document_work(root: Path, found: Survey, step: Step, request: dict | None,
     prepared = {'inputs': inputs,
                 'artifacts': {name: {'kind': 'document', 'blueprint': blueprint}},
                 'ask': _can_ask(answered)}
-    return Work(briefs.guidance('document', level=level), task, 'write', prepared, name)
+    return Work(briefs.guidance('document', level=level, naming=named), task, 'write',
+                prepared, name)
 
 
 def brief_work(root: Path, found: Survey, step: Step, request: dict | None,
-               error: str | None, answered: list[dict]) -> Work:
+               error: str | None, answered: list[dict], naming: str | None = None) -> Work:
     """The job of writing one brief, of the kind the training asks for."""
     session, name = found.session, 'brief'
     level, kind = workspace.split(step.artifact)[1], session['settings']['brief_kind']
     inputs = {'intake': _read(root / 'intake.md') or '',
               'blueprint': _text(root, session, workspace.qualify('blueprint', level)) or '',
               'research findings': findings_text(root)}
+    named = _named_by(inputs, naming)
     task = (f'Write {workspace.label(step.artifact)} for this training. It is a {kind} '
             f'brief.\n\n{_about(root, session)}\n'
             + (f'This brief is for level {level}.\n' if level else '')
@@ -909,8 +1227,8 @@ def brief_work(root: Path, found: Survey, step: Step, request: dict | None,
                 'artifacts': {name: {'kind': 'brief', 'brief_kind': kind,
                                      'findings': session.get('findings')}},
                 'ask': _can_ask(answered)}
-    return Work(briefs.guidance('brief', level=level, kind=kind), task, 'write', prepared,
-                name)
+    return Work(briefs.guidance('brief', level=level, kind=kind, naming=named), task,
+                'write', prepared, name)
 
 
 def _mode(mode: str | None) -> str:
@@ -919,7 +1237,7 @@ def _mode(mode: str | None) -> str:
 
 
 def scenario_work(root: Path, found: Survey, step: Step, request: dict | None,
-                  error: str | None, answered: list[dict]) -> Work:
+                  error: str | None, answered: list[dict], naming: str | None = None) -> Work:
     """The job of drafting one practice scenario the blueprint's practice plan names, or of
     laying out one the person wrote, in their own words, because they asked for that."""
     session, name = found.session, 'scenario'
@@ -936,6 +1254,7 @@ def scenario_work(root: Path, found: Survey, step: Step, request: dict | None,
     if brief:
         inputs['brief'] = brief
     inputs['mode reference'] = briefs.mode(mode)
+    ruled = _named_by(inputs, naming)
     about = (f'{_about(root, session)}\n'
              + (f'This scenario is for level {level}.\n' if level else '')
              + f'Scenario ID: {ident}\nMode: {mode}\n'
@@ -960,7 +1279,7 @@ def scenario_work(root: Path, found: Survey, step: Step, request: dict | None,
                 'artifacts': {name: {'kind': 'scenario', 'label': base,
                                      'mode': named.get('mode')}},
                 'ask': _can_ask(answered)}
-    return Work(briefs.guidance('scenario'), task, 'write', prepared, name)
+    return Work(briefs.guidance('scenario', naming=ruled), task, 'write', prepared, name)
 
 
 def yoodli_facts(profile: dict) -> str:
@@ -1075,17 +1394,179 @@ def yoodli_work(root: Path, found: Survey, step: Step, request: dict | None,
     return Work(briefs.guidance('yoodli'), task, 'write', prepared, name)
 
 
+# --- what a deck's workers are told ------------------------------------------------------
+
+def _told(root: Path, mine: Deck, name: str) -> str:
+    """Something the brand step read for a deck's workers, by its file's name."""
+    brand = mine.built.get('brand') or {}
+    return _read(place(root, mine.level, WORK) / str(brand.get('told')) / name) or ''
+
+
+def reading_file(name: str) -> str:
+    """Where one piece of the slides tool's guidance is kept, beside what else the brand
+    step read for a deck's workers."""
+    return 'reading/' + re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') + '.txt'
+
+
+def _read_also(root: Path, mine: Deck, inputs: dict, names) -> None:
+    """Add the pieces of the slides tool's guidance a worker needs to its inputs, in the
+    order given. One the installed tool does not have is left out."""
+    for name in names:
+        text = _told(root, mine, reading_file(name))
+        if text.strip() and name not in inputs:
+            inputs[name] = text
+
+
+def contract(root: Path, mine: Deck) -> Path:
+    """Where a deck's exported brand contract is, on this computer."""
+    return place(root, mine.level, WORK) / str((mine.built.get('brand') or {})
+                                               .get('contract'))
+
+
+def naming_rules(root: Path, mine: Deck) -> str | None:
+    """How the brand names the organisation and its products, from a deck's own export."""
+    return _read(place(root, mine.level, WORK) / str((mine.built.get('brand') or {})
+                                                     .get('voice')))
+
+
+def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
+                 error: str | None, answered: list[dict]) -> Work:
+    """The job of writing what one deck says: its outline, from the handoff, the
+    blueprint, the guide and the research findings."""
+    session, name = found.session, 'outline'
+    level = workspace.split(step.artifact)[1]
+    mine = found.decks[level]
+    blueprint = _text(root, session, workspace.qualify('blueprint', level)) or ''
+    inputs = {'handoff': _read(place(root, level, HANDOFF)) or '',
+              'outline contract': _told(root, mine, 'outline-contract.txt')}
+    _read_also(root, mine, inputs, DRAFTING)
+    inputs['blueprint'] = blueprint
+    guide = (_text(root, session, workspace.qualify('document', level))
+             if 'document' in wanted(session) else None)
+    if guide:
+        inputs['learner guide'] = guide
+    inputs['research findings'] = findings_text(root)
+    _named_by(inputs, naming_rules(root, mine))
+    said = [finding for finding in ((mine.last or {}).get('review') or {}).get('findings')
+            or () if finding['about'] == deck.ABOUT[1]] if request else []
+    earlier = _read(place(root, level, OUTLINE))
+    dated = bool(earlier) and (mine.kept.get('outline') or {}).get('from') != made_from(
+        root, session, step.artifact)
+    task = (f'Write what {workspace.label(step.artifact)} says: its outline.\n\n'
+            f'{_about(root, session)}\n'
+            + (f'This deck is for level {level}.\n' if level else '')
+            + f'\nYour inputs are {_inputs(inputs)}.\n'
+            'Hand the outline in with submit_outline.'
+            + _again(request, earlier, error, answered, 'the outline', dated)
+            + ('\n\nWhen the slides were drawn, a review found these things about what '
+               'they say. Put right the ones the person\'s request covers:\n\n'
+               + '\n'.join(f"- {finding['slide']}: {finding['note']}" for finding in said)
+               if said else ''))
+    prepared = {'inputs': inputs,
+                'artifacts': {name: {'kind': 'outline', 'brand': str(contract(root, mine)),
+                                     'blueprint': blueprint}},
+                'ask': _can_ask(answered)}
+    return Work(briefs.guidance('deck-outline'), task, 'write', prepared, name)
+
+
+def numbered(ident: str | None) -> int:
+    """A section's number, from its ID: `section-2` is 2."""
+    if not isinstance(ident, str) or not SECTION.match(ident):
+        raise WorkspaceError('A section is named section-1, section-2 and so on.')
+    return int(ident.rpartition('-')[2])
+
+
+def section_work(root: Path, found: Survey, step: Step, section: str, error: str | None,
+                 how: dict) -> Work:
+    """The job of drawing one section of a deck, or of drawing it again after a review.
+    `how` is how its previews are taken, as `worker_tools.render` takes it."""
+    level = workspace.split(step.artifact)[1]
+    mine, name = found.decks[level], 'section'
+    work, start = place(root, level, WORK), mine.start
+    folder, number = work / start['folder'], numbered(section)
+    whole = home.read_json(folder / 'given' / 'outline.json', {})
+    ids = next(listed['slides'] for listed in start['sections'] if listed['id'] == section)
+    inputs = {'brief': _read(folder / 'given' / f'{section}.md') or '',
+              'composition contract': _told(root, mine, 'compose-contract.txt')}
+    relations = [slide.get('relation') for slide in deck.slides_of(whole)
+                 if slide.get('id') in ids and isinstance(slide.get('relation'), str)]
+    _read_also(root, mine, inputs, [*COMPOSING, *(
+        slides_tool.example(relation) for relation in sorted(set(relations)))])
+    again, look = section in mine.again, []
+    task = (f'Draw section {number} of {workspace.label(step.artifact)}: the slides in your '
+            f'input "brief".\n\nYour inputs are {_inputs(inputs)}.\n'
+            'Hand the section in with submit_section.')
+    if again:
+        drawn = (mine.built.get('sections') or {}).get(section) or {}
+        slides = [slide for slide in mine.last['slides'] if slide['id'] in ids]
+        inputs['what the review found'] = deck.told(mine.last['review']['findings'], slides)
+        inputs['your earlier section'] = _read(work / str(drawn.get('file'))) or ''
+        look = [{**{key: slide[key] for key in ('number', 'id', 'title')},
+                 'image': str(place(root, level, SHOTS) / f"{slide['number']}.png")}
+                for slide in slides]
+        task = (f'Draw section {number} of {workspace.label(step.artifact)} again. It was '
+                'drawn, rendered and reviewed, and the review found things wrong with how '
+                'some of its slides are drawn. Your input "what the review found" lists '
+                'them, "your earlier section" is what was drawn, and look_at_slide shows '
+                'each slide as the reviewer saw it. Put right what was found and leave '
+                f'alone what works.\n\nYour inputs are {_inputs(inputs)}.\n'
+                'Hand the section in with submit_section.')
+    task += _again(None, None, error, [], 'the section')
+    prepared = {'inputs': inputs, 'ask': False, 'look': look,
+                'artifacts': {name: {'kind': 'section', 'brand': str(contract(root, mine)),
+                                     **deck.fixed(whole, ids, number),
+                                     'previews': deck.PREVIEWS, **how}}}
+    return Work(briefs.guidance('deck-section', repair=again), task, 'write', prepared, name)
+
+
+def review_work(root: Path, found: Survey, step: Step, error: str | None) -> Work:
+    """The job of reviewing a whole deck as it was rendered, by a worker that drew none
+    of it. After a round of drawing again it is also told what was found before."""
+    session = found.session
+    level = workspace.split(step.artifact)[1]
+    mine = found.decks[level]
+    work, last = place(root, level, WORK), mine.last
+    parsed = checks.parse_blueprint(
+        _text(root, session, workspace.qualify('blueprint', level)) or '')
+    objectives = {ident: objective['text'] for ident, objective in parsed['objectives'].items()}
+    earlier = (mine.rounds[-2].get('review') or {}).get('findings') \
+        if len(mine.rounds) > 1 else None
+    slides = [{**{key: slide[key] for key in ('number', 'id', 'title')},
+               'image': str(place(root, level, SHOTS) / f"{slide['number']}.png")}
+              for slide in last['slides']]
+    task = (f'Review {workspace.label(step.artifact)} as it was rendered: '
+            f'{len(slides)} slides. Your input "the review" has the questions, the slides '
+            'and the objectives. Hand in what you find with submit_assessment, then say '
+            'which slides address each objective with submit_coverage.'
+            + _again(None, None, error, [], 'the review'))
+    prepared = {'inputs': {'the review': deck.asked(objectives, slides, earlier)},
+                'ask': False,
+                'review': {'preview': str(work / last['preview']), 'deck': last['deck'],
+                           'slides': slides, 'objectives': list(objectives),
+                           'recorded': str(work / last['folder'] / 'assessment.json')}}
+    return Work(briefs.guidance('deck-review'), task, 'write', prepared)
+
+
 WORKS = {'blueprint': blueprint_work, 'document': document_work, 'brief': brief_work,
          'scenario': scenario_work, 'yoodli': yoodli_work}
+NAMED = ('document', 'brief', 'scenario')   # the writers a brand's naming rules are given to
 
 
 def work(root: Path, found: Survey, step: Step, request: dict | None, error: str | None,
-         answered: list[dict], sources=None) -> Work:
+         answered: list[dict], sources=None, naming: str | None = None) -> Work:
     """The job a drafting step gives a worker. `sources` is what `documents.sources`
-    returned, which only the research questions are drafted from."""
+    returned, which only the research questions are drafted from. `naming` is how the
+    training's brand names the organisation and its products, which the writers of the
+    guide, the brief and the scenarios are given."""
     if step.id == 'research-plan':
         return plan_work(root, found, request, error, answered, sources)
+    if bare(step.id) == 'deck-outline':
+        return outline_work(root, found, step, request, error, answered)
+    if bare(step.id) == 'deck-review':
+        return review_work(root, found, step, error)
     kind = workspace.split(step.artifact)[0].partition(':')[0]
+    if kind in NAMED:
+        return WORKS[kind](root, found, step, request, error, answered, naming)
     return WORKS[kind](root, found, step, request, error, answered)
 
 
@@ -1333,3 +1814,232 @@ def keep_report(root: Path, found: Research, reasons: dict) -> None:
               'you to judge.']
     workspace.append_review(root, 'research', f'Ready for your review, {workspace.now()}',
                             '\n'.join(lines))
+
+
+# --- a deck: what is kept, and what its gates show ---------------------------------------
+
+
+def keep_outline(root: Path, found: Survey, level: str | None, handed: dict,
+                 request: dict | None) -> dict:
+    """Keep what a deck says in the deck's own folder, as the checks let it through.
+    Returns what the run record holds of it: its hash, what it was written from, what was
+    checked, the worker's own notes, and the request it answers. Nothing is approved here:
+    the outline's gate is the person's, on the page."""
+    draft = next(iter(handed['artifacts'].values()))
+    target, name = place(root, level, OUTLINE), workspace.qualify('deck', level)
+    workspace.write_atomic(target, draft['text'].encode('utf-8'))
+    about_deck = found.asked.get(name)
+    return {'sha256': workspace.sha256_file(target), 'from': made_from(root, found.session, name),
+            'checks': draft['checks'], 'warnings': draft['warnings'],
+            'notes': (handed['review'] or '').strip() or None,
+            'answers': about_deck.get('at') if about_deck else None,
+            'because': ({'kind': request.get('kind'), 'note': request.get('note')}
+                        if request else None), 'at': workspace.now()}
+
+
+def outline_view(root: Path, found: Survey, level: str | None) -> dict | None:
+    """What the page shows of what one deck says: its slides in order, what was checked,
+    what is worth a look, and the worker's own notes."""
+    mine = found.decks.get(level)
+    if mine is None or mine.outline is None:
+        return None
+    drafted = mine.kept.get('outline') or {}
+    current = drafted.get('sha256') == workspace.sha256_file(place(root, level, OUTLINE))
+    ran = drafted.get('checks') or () if current else ()
+    worth = list(drafted.get('warnings') or ()) if current else [
+        'This is not the version the checks were run on.']
+    worth += [f"Did not pass ({outcome['check']}): {problem}" for outcome in ran
+              if outcome['status'] != 'passed' for problem in outcome['problems']]
+    blueprint = _text(root, found.session, workspace.qualify('blueprint', level)) or ''
+    if checks.parse_blueprint(blueprint)['open_gaps'].strip():
+        worth.append(IN_OTHER_WORDS)
+    because = drafted.get('because') if current else None
+    if because:
+        asked = 'a new draft' if because.get('kind') == 'rebuild' else 'changes'
+        worth.append(f'This version was written because you asked for {asked}'
+                     + (f": {workspace.shortened(because['note'])}" if because.get('note')
+                        else '.'))
+    if current and drafted.get('notes'):
+        worth.append("The worker's own notes, which are its judgment and not a check: "
+                     + drafted['notes'])
+    return {'level': level, 'waiting': mine.waiting, 'slides': deck.shown(mine.outline),
+            'sha256': workspace.sha256_file(place(root, level, OUTLINE)),
+            'checked': list(OUTLINE_CHECKED) if ran and all(
+                outcome['status'] == 'passed' for outcome in ran) else [],
+            'worth': worth, 'note': (because or {}).get('note')}
+
+
+def deck_view(root: Path, found: Survey, level: str | None, live: dict | None = None,
+              failed=()) -> dict | None:
+    """What the page shows of a deck being drawn: each section with how it stands, how
+    many previews it has taken and the slides its latest preview shows; how many pictures
+    there are of the whole deck; and what a deck of this size has cost before. `live` maps
+    each section a worker is drawing now to {'previews', 'slides'}.
+
+    A section's `slides` are numbered within that section's own preview, from 1, which is
+    what `picture_of` takes with the section: where a slide falls in the deck is not known
+    until the sections are merged. `titles` gives each of those slides its title, in the
+    same order."""
+    mine = found.decks.get(level)
+    if mine is None:
+        return None
+    sections, started = [], 'deck-start' in mine.done
+    named = {slide.get('id'): slide.get('title') for slide in deck.slides_of(mine.outline)}
+    for listed in (mine.start.get('sections') or ()) if started else ():
+        ident, now = listed['id'], (live or {}).get(listed['id'])
+        made = (mine.built.get('sections') or {}).get(ident) or {}
+        if made.get('start') != mine.start.get('folder'):
+            made = {}
+        waits = ident in mine.todo or ident in mine.again or not made
+        state = ('working' if now is not None else 'failed' if ident in failed else
+                 'to-do' if waits else 'done')
+        shown = now or {'previews': made.get('previews', 0),
+                        'slides': list(made.get('pictures') or ())}
+        ids = list(listed.get('slides') or ())
+        sections.append({'id': ident, 'state': state, 'previews': shown['previews'],
+                         'slides': list(shown['slides']),
+                         'titles': [str(named.get(ids[number - 1]) or '')
+                                    if type(number) is int and 0 < number <= len(ids) else ''
+                                    for number in shown['slides']]})
+    slides = len(deck.slides_of(mine.outline))
+    return {'level': level, 'sections': sections,
+            'pictures': len(shots(root, level, mine.last['deck'])) if mine.last else 0,
+            'before': deck.before(slides) if slides else None}
+
+
+def picture_of(root: Path, level: str | None, number, section: str | None = None) -> Path:
+    """Where the runner keeps one slide's picture: of the whole deck as it was last
+    previewed, or of one section's latest preview. The place is worked out from the level,
+    the section's ID and the slide's number, and from nothing else."""
+    if type(number) is not int or not 1 <= number <= 999:
+        raise WorkspaceError('Slides are numbered from 1.')
+    if section is not None and not SECTION.match(section):
+        raise WorkspaceError('A section is named section-1, section-2 and so on.')
+    folder = place(root, level, SHOTS) if section is None else place(root, level, DRAWN) / section
+    return folder / f'{number}.png'
+
+
+def audited(audit: dict | None, why: str | None = None) -> dict:
+    """The brand's own audit of a deck, as its gate shows it: the status, each kind of
+    warning once with how often it was given, and anything the audit holds against it."""
+    if not isinstance(audit, dict):
+        return {'status': 'blocked', 'warnings': [], 'blockers': [why] if why else []}
+    counted: dict[str, dict] = {}
+    for warning in audit.get('warnings') or ():
+        warning = warning if isinstance(warning, dict) else {'code': 'note', 'says': warning}
+        entry = counted.setdefault(str(warning.get('code')), {
+            'code': str(warning.get('code')), 'count': 0, 'says': str(warning.get('says'))})
+        entry['count'] += 1
+    blockers = [str(blocker.get('says') if isinstance(blocker, dict) else blocker)
+                for blocker in audit.get('blockers') or ()]
+    return {'status': 'blocked' if blockers else 'warnings' if counted else 'ok',
+            'warnings': list(counted.values()), 'blockers': blockers}
+
+
+def deck_shows(root: Path, session: dict, mine: Deck, audit: dict, cited: dict | None) -> dict:
+    """What gate 6 shows of a deck beside its slides: what the review still finds, the
+    brand's audit, and for each objective the slides the reviewer found it on and the
+    slides that cite it."""
+    last = mine.last
+    review = last['review']
+    parsed = checks.parse_blueprint(
+        _text(root, session, workspace.qualify('blueprint', mine.level)) or '')
+    return {'rendered': last['deck'], 'round': len(mine.rounds),
+            'slides': [{key: slide[key] for key in ('number', 'id', 'title')}
+                       for slide in last['slides']],
+            'findings': [{key: finding.get(key) for key in (
+                'slide', 'number', 'severity', 'about', 'note', 'fix')}
+                for finding in deck.ordered(review['findings'])],
+            'audit': audit,
+            'coverage': [{'objective': ident, 'says': objective['text'],
+                          'reviewed': list((review.get('coverage') or {}).get(ident) or ()),
+                          'cited': sorted(number for number in (cited or {}).get(ident) or ()
+                                          if type(number) is int)}
+                         for ident, objective in parsed['objectives'].items()]}
+
+
+def deck_note(shows: dict, request: dict | None, dated: bool) -> list[str]:
+    """What gate 6 says of a deck: the audit, what the review still finds with the gravest
+    first, the coverage as reviewed, and why this version was made. A deck is never called
+    clear while a major finding remains."""
+    audit, findings = shows['audit'], shows['findings']
+    lines = ['Checked for you:',
+             "- The brand's own audit "
+             + {'ok': 'raised nothing.', 'warnings': 'passed it, with warnings.'}.get(
+                 audit['status'], 'holds something against it.')
+             + (f" It gave {sum(entry['count'] for entry in audit['warnings'])} warning"
+                f"{'' if sum(entry['count'] for entry in audit['warnings']) == 1 else 's'}."
+                if audit['warnings'] else '')]
+    lines += [f"  - {entry['code']}, {entry['count']} time{'' if entry['count'] == 1 else 's'}"
+              f": {entry['says']}" for entry in audit['warnings']]
+    lines += [f'  - The audit holds this against the deck: {blocker}'
+              for blocker in audit['blockers']]
+    lines += ['', deck.remains(findings)]
+    left = deck.grave(findings)
+    if left:
+        lines += ['', 'What the review still finds, in the reviewer\'s words:']
+        lines += [f"- Slide {finding['number']}, {finding['severity']}, about "
+                  + ('what it says' if finding['about'] == deck.ABOUT[1] else
+                     'how it is drawn') + f": {finding['note']}" for finding in left]
+    if any(finding['about'] == deck.ABOUT[1] for finding in left):
+        lines += ['', 'A finding about what a slide says is yours to settle. Ask for '
+                  'changes here, and what the deck says is written again and comes back '
+                  'to you before anything is drawn.']
+    drawn_again = shows['round'] - 1
+    if drawn_again:
+        lines += ['', f"The slides were drawn again {drawn_again} time"
+                  f"{'' if drawn_again == 1 else 's'} after a review, which is "
+                  + ('as often as they may be.' if drawn_again >= deck.REPAIRS else
+                     'as often as the review asked.')]
+    lines += ['', 'Coverage, as the reviewer read it off the slides. It is a judgment, not '
+              'a check:']
+    lines += [f"- {entry['objective']}: " + ('slide' + ('' if len(entry['reviewed']) == 1
+                                                         else 's') + ' '
+              + ', '.join(map(str, entry['reviewed'])) if entry['reviewed']
+              else 'not found on any slide') for entry in shows['coverage']]
+    lines += ['', 'This is the deck the pictures on the page show. Approving it approves '
+              'exactly those slides.']
+    if request:
+        asked = 'a new deck' if request.get('kind') == 'rebuild' else 'changes'
+        lines.append(f'This version was made because you asked for {asked}'
+                     + (f": {workspace.shortened(request['note'])}" if request.get('note')
+                        else '.'))
+    elif dated:
+        lines.append('This version was made because what the earlier one was made from '
+                     'changed, and you approved the change.')
+    return lines
+
+
+def keep_deck(root: Path, found: Survey, mine: Deck, source: Path | None, link: str | None,
+              shows: dict) -> dict:
+    """Save a deck through the core with its reviewed coverage: the PowerPoint file that
+    was previewed, or the link to the Google Slides made from it. What its gate shows is
+    kept beside what it says, tied to the file the core recorded. Returns the core's entry."""
+    name, session = mine.name, found.session
+    coverage = {entry['objective']: entry['reviewed'] for entry in shows['coverage']}
+    request, dated = found.asked.get(name), found.state.get(name) == 'stale'
+    if link is not None:
+        file = workspace.managed(root, workspace.artifact(root, session, name)['file'])
+        workspace.write_atomic(file, link.encode('utf-8'))
+        entry = workspace.save(root, name, built=True, coverage=coverage)
+    else:
+        entry = workspace.save(root, name, source=source, coverage=coverage)
+    home.write_json(place(root, mine.level, SHOWS), {**shows, 'deck': entry['sha256']})
+    workspace.append_review(root, name, f'Ready for your review, {workspace.now()}',
+                            '\n'.join(deck_note(shows, request, dated)))
+    return entry
+
+
+def deck_gate(root: Path, session: dict, name: str) -> dict:
+    """What gate 6 adds for a deck the runner made: the slides whose pictures are on this
+    computer, what the review still finds, the brand's audit and the coverage. For a deck
+    it did not make, or one that has changed since, there is nothing to add."""
+    level = workspace.split(name)[1]
+    shows = home.read_json(place(root, level, SHOWS), None)
+    file = root / workspace.artifact(root, session, name)['file']
+    if not isinstance(shows, dict) or shows.get('deck') != workspace.sha256_file(file):
+        return {'slides': [], 'review': None, 'audit': None, 'coverage': []}
+    here = {slide['number'] for slide in shots(root, level, shows.get('rendered'))}
+    return {'slides': [slide for slide in shows['slides'] if slide['number'] in here],
+            'review': {'round': shows['round'], 'findings': shows['findings']},
+            'audit': shows['audit'], 'coverage': shows['coverage']}

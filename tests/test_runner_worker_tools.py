@@ -54,7 +54,8 @@ class PrepareTests(JobCase):
             worker_tools.prepare(self.job, artifacts={'brief': {'kind': 'brief',
                                                                 'brief_kind': 'sales'}})
         self.assertEqual(list(worker_tools.VALIDATORS), [
-            'research-plan', 'blueprint', 'document', 'brief', 'scenario', 'yoodli'])
+            'research-plan', 'blueprint', 'document', 'brief', 'scenario', 'yoodli', 'outline',
+            'section'])
 
     def test_a_finding_needs_a_question_id(self):
         with self.assertRaisesRegex(WorkspaceError, 'not a research question ID'):
@@ -1121,7 +1122,7 @@ class ServerTests(JobCase):
             self.assertTrue(entry['description'])
             self.assertLessEqual(set(entry['inputSchema']['required']),
                                  set(entry['inputSchema']['properties']))
-        self.assertEqual(len(worker_tools.NAMES), 9)
+        self.assertEqual(len(worker_tools.NAMES), 18)
 
     def answer(self, tools, method, params=None, ident=1):
         message = {'jsonrpc': '2.0', 'method': method, 'params': params or {}}
