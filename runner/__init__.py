@@ -10,6 +10,8 @@ at every gate for a decision on the page, the slide deck included.
     agents         start Claude or Codex as a worker for one job, or script one for tests
     worker_tools   the only tools a worker has, and the server that offers them to an agent
     gitstate       the workspace: one folder inside a git repository, committed and shared
+    companion      finding a companion skill, and running any command so that Stop and a
+                   time limit end everything it started
     research       the harness-research command line, called from Python
     briefs         what a worker is told for each kind of job
     documents      the documents a person supplies for a training's research

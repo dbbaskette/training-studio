@@ -6,6 +6,7 @@ import json
 import os
 import ssl
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -15,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 import helpers  # noqa: F401
-from runner_support import BLUEPRINT, JobCase
+from runner_support import BLUEPRINT, JobCase, still_running, written
 
 from runner import agents, worker_tools
 from runner.agents import Claude, Codex, Job, Limits, Outcome, Scripted
@@ -104,26 +105,29 @@ cat > "$FAKE_OUT/stdin"
 """
 
 
-def gone(pid: int) -> bool:
-    """True when a process has ended, whether or not anything has collected it yet."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    try:
-        state = Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[0]
-    except (OSError, IndexError):
-        return False
-    return state == 'Z'
-
-
 def lines(reader, stream) -> list[str]:
     return [line for event in stream for line in reader.feed(event)]
 
 
 class AgentCase(JobCase):
     """A job in a temporary folder, with the rule against shared temporary folders lifted
-    so that a pretend agent can be run there."""
+    so that a pretend agent can be run there.
+
+    Every pretend agent is started through one launcher, run once before any test. A Mac
+    checks a new program the first time it runs, one program at a time across the whole
+    computer, which can take seconds when it is busy: longer than a short time limit."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        holder = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(holder.cleanup)
+        cls.launcher = Path(holder.name) / 'launch-agent'
+        cls.launcher.write_text('#!/bin/sh\nexec /bin/sh "$FAKE_OUT/../pretend-agent" "$@"\n')
+        cls.launcher.chmod(cls.launcher.stat().st_mode | stat.S_IXUSR)
+        (Path(holder.name) / 'out').mkdir()
+        subprocess.run([str(cls.launcher)], stdin=subprocess.DEVNULL, capture_output=True,
+                       env={**os.environ, 'FAKE_OUT': f'{holder.name}/out'}, timeout=120)
 
     def setUp(self):
         super().setUp()
@@ -145,15 +149,13 @@ class AgentCase(JobCase):
         return Job(**given)
 
     def program(self, body: str, stream=None) -> str:
-        """A shell script standing in for an agent. It prints `stream` where the body
-        says `cat "$FAKE_OUT/events"`."""
+        """A shell script standing in for an agent, run by the launcher. It prints `stream`
+        where the body says `cat "$FAKE_OUT/events"`."""
         if stream is not None:
             (self.out / 'events').write_text(
                 ''.join(json.dumps(event) + '\n' for event in stream))
-        path = self.base / 'pretend-agent'
-        path.write_text('#!/bin/sh\n' + body)
-        path.chmod(path.stat().st_mode | stat.S_IXUSR)
-        return str(path)
+        (self.base / 'pretend-agent').write_text(body)
+        return str(self.launcher)
 
     def kept(self, name: str) -> str:
         return (self.out / name).read_text()
@@ -472,13 +474,25 @@ class RunTests(AgentCase):
         self.assertEqual(outcome.detail, 'It did not finish in 1 seconds, so it was stopped.')
         self.assertEqual(said, ['Started on m'])
         self.assertIn('"init"', outcome.events.read_text())
-        child = int(self.kept('child'))
-        for _ in range(100):
-            if gone(child):
-                break
-            time.sleep(0.05)
-        else:
-            self.fail('What the worker started was left running.')
+        self.assertEqual(still_running([int(self.kept('child'))]), [],
+                         'What the worker started was left running.')
+
+    def test_an_agent_that_ends_while_its_child_keeps_the_output_open_is_not_waited_for(self):
+        # What it leaves behind still holds the output open. The run ends with the agent,
+        # well inside its time limit and with a stop that never comes, and takes the child
+        # with it.
+        body = ('cat > /dev/null\nsleep 30 &\necho $! > "$FAKE_OUT/child"\n'
+                'cat "$FAKE_OUT/events"\n')
+        for stop in (None, threading.Event()):
+            with self.subTest(stop=stop):
+                started = time.monotonic()
+                outcome = Claude(self.program(body, CLAUDE_STREAM)).run(
+                    self.make(limits=Limits(seconds=20)), stop=stop)
+                self.assertLess(time.monotonic() - started, 10)
+                self.assertEqual((outcome.finished, outcome.text),
+                                 (True, 'The finding for instance-min was accepted.'))
+                self.assertEqual(still_running([int(self.kept('child'))]), [],
+                                 'What the worker started was left running.')
 
     def test_an_agent_that_is_not_installed_is_unavailable(self):
         outcome = Claude('no-such-agent-anywhere').run(self.make())
@@ -530,20 +544,25 @@ class RunTests(AgentCase):
 
 class StopTests(AgentCase):
     def test_a_worker_that_is_stopped_ends_at_once_and_says_so(self):
-        program = self.program('cat > /dev/null\necho \'{"type": "system", "subtype": '
-                               '"init"}\'\nsleep 60\n')
+        program = self.program('cat > /dev/null\nsleep 60 &\necho $! > "$FAKE_OUT/child"\n'
+                               'echo \'{"type": "system", "subtype": "init"}\'\nsleep 60\n')
         for adapter in (Claude(program), Codex(program)):
             with self.subTest(adapter.name):
-                stop = threading.Event()
-                timer = threading.Timer(0.3, stop.set)
-                timer.start()
-                self.addCleanup(timer.cancel)
+                child, stop = self.out / 'child', threading.Event()
+                child.unlink(missing_ok=True)
+                # Stopped once it has started its child, however slow this computer is.
+                stopping = threading.Thread(target=lambda: (written(child), stop.set()))
+                stopping.start()
+                self.addCleanup(stop.set)
                 started = time.monotonic()
                 outcome = adapter.run(self.make(limits=Limits(seconds=60)), stop=stop)
+                stopping.join()
                 self.assertLess(time.monotonic() - started, 20)
                 self.assertEqual((outcome.finished, outcome.reason, outcome.detail),
                                  (False, 'stopped', 'It was stopped before it finished.'))
                 self.assertIn(outcome.reason, agents.REASONS)
+                self.assertEqual(still_running(written(child)), [],
+                                 'What the worker started was left running.')
 
     def test_a_scripted_worker_takes_the_same_arguments(self):
         worker_tools.prepare(self.job)
@@ -613,6 +632,39 @@ class SuperviseTests(JobCase):
                               'import time\nprint("x", flush=True)\ntime.sleep(60)'],
                              self.base, dict(os.environ), '', 60, self.base / 'e.txt', broken)
         self.assertLess(time.monotonic() - started, 20)
+
+    def test_a_child_left_holding_the_output_does_not_hold_the_caller(self):
+        printed, started = [], time.monotonic()
+        found = agents.supervise(['sh', '-c', 'echo started\nsleep 30 &\necho $!'], self.base,
+                                 dict(os.environ), '', 20, self.base / 'errors.txt',
+                                 printed.append)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual((found, printed[0]), ((0, False), b'started\n'))
+        self.assertEqual(still_running([int(printed[1])]), [])
+
+    def test_a_child_left_running_past_the_limit_is_ended_with_the_command(self):
+        printed, started = [], time.monotonic()
+        code, late = agents.supervise(['sh', '-c', 'sleep 30 &\necho $!\nsleep 30'], self.base,
+                                      dict(os.environ), '', 3, self.base / 'errors.txt',
+                                      printed.append)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertTrue(late)
+        self.assertLess(code, 0)
+        self.assertEqual(still_running([int(printed[0])]), [])
+
+    def test_a_process_that_left_the_group_holds_the_caller_only_a_moment(self):
+        # It started a session of its own, so it is out of reach; the caller stops
+        # reading and goes on all the same.
+        escape = ('import subprocess, sys\n'
+                  'away = subprocess.Popen([sys.executable, "-c", "import time; '
+                  'time.sleep(30)"], start_new_session=True)\n'
+                  'print(away.pid, flush=True)\n')
+        printed, started = [], time.monotonic()
+        found = agents.supervise([sys.executable, '-c', escape], self.base, dict(os.environ),
+                                 '', 20, self.base / 'errors.txt', printed.append)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(found, (0, False))
+        self.assertEqual(still_running([int(printed[0])], seconds=0), [int(printed[0])])
 
 
 class ScriptedTests(JobCase):

@@ -58,7 +58,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import weakref
 import zipfile
@@ -67,13 +66,11 @@ from pathlib import Path
 import runner  # noqa: F401  puts the core on the import path
 from workspace import WorkspaceError
 
-from runner import slides
+from runner import companion as companions, slides
 
 VARIABLE = 'BRAND_SKILL_RUNTIME'
 TIMEOUT = 120
 DELIVERIES = ('reading', 'live')
-SHARED = (('Library', 'Application Support'), ('.local', 'share'))  # each skill has a folder
-SKILLS = (('.claude', 'skills'), ('.agents', 'skills'), ('.cursor', 'skills'))
 NAMED = re.compile(r'^[\w.-]{1,80}$')
 NOISE = re.compile(r'^\((?:node:\d+\)|Use `node )')   # Node's own warnings, not the skill's
 NOT_WHOLE = ('The brand skill answered with something other than the JSON it should. '
@@ -93,19 +90,7 @@ class Refused(WorkspaceError):
 def locations(home: Path | None = None) -> list[Path]:
     """Every folder that may be an installed skill. The override, when set, is the only
     place looked. `home` stands in for the person's home folder."""
-    override = os.environ.get(VARIABLE)
-    if override:
-        return [Path(override).expanduser()]
-
-    def inside(folder: Path) -> list[Path]:
-        try:
-            return sorted(folder.iterdir())
-        except OSError:
-            return []
-
-    user = home or Path.home()
-    return [place / 'current' for parts in SHARED for place in inside(user.joinpath(*parts))] \
-        + [place for parts in SKILLS for place in inside(user.joinpath(*parts))]
+    return companions.locations(VARIABLE, home=home)
 
 
 def companion(folder: Path, *names: str) -> Path | None:
@@ -134,14 +119,7 @@ def companion(folder: Path, *names: str) -> Path | None:
 
 def run_command(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
     """Run the command line once: (exit code, standard output, standard error)."""
-    try:
-        done = subprocess.run(command, cwd=cwd, capture_output=True, timeout=TIMEOUT,
-                              stdin=subprocess.DEVNULL, encoding='utf-8', errors='replace')
-    except subprocess.TimeoutExpired:
-        raise WorkspaceError(f'The brand skill did not answer in {TIMEOUT} seconds.')
-    except OSError as failure:
-        raise WorkspaceError(f'The brand skill could not be started ({failure}).')
-    return done.returncode, done.stdout, done.stderr
+    return companions.run_command(command, cwd, TIMEOUT, 'The brand skill')
 
 
 def _lines(err: str, code: int) -> list[str]:

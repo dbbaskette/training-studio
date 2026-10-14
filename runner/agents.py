@@ -25,7 +25,8 @@ What a caller needs to know
   `timeout`, `limit`, `failed`, `unavailable` or `stopped`, with a sentence in `detail`. It
   raises WorkspaceError only for a job that is wrong before it starts.
 - `stop` is a threading.Event. Setting it ends the worker and everything it started within
-  a moment, and the outcome's reason is `stopped`.
+  a moment, and the outcome's reason is `stopped`. The time limit ends everything too, and
+  whatever a worker leaves running is ended when it ends; see `companion.supervise`.
 - `activity` is called with one short plain line each time the worker does something.
 - `ready()` says whether the agent is installed, signed in and reachable from this network.
   It never starts an agent. Being signed in is not enough: a network can block one agent.
@@ -41,7 +42,6 @@ import http.client
 import json
 import os
 import shutil
-import signal
 import socket
 import ssl
 import subprocess
@@ -58,7 +58,7 @@ import runner  # noqa: F401  puts the core on the import path
 import home
 from workspace import WorkspaceError
 
-from runner import worker_tools
+from runner import companion, worker_tools
 
 PROFILES = ('write', 'research')
 REASONS = ('timeout', 'limit', 'failed', 'unavailable', 'stopped')
@@ -359,64 +359,7 @@ class CodexEvents:
 
 # --- running a command under a time limit ----------------------------------------------
 
-def supervise(command: list[str], cwd: Path, env: dict, stdin: str, seconds: float,
-              errors: Path, each, stop: threading.Event | None = None) -> tuple[int, bool]:
-    """Run a command to its end or to its time limit, passing each line it prints to
-    `each` as bytes. Returns its exit code and whether it was stopped for taking too long.
-
-    The command gets a process group of its own, and the whole group is killed when time
-    runs out, when `stop` is set or when the caller fails, so nothing it started is left
-    running.
-    """
-    with open(errors, 'wb') as complaints:
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, stderr=complaints,
-                                   start_new_session=True)
-    late = threading.Event()
-
-    def kill() -> None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-    def out_of_time() -> None:
-        if process.poll() is None:
-            late.set()
-            kill()
-
-    def feed() -> None:
-        for step in (lambda: process.stdin.write(stdin.encode('utf-8')), process.stdin.close):
-            try:
-                step()
-            except OSError:
-                pass  # it stopped reading; how it ended says why
-
-    def watch() -> None:
-        while process.poll() is None:
-            if stop.wait(0.2):
-                kill()
-                return
-
-    timer = threading.Timer(seconds, out_of_time)
-    timer.daemon = True
-    writer = threading.Thread(target=feed, daemon=True)
-    timer.start()
-    writer.start()
-    if stop is not None:
-        threading.Thread(target=watch, daemon=True).start()
-    try:
-        for line in process.stdout:
-            each(line)
-        process.wait()
-    finally:
-        timer.cancel()
-        if process.poll() is None:
-            kill()
-            process.wait()
-        writer.join(timeout=10)
-        process.stdout.close()
-    return process.returncode, late.is_set()
+supervise = companion.supervise   # the one supervisor, shared with the companion commands
 
 
 def tail(path: Path, length: int = 300) -> str:
