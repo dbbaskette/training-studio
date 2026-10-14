@@ -66,7 +66,8 @@ def describe(engine) -> dict:
     can, problem = engine.notifier.can()
     return {'configured': space is not None, 'workspace': found,
             'notify': {'on': chosen.notify, 'can': can, 'problem': problem},
-            'agent': {'default': chosen.agent, 'model': chosen.model},
+            'agent': {'default': chosen.agent, 'model': chosen.model,
+                      'effort': chosen.effort},
             'limits': chosen.limits,
             'previews': {'how': chosen.previews, 'drive': needs['drive'],
                          'local': needs['local'], 'left': engine.previews_left()},
@@ -279,13 +280,16 @@ def chosen(sent: dict) -> settings.Settings:
     if limits is not None and not isinstance(limits, dict):
         raise WorkspaceError('Give the limits as step_seconds, training_dollars and parallel.')
     agent = sent.get('agent') or kept.agent
-    model = sent['model'] if 'model' in sent else (kept.model if agent == kept.agent else None)
+    same = agent == kept.agent
+    model = sent['model'] if 'model' in sent else (kept.model if same else None)
+    effort = sent['effort'] if 'effort' in sent else (kept.effort if same else None)
     wanted = {name: (limits or {}).get(name, getattr(kept, name))
               for name in ('step_seconds', 'training_dollars', 'parallel')}
     previews = sent['previews'] if sent.get('previews') is not None else kept.previews
     skill = sent['brand_skill'] if sent.get('brand_skill') is not None else kept.brand_skill
     notify = sent['notify'] if sent.get('notify') is not None else kept.notify
-    return settings.check(replace(kept, agent=agent, model=model, previews=previews,
+    return settings.check(replace(kept, agent=agent, model=model, effort=effort,
+                                  previews=previews,
                                   brand_skill=skill, notify=notify, **wanted))
 
 

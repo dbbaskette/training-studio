@@ -226,6 +226,12 @@ class ClaudeCommandTests(AgentCase):
         self.assertEqual(command[0], '/opt/bin/claude')
         self.assertEqual(command[-4:], ['--max-budget-usd', '2.5', '--model', 'sonnet'])
 
+    def test_the_reasoning_level_is_passed_when_given(self):
+        command = Claude().command(self.make(model='opus', effort='xhigh'))
+        self.assertEqual(command[-4:], ['--model', 'opus', '--effort', 'xhigh'])
+        self.assertEqual(Claude().command(self.make(effort='low'))[-2:], ['--effort', 'low'])
+        self.assertNotIn('--effort', Claude().command(self.make()))
+
     def test_the_only_mcp_server_is_the_jobs_own_tools(self):
         job = self.make()
         Claude().command(job)
@@ -275,6 +281,16 @@ class CodexCommandTests(AgentCase):
         for never in ('--dangerously-bypass-approvals-and-sandbox', 'danger-full-access',
                       '--enable', '--add-dir'):
             self.assertNotIn(never, command)
+
+    def test_the_reasoning_level_is_set_beside_the_model(self):
+        # Codex reads `-c` even with --ignore-user-config, which leaves out only the file.
+        command = Codex().command(self.make(model='gpt-test', effort='high'))
+        self.assertIn('--ignore-user-config', command)
+        self.assertEqual(command[-5:], ['-m', 'gpt-test', '-c',
+                                        'model_reasoning_effort="high"', '-'])
+        self.assertEqual(Codex().command(self.make(effort='ultra'))[-3:],
+                         ['-c', 'model_reasoning_effort="ultra"', '-'])
+        self.assertNotIn('model_reasoning_effort', ' '.join(Codex().command(self.make())))
 
     def test_the_guidance_and_the_job_go_in_as_one_prompt(self):
         self.assertEqual(Codex().said_to(self.make()),
@@ -722,6 +738,87 @@ class ScriptedTests(JobCase):
         job = self.job_for()
         with self.assertRaisesRegex(WorkspaceError, 'profile is one of'):
             Scripted(lambda tools, job: None).run(Job('g', 't', self.job, 'shell', job.tools))
+
+
+def effort(*words: str) -> list[dict]:
+    return [{'effort': word, 'description': f'{word} reasoning'} for word in words]
+
+
+# The shape `codex debug models` prints, cut down: codex-cli 0.162.1 prints about 560 KB.
+CODEX_CATALOG = {'models': [
+    {'slug': 'gpt-6-sol', 'display_name': 'GPT-6-Sol', 'visibility': 'list',
+     'default_reasoning_level': 'medium', 'base_instructions': 'x' * 2000,
+     'supported_reasoning_levels': effort('low', 'medium', 'high', 'xhigh', 'max', 'ultra')},
+    {'slug': 'gpt-6-luna', 'display_name': 'GPT-6-Luna', 'visibility': 'list',
+     'default_reasoning_level': 'low',
+     'supported_reasoning_levels': ['low', 'medium', 'high', 'warp']},
+    {'slug': 'gpt-reserve', 'display_name': 'GPT-Reserve', 'visibility': 'hide',
+     'default_reasoning_level': 'medium', 'supported_reasoning_levels': effort('low')},
+    {'slug': 'two words', 'display_name': 'Not a name', 'visibility': 'list'},
+    {'slug': 'gpt-plain', 'visibility': 'list', 'default_reasoning_level': 'turbo'},
+    'not a model']}
+LISTED = [
+    {'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
+     'levels': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']},
+    {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna', 'default_level': 'low',
+     'levels': ['low', 'medium', 'high']},
+    {'name': 'gpt-plain', 'label': 'gpt-plain', 'default_level': None, 'levels': []}]
+
+
+class ModelListTests(JobCase):
+    """What each agent offers to choose from: its models and the reasoning levels of each."""
+
+    def test_claude_offers_its_aliases_each_with_every_level(self):
+        levels = ['low', 'medium', 'high', 'xhigh', 'max']
+        self.assertEqual(Claude().models(), {'models': [
+            {'name': name, 'label': label, 'default_level': None, 'levels': levels}
+            for name, label in (('fable', 'Fable'), ('opus', 'Opus'), ('sonnet', 'Sonnet'),
+                                ('haiku', 'Haiku'))], 'levels': levels})
+
+    def test_codex_offers_the_models_it_lists_and_the_levels_it_names(self):
+        asked = []
+
+        def run(command, cwd, seconds, said):
+            asked.append((command, seconds, said))
+            return 0, json.dumps(CODEX_CATALOG), 'a warning'
+
+        found = Codex('/opt/bin/codex').models(which=lambda name: name, run=run)
+        self.assertEqual(asked, [(['/opt/bin/codex', 'debug', 'models'], agents.LIST_SECONDS,
+                                  'Codex')])
+        # A hidden model, a name an agent would not take and a level nobody knows are left
+        # out. A model that is not listed may be given the levels every listed one takes.
+        self.assertEqual(found, {'models': LISTED, 'levels': []})
+        self.assertEqual(agents.offered(LISTED[:2])['levels'], ['low', 'medium', 'high'])
+
+    def test_a_listing_that_fails_says_why(self):
+        def answers(code, out, err=''):
+            return lambda *given: (code, out, err)
+
+        codex = Codex()
+        for run, said in (
+                (answers(1, '', 'error: unknown command\n'), 'Codex could not list its models '
+                 r'\(error: unknown command\)'),
+                (answers(2, ''), r'Codex could not list its models \(exit code 2\)'),
+                (answers(0, 'not json'), 'in a form this runner cannot read'),
+                (answers(0, '{"models": 3}'), 'in a form this runner cannot read')):
+            with self.subTest(said=said), self.assertRaisesRegex(WorkspaceError, said):
+                codex.models(which=lambda name: name, run=run)
+        with self.assertRaisesRegex(WorkspaceError, 'Codex is not installed'):
+            codex.models(which=lambda name: None, run=answers(0, '{}'))
+
+    def test_the_listing_runs_under_a_time_limit(self):
+        program = self.base / 'codex'
+        program.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$0.args"\n'
+                           f'echo \'{json.dumps(CODEX_CATALOG)}\'\n')
+        program.chmod(0o755)
+        self.assertEqual(Codex(str(program)).models()['models'], LISTED)
+        self.assertEqual((self.base / 'codex.args').read_text(), 'debug\nmodels\n')
+        program.write_text('#!/bin/sh\nsleep 30\n')
+        with mock.patch.object(agents, 'LIST_SECONDS', 0.5):
+            started = time.monotonic()
+            with self.assertRaisesRegex(WorkspaceError, 'Codex did not answer in 0.5 seconds'):
+                Codex(str(program)).models()
+        self.assertLess(time.monotonic() - started, 10)
 
 
 class ReadinessTests(unittest.TestCase):

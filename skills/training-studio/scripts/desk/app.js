@@ -131,6 +131,13 @@ const STEERED = {
 };
 const AGENTS = ['claude', 'codex'];
 const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
+// The first choice of a model and of a reasoning level, which leaves it to the agent.
+const OWN_CHOICE = 'The agent’s own choice';
+// Where "Another model…" is in the list of models. No name an agent takes has a space.
+const OTHER_MODEL = ' other';
+const LEVEL_NAMES = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium',
+  high: 'High', xhigh: 'Extra high', max: 'Maximum', ultra: 'Ultra' };
+const MODELS_AGAIN = 60000; // a list of models that could not be made is asked for again after
 const SHARE = ['each-decision', 'when-asked'];
 // What the folder and the workspace are called become names of folders, so they are plain.
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -248,6 +255,9 @@ const view = {
   runner: undefined, setup: null, form: null, draft: null, run: null, promised: null,
   asks: {}, answers: {}, agents: null, looking: false, unlooked: '', sharing: false,
   steered: '', barred: '',
+  // Each agent's models as the runner listed them, by agent, and the choice of a model on
+  // the screen: what it is held in, and how it is drawn again once a list comes.
+  models: {}, picking: null,
   // What a sheet opened from a run decides, what a gate is read beside, and what was said
   // no to on a run: a document, the end of adding them, another try at the copies.
   deciding: null, beside: null, unadded: '', undone: '', copying: false, uncopied: '',
@@ -2937,7 +2947,7 @@ function workspaceCard() {
     ['Shared', space.repository ? lower(SHARE_SAYS[space.share_when === 'when-asked' ? 1 : 0])
       : ''],
     ['Drafting is done by', (AGENT_NAMES[agent.default] || agent.default || 'no agent yet')
-      + (agent.model ? ', with the model ' + agent.model : ', with the model it chooses itself')],
+      + modelWords(agent.model, agent.effort, true)],
     ['Limits', limitsSays(held.limits || {})],
     ['Slide previews', held.previews ? previewsSays(held.previews) : '']]),
     sharingLine(), fetchLine(),
@@ -3014,7 +3024,7 @@ function setupForm() {
       name: Boolean(space.name) },
     share: space.share_when === 'when-asked' ? 1 : 0,
     agent: agent.default === 'codex' ? 'codex' : 'claude',
-    model: agent.model || '',
+    model: agent.model || '', other: false, effort: agent.effort || '',
     minutes: seconds ? String(Math.round(seconds / 6) / 10) : '', seconds,
     dollars: given(limits.training_dollars) ? String(limits.training_dollars) : '',
     parallel: given(limits.parallel) ? String(limits.parallel) : '',
@@ -3188,20 +3198,159 @@ async function readAgents() {
   paintAgents();
 }
 
-// Which agent, and which of its models. The same two questions are asked at set-up, for the
-// default, and at the last step of a new training, for that training.
-function agentFields(held, prefix, label) {
+// A reasoning level as a person would say it.
+function levelName(level) {
+  return LEVEL_NAMES[level] || spoken(level);
+}
+
+// The model and the reasoning level, in words that follow an agent's name. With `own`, a
+// model left to the agent is said so.
+function modelWords(model, effort, own) {
+  const level = effort ? 'reasoning set to ' + lower(levelName(effort)) : '';
+  if (model || own) {
+    return ', with the model ' + (model || 'it chooses itself') + (level ? ' and ' + level : '');
+  }
+  return level ? ', with ' + level : '';
+}
+
+// What the runner listed for an agent: its models, and the levels a model it does not list
+// may be given. Nothing while it is being asked, or where it could not be listed.
+function listedFor(agent) {
+  const found = view.models[agent];
+  return found && found.models ? found : null;
+}
+
+// The levels the chosen model takes, or null while that is not known.
+function levelsFor(held) {
+  const found = listedFor(held.agent);
+  if (!found) return null;
+  const model = held.other ? null : found.models.find((one) => one.name === held.model);
+  return list(model ? model.levels : found.levels);
+}
+
+// Hold a choice to what the agent listed: a model it does not list is typed in as another,
+// and a level the model does not take is left to the agent again.
+function settlePick(held) {
+  const found = listedFor(held.agent);
+  if (!found) return;
+  if (held.model && !found.models.some((one) => one.name === held.model)) held.other = true;
+  if (held.effort && !levelsFor(held).includes(held.effort)) held.effort = '';
+}
+
+// Ask the runner which models an agent has. It is asked apart from the page's refresh and
+// holds nothing up: the choice is drawn again when the list comes. A list is asked for once,
+// and one that could not be made again a minute later, or at once with `again`.
+async function readModels(agent, again) {
+  const known = view.models[agent];
+  if (known && (known.asking || known.models
+    || (!again && Date.now() - known.at < MODELS_AGAIN))) return;
+  view.models[agent] = { asking: true };
+  paintPick();
+  let found;
+  try {
+    found = await ask('models', { agent });
+  } catch (failure) {
+    found = { problem: failure.message };
+  }
+  view.models[agent] = found.problem ? { problem: String(found.problem), at: Date.now() }
+    : { models: list(found.models).filter((one) => one && typeof one.name === 'string'),
+      levels: list(found.levels) };
+  paintPick();
+}
+
+function paintPick() {
+  if (!view.picking) return;
+  settlePick(view.picking.held);
+  view.picking.fill();
+}
+
+// The model, from the agent's own list, and how hard it reasons, from the levels that model
+// takes. "Another model…" is for a name the list does not have, and stays where the list
+// could not be made.
+function modelFields(held, prefix, fill, told) {
+  const name = AGENT_NAMES[held.agent] || held.agent;
+  const known = view.models[held.agent] || { asking: true };
+  const found = listedFor(held.agent);
+  const listed = found ? found.models : [];
+  const model = held.other ? null : listed.find((one) => one.name === held.model);
+  const options = [['', OWN_CHOICE], ...listed.map((one) => [one.name, one.label || one.name])];
+  // Until the list comes, a model already chosen is offered as it is.
+  if (!found && held.model && !held.other) options.push([held.model, held.model]);
+  options.push([OTHER_MODEL, 'Another model…']);
+  const pick = { model: held.other ? OTHER_MODEL : held.model };
+  const nodes = [field(prefix + '-model', 'Its model', pick, 'model', { options,
+    changed: () => {
+      if (pick.model === OTHER_MODEL) {
+        if (!held.other && found) held.model = '';
+        held.other = true;
+      } else {
+        held.other = false;
+        held.model = pick.model;
+      }
+      settlePick(held);
+      fill();
+    },
+    hint: 'As ' + name + ' lists them. Its own choice is the model it uses when none is '
+      + 'named.' })];
+  if (known.asking) {
+    nodes.push(make('p', 'quiet', 'Asking ' + name + ' which models it has…'));
+  } else if (!found) {
+    const problem = make('p', 'problem', name + '’s models could not be listed. '
+      + known.problem);
+    problem.setAttribute('role', 'status');
+    nodes.push(problem, make('p', 'quiet', 'Choose “Another model…” to give one by its name, '
+      + 'or try “Look again”.'));
+  }
+  if (held.other) {
+    nodes.push(field(prefix + '-model-name', 'The model’s name', held, 'model', { typed: told,
+      hint: 'As ' + name + ' knows it, with no spaces.' }));
+  }
+  const levels = levelsFor(held);
+  const usual = model && model.default_level
+    ? ' (' + lower(levelName(model.default_level)) + ')' : '';
+  const choices = [['', OWN_CHOICE + usual], ...list(levels).map((level) => [level,
+    levelName(level)])];
+  if (!levels && held.effort) choices.push([held.effort, levelName(held.effort)]);
+  nodes.push(field(prefix + '-effort', 'Its reasoning level', held, 'effort', {
+    options: choices, changed: told,
+    hint: 'How much it thinks before it answers: more is slower, and costs more. Only the '
+      + 'levels this model takes are offered.' }));
+  return nodes;
+}
+
+// Which agent, which of its models, and how hard it reasons. The same questions are asked at
+// set-up, for the default, and at the last step of a new training, for that training.
+// `told` is called whenever the answer changes.
+function agentFields(held, prefix, label, told) {
   const found = make('div', 'agents');
   found.id = 'agents';
   found.setAttribute('role', 'status');
+  const picks = make('div', 'fields');
+  settlePick(held);
+  const fill = () => {
+    const active = document.activeElement;
+    const focused = active && active.dataset && picks.contains(active) ? active.dataset.key : '';
+    picks.replaceChildren(...modelFields(held, prefix, fill, told));
+    if (focused) focusKey(focused);
+    if (told) told();
+  };
+  view.picking = { held, fill };
+  fill();
   return [found,
-    add(make('div', 'bar'), capsule('Look again', 'quiet', readAgents, 'agents-again')),
+    add(make('div', 'bar'), capsule('Look again', 'quiet', () => {
+      readAgents();
+      readModels(held.agent, true);
+    }, 'agents-again')),
     choice(label, AGENTS.map((name) => AGENT_NAMES[name]), AGENTS.indexOf(held.agent),
       (index) => {
         held.agent = AGENTS[index];
+        held.model = '';
+        held.other = false;
+        settlePick(held);
+        fill();
+        readModels(held.agent);
       }, prefix + '-agent'),
-    field(prefix + '-model', 'Its model (optional)', held, 'model', { hint: 'Leave this empty '
-      + 'to use the model the agent chooses for itself.' })];
+    picks];
 }
 
 function placeCard(form) {
@@ -3357,6 +3506,7 @@ function drawSetup(fresh) {
   paintSetup(true);
   checkSetup();
   readAgents();
+  readModels(view.form.agent);
 }
 
 // A limit as a number, or nothing when what was typed is not one that can be used.
@@ -3431,7 +3581,7 @@ async function saveSetup(pressed) {
   const kept = form.seconds && minutes === Math.round(form.seconds / 6) / 10;
   const body = { folder: form.folder.trim(), branch: form.branch.trim(),
     name: form.name.trim(), share_when: form.where ? SHARE[1] : SHARE[form.share],
-    agent: form.agent, model: form.model.trim() || null,
+    agent: form.agent, model: form.model.trim() || null, effort: form.effort || null,
     limits: { step_seconds: kept ? form.seconds : Math.max(1, Math.round(minutes * 60)),
       training_dollars: dollars, parallel } };
   if (form.where) body.path = asked.path;
@@ -3465,7 +3615,7 @@ function newDraft() {
   return settleDeck({ step: 0, title: '', topic: '', audience: '', purpose: 0,
     levels: ['101'], brief: 0, time: '', deck: 0, brand: '', variant: '', copies: [],
     yoodli: false, sources: 0, agent: agent.default === 'codex' ? 'codex' : 'claude',
-    model: agent.model || '', starting: false });
+    model: agent.model || '', other: false, effort: agent.effort || '', starting: false });
 }
 
 // The brands a deck can be made in, as the brand skill on this computer lists them. A deck
@@ -3605,6 +3755,11 @@ function shapeStep(draft) {
 
 function startStep(draft) {
   const limits = (view.setup && view.setup.limits) || {};
+  const drafted = make('p', '');
+  const told = () => {
+    drafted.textContent = 'It is drafted by ' + AGENT_NAMES[draft.agent]
+      + modelWords(draft.model.trim(), draft.effort, true) + '.';
+  };
   const levels = draft.levels.length;
   const asks = gatesFor(draft);
   // With documents of your own, the first thing it does is wait for them.
@@ -3625,7 +3780,8 @@ function startStep(draft) {
       draft.sources = index;
       tell();
     }, 'sources')),
-  add(card('The agent that does the drafting'), ...agentFields(draft, 'new', 'For this training')),
+  add(card('The agent that does the drafting'),
+    ...agentFields(draft, 'new', 'For this training', told)),
   add(card('Limits'), make('p', '', limitsSays(limits)
     || 'No limits are set for this computer.'),
   make('p', 'quiet', 'A training that reaches a limit stops and asks you. The limits are '
@@ -3639,6 +3795,7 @@ function startStep(draft) {
     DECKS[draft.deck][0] ? make('p', '', 'For the slide deck' + (levels > 1 ? ' of each level'
       : '') + ' it asks twice more: once for what the deck says, before any slide is drawn, '
       + 'and once for the deck itself.') : null,
+    drafted,
     make('p', 'quiet', 'This page tells you each time. In between, you can close it.'))];
 }
 
@@ -3667,7 +3824,10 @@ function drawNew(fresh) {
   if (!fresh && view.drawn === 'new') return;
   if (!view.draft) view.draft = newDraft();
   paintNew(true);
-  if (view.draft.step === STEPS.length - 1) readAgents();
+  if (view.draft.step === STEPS.length - 1) {
+    readAgents();
+    readModels(view.draft.agent);
+  }
 }
 
 function nextStep() {
@@ -3686,7 +3846,10 @@ function nextStep() {
   }
   draft.step += 1;
   paintNew(true);
-  if (draft.step === STEPS.length - 1) readAgents();
+  if (draft.step === STEPS.length - 1) {
+    readAgents();
+    readModels(draft.agent);
+  }
 }
 
 async function startTraining(pressed) {
@@ -3705,7 +3868,7 @@ async function startTraining(pressed) {
     brand: deck ? { brand: draft.brand, variant: draft.variant || null } : null,
     copies: COPIES.map((kind) => kind[0]).filter((kind) => draft.copies.includes(kind)),
     yoodli: draft.yoodli,
-    agent: draft.agent, model: draft.model.trim() || null,
+    agent: draft.agent, model: draft.model.trim() || null, effort: draft.effort || null,
   };
   draft.starting = true;
   pressed.disabled = true;
@@ -3990,8 +4153,7 @@ function costCard(run) {
       : 'It stops and asks you at ' + money(limits.training_dollars) + '.');
   }
   return add(node, make('p', 'quiet', says.join(' ')),
-    make('p', 'quiet', 'Drafted by ' + agent + (run.model ? ', with the model ' + run.model
-      : '') + '.'));
+    make('p', 'quiet', 'Drafted by ' + agent + modelWords(run.model, run.effort) + '.'));
 }
 
 // --- a run: your own documents ---------------------------------------------------------
@@ -4548,7 +4710,8 @@ function paintRun(fresh) {
     // Once that is all of them, what was added is kept on the screen, with nothing to press.
     run.documents && !supplying && !theirs ? ['documents', [run.documents, ''],
       () => documentsCard(run, false)] : null,
-    ['cost', [run.spent, run.agent, run.model, limits.training_dollars], () => costCard(run)],
+    ['cost', [run.spent, run.agent, run.model, run.effort, limits.training_dollars],
+      () => costCard(run)],
     // What this computer runs for a team can be handed over, for anyone to take.
     !theirs && driver && driver.here ? ['mine', [driver, title, run.kept],
       () => minePart(driver, run.kept)] : null,
@@ -5368,7 +5531,7 @@ function setupAsItIs() {
   const agent = held.agent || {};
   const body = { folder: space.folder, branch: space.branch, name: space.name,
     share_when: space.share_when, agent: agent.default, model: agent.model || null,
-    limits: held.limits };
+    effort: agent.effort || null, limits: held.limits };
   if (space.repository) body.repository = space.repository;
   else body.path = space.path;
   if (held.previews && held.previews.how) body.previews = held.previews.how;

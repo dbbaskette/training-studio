@@ -164,13 +164,17 @@ class FormToGateThreeTests(StudioCase):
         self.assertIn('Level: 301', (root / '301' / 'blueprint.md').read_text())
 
     def test_the_run_record_holds_what_the_files_cannot_say_and_is_committed(self):
-        settings.save(replace(settings.load(), model='a-model', step_seconds=300))
+        settings.save(replace(settings.load(), model='a-model', effort='high',
+                              step_seconds=300))
         self.workers.cost = 0.25
         root = self.start()
         record = self.record(root)
-        self.assertEqual((record['agent'], record['model'], record['limits']),
-                         ('claude', 'a-model',
+        self.assertEqual((record['agent'], record['model'], record['effort'],
+                          record['limits']),
+                         ('claude', 'a-model', 'high',
                           {'step_seconds': 300, 'training_dollars': 20.0}))
+        self.assertEqual({(job.model, job.effort) for _, job, _ in self.workers.jobs},
+                         {('a-model', 'high')})
         attempt = record['steps']['research-plan']['attempts'][0]
         self.assertEqual((attempt['outcome'], attempt['error'], attempt['dollars'],
                           attempt['tokens'], attempt['seconds']),
@@ -180,8 +184,8 @@ class FormToGateThreeTests(StudioCase):
         committed = self.git('show', 'HEAD:trainings/rolling-restarts/.training-studio/run.json')
         self.assertEqual(json.loads(committed), record)
         view = self.view(root)
-        self.assertEqual((view['spent'], view['model']),
-                         ({'dollars': 0.25, 'tokens': 1200}, 'a-model'))
+        self.assertEqual((view['spent'], view['model'], view['effort']),
+                         ({'dollars': 0.25, 'tokens': 1200}, 'a-model', 'high'))
         step = self.steps(root)['research-plan']
         self.assertEqual((step['attempts'], step['seconds'], step['dollars'], step['kind'],
                           step['label']), (1, 1.5, 0.25, 'agent', 'Draft the research plan'))
@@ -191,14 +195,33 @@ class FormToGateThreeTests(StudioCase):
     def test_the_agent_is_chosen_when_the_training_starts_and_does_not_change(self):
         other = type(self.workers)()
         self.engine.adapters['codex'] = agents.Scripted(other)
-        root = self.start(agent='codex', model='their-model')
-        self.assertEqual((self.view(root)['agent'], self.view(root)['model']),
-                         ('codex', 'their-model'))
-        settings.save(replace(settings.load(), agent='claude', model='another'))
+        root = self.start(agent='codex', model='their-model', effort='ultra')
+        self.assertEqual((self.view(root)['agent'], self.view(root)['model'],
+                          self.view(root)['effort']), ('codex', 'their-model', 'ultra'))
+        settings.save(replace(settings.load(), agent='claude', model='another',
+                              effort='low'))
         self.to_gate(root, 'blueprint')
         self.assertEqual((len(other.jobs), len(self.workers.jobs)), (6, 0))
-        self.assertEqual({job.model for _, job, _ in other.jobs}, {'their-model'})
+        self.assertEqual({(job.model, job.effort) for _, job, _ in other.jobs},
+                         {('their-model', 'ultra')})
         self.assertEqual(self.view(root)['agent'], 'codex')
+
+    def test_a_form_that_names_its_agent_is_taken_as_it_is(self):
+        # The page always names the agent, so "The agent's own choice" means just that,
+        # whatever the settings say. A form that names no agent takes the settings' own.
+        settings.save(replace(settings.load(), model='a-model', effort='high'))
+        own = self.start(agent='claude')
+        chosen = self.start(title='Health checks', agent='claude', effort='max')
+        either = self.start(title='Probes')
+        self.assertEqual([(self.record(root)['model'], self.record(root)['effort'])
+                          for root in (own, chosen, either)],
+                         [(None, None), (None, 'max'), ('a-model', 'high')])
+
+    def test_a_level_the_agent_does_not_take_starts_nothing(self):
+        with self.assertRaisesRegex(WorkspaceError, 'The reasoning level is one of: low, '
+                                    'medium, high, xhigh, max,'):
+            self.start(effort='ultra')
+        self.assertFalse(self.space.training('rolling-restarts').exists())
 
     def test_an_agent_that_is_not_ready_starts_nothing(self):
         away = agents.Readiness('claude', True, True, False, '2.1', 'Claude Code is signed '
