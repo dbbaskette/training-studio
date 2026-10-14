@@ -4,7 +4,10 @@ What a caller needs to know
 ---------------------------
     deck.handoff(title, level, blueprint, said, settings, ...)   # deck-handoff.md, as text
     deck.rules(outline, blueprint, budget)      # what the runner refuses in an outline
-    deck.shown(outline)                         # an outline as its slides, for a person
+    deck.shown(outline, design=None)            # an outline as its slides, for a person
+    deck.design_rules(outline, design)          # what the runner refuses in a design
+    proposal = deck.proposal(outline, design)   # the slides tool's design proposal
+    deck.unresolved(proposal)                   # what it still needs, a sentence each
     whole = deck.complete(outline, listed, words)   # with direction, layouts, house rules
     deck.lead(part)                             # a cover, section or closing slide, put right
     deck.brief(written, whole, previews)        # a section's brief, for a worker with tools
@@ -22,6 +25,11 @@ What a caller needs to know
   objective is served; no slide shows more words than the budget, counting its title,
   points, caveat and source together; a cover carries a title and one subtitle line; and
   nothing the blueprint lists under its open gaps is on a slide in the blueprint's words.
+- A design is how each slide is drawn, written by the outline's writer beside the outline
+  when the slides tool keeps a design session: for each slide its intent, composition,
+  asset and qualifications, and nothing else. `proposal` joins the two in the tool's schema
+  2, taking each slide's title, copy, notes and objectives from the outline, so that the
+  copy the person approves has one source.
 - HOUSE is what the composers are told that no program can check. It goes into the outline
   as its house rules and into each section's brief.
 - `brief` rewrites the brief the slides tool writes for one section. That brief is written
@@ -91,6 +99,8 @@ QUESTIONS = (
 WORD = re.compile(r"[^\W_]+(?:['’.-][^\W_]+)*")
 KEY_POINT = re.compile(r'^- (K\d+\.\d+):\s*(.+?)\s*(?:\[[^\]]*\]\s*)*$')
 POINTER = re.compile(r'Read `references/[^\n]*')
+DESIGNED = ('id', 'intent', 'composition', 'asset', 'qualifications')   # a worker's to write
+LEAD = 'outline'        # what a cover, section or closing slide cites, as the slides tool does
 USE = ('The deck is both presented and handed out. Every slide must make sense to someone '
        'reading it alone, so no slide may depend on its speaker notes for meaning. The notes '
        'carry the talk track and timing for a presenter.')
@@ -260,10 +270,13 @@ def rules(outline, blueprint: str, budget: int | None = None) -> list[str]:
     return problems
 
 
-def shown(outline) -> list[dict]:
-    """An outline as its slides, in order, for a person to read."""
+def shown(outline, design=None) -> list[dict]:
+    """An outline as its slides, in order, for a person to read. With the design proposed
+    with it, each slide also says how it is drawn; without, its `design` is None."""
     def text(slide: dict, key: str) -> str | None:
         return slide[key] if isinstance(slide.get(key), str) and slide[key].strip() else None
+
+    drawn = {slide.get('id'): drawn_as(slide) for slide in slides_of(design)}
 
     return [{'id': str(slide.get('id') or ''), 'kind': str(slide.get('kind') or ''),
              'title': str(slide.get('title') or ''), 'subtitle': text(slide, 'subtitle'),
@@ -273,8 +286,114 @@ def shown(outline) -> list[dict]:
              'caveat': text(slide, 'caveat'), 'source': text(slide, 'source'),
              'notes': text(slide, 'notes'),
              'serves': [str(source) for source in slide.get('sources') or ()
-                        if isinstance(slide.get('sources'), list)]}
+                        if isinstance(slide.get('sources'), list)],
+             'design': drawn.get(slide.get('id'))}
             for slide in slides_of(outline)]
+
+
+# --- the design proposed with the outline ------------------------------------------------
+
+def design_rules(outline, design) -> list[str]:
+    """What the runner refuses in the design a worker hands in with an outline, before the
+    slides tool sees it: one entry for every slide, in the outline's order, holding only
+    what is the worker's to write. Each problem is a sentence the worker can act on."""
+    if not isinstance(design, dict) or not isinstance(design.get('slides'), list):
+        return ['The design is one JSON object, with one entry for each slide under "slides".']
+    problems = [f'Leave out `{key}`: the design holds its slides and nothing else.'
+                for key in design if key != 'slides']
+    wanted = [slide.get('id') for slide in slides_of(outline)]
+    entries = design['slides']
+    if [entry.get('id') if isinstance(entry, dict) else None for entry in entries] != wanted:
+        return problems + ['The design has one entry for every slide of the outline, the '
+                           'cover, section and closing slides too, in its order: '
+                           + ', '.join(str(ident) for ident in wanted) + '.']
+    for entry in entries:
+        extra = sorted(key for key in entry if key not in DESIGNED)
+        if extra:
+            problems.append(f"{entry['id']}: leave out " + ', '.join(f'`{key}`' for key in extra)
+                            + '. The title, the copy, the notes and the objectives are taken '
+                            'from the outline.')
+    return problems
+
+
+def _copy(slide: dict) -> dict:
+    """What a slide shows besides its title, as the slides tool's design takes it: a content
+    slide's points, focal statement, caveat and source; a lead slide's subtitle, or its
+    title when it has nothing else."""
+    def text(value) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    if slide.get('kind') != 'content':
+        return {'points': [], 'focal': slide['subtitle'] if text(slide.get('subtitle'))
+                else slide.get('title')}
+    copy = {'points': [{key: point[key] for key in ('label', 'text') if text(point.get(key))}
+                       for point in _points(slide)]}
+    copy['points'] = [point for point in copy['points'] if point]
+    copy.update({key: slide[key] for key in ('focal', 'caveat', 'source')
+                 if text(slide.get(key))})
+    if not copy['points'] and 'focal' not in copy:
+        copy['focal'] = slide.get('title')
+    return copy
+
+
+def proposal(outline, design) -> dict:
+    """The design proposal the slides tool keeps, in its schema 2, made from an outline and
+    the design handed in with it, which `design_rules` has let through. The outline gives
+    each slide its title, its visible copy, its notes and the objectives it serves, which
+    are also its sources; a lead slide's source is the outline itself. The design gives
+    the rest. A slide's evidence is its sources unless the design names its own."""
+    written = {entry['id']: entry for entry in design['slides']}
+    slides = []
+    for slide in slides_of(outline):
+        mine, content = written[slide['id']], slide.get('kind') == 'content'
+        sources = [str(source) for source in slide.get('sources') or ()] if content else []
+        intent = mine.get('intent')
+        if isinstance(intent, dict) and 'evidence' not in intent:
+            intent = {**intent, 'evidence': sources or [LEAD]}
+        made = {'id': slide['id'], 'title': slide.get('title'), 'sources': sources or [LEAD]}
+        made.update({'objectives': sources} if sources else {})
+        made['copy'] = _copy(slide)
+        made.update({'qualifications': mine['qualifications']}
+                    if 'qualifications' in mine else {})
+        made.update({'notes': slide['notes']} if isinstance(slide.get('notes'), str)
+                    and slide['notes'].strip() else {})
+        made.update(composition=mine.get('composition'), intent=intent, asset=mine.get('asset'))
+        slides.append(made)
+    return {'schema': 2, 'title': outline.get('title'), 'scope': 'new', 'slides': slides}
+
+
+def drawn_as(slide: dict) -> dict:
+    """How one slide of a design proposal is drawn, for a person to read beside its copy."""
+    intent = slide.get('intent') if isinstance(slide.get('intent'), dict) else {}
+    asset = slide.get('asset') if isinstance(slide.get('asset'), dict) else {}
+    visual = intent.get('visual') if isinstance(intent.get('visual'), dict) else {}
+    other = intent.get('alternative') if isinstance(intent.get('alternative'), dict) else {}
+    return {'claim': intent.get('takeaway'), 'question': intent.get('audienceQuestion'),
+            'family': visual.get('family'), 'purpose': visual.get('purpose'),
+            'drawn': slide.get('composition'), 'why': intent.get('rationale'),
+            'alternative': ({'treatment': other.get('treatment'), 'reason': other.get('reason')}
+                            if other else None),
+            'asset': {key: asset.get(key) for key in ('description', 'disposition', 'reason')},
+            'candidates': [{key: candidate.get(key) for key in ('kind', 'ref', 'concept',
+                                                                 'status')}
+                           for candidate in asset.get('candidates') or ()
+                           if isinstance(candidate, dict)],
+            'keeps': [str(kept) for kept in slide.get('qualifications') or ()]}
+
+
+def unresolved(design) -> list[str]:
+    """What a design proposal still needs, a sentence each: an asset it could not find, and
+    each candidate not yet resolved."""
+    found = []
+    for number, slide in enumerate(design.get('slides') or (), start=1):
+        shown = drawn_as(slide)
+        if shown['asset']['disposition'] == 'unavailable':
+            found.append(f'Slide {number}: the asset it would use is unavailable, so it is '
+                         'drawn another way.')
+        found += [f"Slide {number}: the {candidate['kind']} \"{candidate['ref']}\" for "
+                  f"{candidate['concept']} is not resolved yet."
+                  for candidate in shown['candidates'] if candidate['status'] == 'pending']
+    return found
 
 
 def before(slides: int) -> dict:

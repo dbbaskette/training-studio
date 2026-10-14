@@ -427,7 +427,8 @@ class RunnerPage(desk.Page):
             raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Say what should change.')
         self.run(path)
         return self.engine.outline(path, level or None, decision, note,
-                                   desk.text(sent, 'seen', False))
+                                   desk.text(sent, 'seen', False),
+                                   desk.text(sent, 'design', False))
 
     def act(self, sent: dict) -> dict:
         path, action = desk.text(sent, 'path'), desk.text(sent, 'action')

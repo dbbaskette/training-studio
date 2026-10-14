@@ -223,6 +223,9 @@ const OUTLINE_SAID = {
 const OUTLINE_APPROVES = 'You are approving what each slide says. The slides are drawn from '
   + 'these words and come to you again as a deck. If the blueprint or the guide changes, '
   + 'this comes back to you.';
+const OUTLINE_APPROVES_DESIGN = 'You are approving what each slide says and how it is '
+  + 'drawn, together. The slides are drawn from both and come to you again as a deck. If the '
+  + 'blueprint or the guide changes, this comes back to you.';
 const CLOSE = 'You can close this page; it says when it needs you again.';
 // What a team adds. Each of these is confirmed in the sheet before anything is sent: who
 // runs a training, publishing a finished one, and bringing one in from a conversation.
@@ -1128,7 +1131,8 @@ function confirmSheet(kind) {
   const problem = problemLine();
   const confirm = capsule(spec.send, 'filled', () => decider()(kind, '', problem, confirm),
     'send');
-  const about = outlined() ? [outlineLabel(view.run.outline), OUTLINE_APPROVES]
+  const about = outlined() ? [outlineLabel(view.run.outline), view.run.outline.design
+    ? OUTLINE_APPROVES_DESIGN : OUTLINE_APPROVES]
     : [lower(view.gate.label), spec.says];
   // A deck is approved as it is. What the review still finds in it is said before it is.
   const left = kind === 'approve' && view.gate ? serious(view.gate).length : 0;
@@ -4783,7 +4787,8 @@ function outlined() {
 
 // What there is to read here. When it changes under a reader, they say when to see it.
 function outlineRead(outline) {
-  return JSON.stringify([outline.level, outline.slides, outline.checked, outline.worth]);
+  return JSON.stringify([outline.level, outline.slides, outline.checked, outline.worth,
+    outline.design]);
 }
 
 // Everything this screen is drawn from. When none of it has changed, nothing is redrawn.
@@ -4794,15 +4799,17 @@ function outlineDrawn() {
 }
 
 // One slide, as something to read: what kind it is, what it says, what it is for, and its
-// notes, which are there to open and not in the way.
-function outlineSlide(slide, index) {
+// notes, which are there to open and not in the way. With a design, how it is drawn sits
+// beside what it says. `asked` lists the slides whose design is put to the person now.
+function outlineSlide(slide, index, asked) {
   const node = make('li', 'outline-slide');
   add(node, make('p', 'quiet outline-top', 'Slide ' + (index + 1) + ' · '
     + spoken(slide.kind || 'slide')),
-  make('h3', 'outline-title', slide.title || 'No title'),
-  slide.subtitle ? make('p', 'outline-subtitle', slide.subtitle) : null,
-  slide.understand ? add(make('p', ''), make('strong', '', 'It should leave the audience '
-    + 'understanding: '), slide.understand) : null);
+  make('h3', 'outline-title', slide.title || 'No title'));
+  const copy = slide.design ? make('div', 'outline-copy') : node;
+  add(copy, slide.subtitle ? make('p', 'outline-subtitle', slide.subtitle) : null,
+    slide.understand ? add(make('p', ''), make('strong', '', 'It should leave the audience '
+      + 'understanding: '), slide.understand) : null);
   const points = list(slide.points);
   if (points.length) {
     const items = make('ul', 'outline-points');
@@ -4810,14 +4817,18 @@ function outlineSlide(slide, index) {
       add(items, add(make('li'), point.label ? make('strong', '', point.label
         + (point.text ? ': ' : '')) : null, point.text || ''));
     }
-    add(node, items);
+    add(copy, items);
   }
   const serves = list(slide.serves);
-  add(node,
+  add(copy,
     slide.caveat ? add(make('p', ''), make('strong', '', 'Caveat: '), slide.caveat) : null,
     slide.source ? add(make('p', 'quiet'), make('strong', '', 'Source: '), slide.source) : null,
     serves.length ? make('p', 'quiet', 'Serves ' + (serves.length === 1 ? 'objective '
       : 'objectives ') + series(serves) + '.') : null);
+  if (slide.design) {
+    add(node, add(make('div', 'outline-pair'), copy,
+      outlineDesign(slide.design, Boolean(asked) && !asked.includes(slide.id))));
+  }
   if (slide.notes) {
     const notes = make('details', 'outline-notes');
     notes.dataset.key = 'notes ' + (slide.id || index);
@@ -4825,6 +4836,44 @@ function outlineSlide(slide, index) {
       make('p', 'outline-said', slide.notes)));
   }
   return node;
+}
+
+// How one slide is drawn, as its design proposes: the visual and what it teaches, how it is
+// laid out, the claim, what it was weighed against, its asset and the candidates still to
+// find, and the wording its copy must keep. `kept` says its design was approved before and
+// has not changed, so only the rest is asked about now.
+function outlineDesign(design, kept) {
+  const node = add(make('div', 'outline-drawn'), make('p', 'outline-label', 'How it is drawn'));
+  const asset = design.asset || {};
+  const alternative = design.alternative || {};
+  add(node,
+    kept ? make('p', 'quiet', 'Its design is as you approved it before.') : null,
+    add(make('p', ''), make('strong', '', (spoken(design.family || 'visual')) + ': '),
+      design.purpose || ''),
+    design.drawn ? make('p', 'outline-said', design.drawn) : null,
+    design.claim ? add(make('p', ''), make('strong', '', 'Claim: '), design.claim) : null,
+    design.why ? add(make('p', 'quiet'), make('strong', '', 'Why: '), design.why) : null,
+    alternative.treatment ? add(make('p', 'quiet'), make('strong', '', 'Weighed against: '),
+      alternative.treatment + (alternative.reason ? '. ' + alternative.reason : '')) : null,
+    asset.disposition === 'unavailable'
+      ? add(make('p', ''), state('late', 'Its asset is unavailable'), ' ' + (asset.reason || ''))
+      : add(make('p', 'quiet'), make('strong', '', asset.disposition === 'not-needed'
+        ? 'No asset: ' : 'Asset: '), asset.disposition === 'not-needed' ? asset.reason || ''
+        : asset.description || ''));
+  const candidates = list(design.candidates);
+  if (candidates.length) {
+    const items = make('ul', 'outline-points');
+    for (const candidate of candidates) {
+      add(items, add(make('li'), spoken(candidate.kind || 'asset') + ' “' + (candidate.ref || '')
+        + '” for ' + (candidate.concept || 'this slide') + ' · ',
+      candidate.status === 'pending' ? state('late', 'not resolved yet')
+        : make('span', 'quiet', 'resolved')));
+    }
+    add(node, items);
+  }
+  const keeps = list(design.keeps);
+  return add(node, keeps.length ? add(make('p', ''), make('strong', '', 'Must keep: '),
+    series(keeps.map((kept) => '“' + kept + '”'))) : null);
 }
 
 function outlineChecked(outline) {
@@ -4881,7 +4930,9 @@ function paintOutline(fresh) {
   }
   const slides = list(outline.slides);
   const items = make('ol', 'outline');
-  slides.forEach((slide, index) => items.append(outlineSlide(slide, index)));
+  // Slides whose design was approved before and is unchanged are not asked about again.
+  const asked = outline.design && outline.waiting ? list(outline.design.asked) : null;
+  slides.forEach((slide, index) => items.append(outlineSlide(slide, index, asked)));
   const doc = add(make('article', 'paper doc'), make('h2', 'doc-title',
     count(slides.length, 'slide', 'slides') + ', in order'), items);
   doc.setAttribute('aria-label', label);
@@ -4893,12 +4944,15 @@ function paintOutline(fresh) {
     state(...(outline.waiting ? ['review', theirs ? 'Waiting for a decision where it runs'
       : 'Waiting for your review'] : runStanding(run))),
     list(training.stages).length ? beads(training.stages, false) : null,
-    make('p', 'lede', 'This is every slide’s words, in order, before any slide is drawn. '
+    make('p', 'lede', (outline.design ? 'This is every slide’s words, in order, beside how '
+      + 'each is drawn, before any slide is drawn. '
+      : 'This is every slide’s words, in order, before any slide is drawn. ')
       + (outline.waiting && theirs ? 'It is decided on the computer that runs this '
         + 'training. Here it can be read.'
         : outline.waiting ? 'Approve it, or say what should change: words are quick to change '
           + 'now, and slow to change once the slides are drawn.'
-          : 'The slides are drawn from these words.')));
+          : outline.design ? 'The slides are drawn from these words and this design.'
+            : 'The slides are drawn from these words.')));
   // One filled button for the main thing to do, as at any gate. A newer version comes first.
   const actions = outline.waiting && !view.newer && !theirs ? [
     capsule('Ask for changes', '', openSheet('revise', 'revise'), 'revise'),
@@ -4972,6 +5026,9 @@ async function decideOutline(decision, note, problem, pressed) {
     const body = { path: view.path, level: view.run.outline.level || null, decision,
       note: note || null };
     if (view.run.outline.sha256) body.seen = view.run.outline.sha256;
+    // And the design that was read beside the words, which the one decision answers too.
+    const design = view.run.outline.design;
+    if (design && design.revision) body.design = design.revision;
     run = await send('outline', body);
   } catch (failure) {
     say(problem, failure.message);

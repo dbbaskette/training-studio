@@ -1,0 +1,32 @@
+{
+ "version": 1,
+ "title": "Kubernetes operators: how a controller keeps a cluster in shape",
+ "slides": [
+  {
+   "id": "console_view",
+   "title": "The operator pod runs like any other workload",
+   "sources": [
+    "brief:operators-101"
+   ],
+   "canvas": {
+    "type": "stack",
+    "direction": "row",
+    "gap": "wide",
+    "children": [
+     {
+      "type": "image",
+      "id": "console_screenshot",
+      "src": "missing-console.png",
+      "alt": "Cluster console listing the operator pod as running"
+     },
+     {
+      "type": "text",
+      "id": "console_text",
+      "text": "The console lists the operator pod with the cluster's other workloads."
+     }
+    ]
+   },
+   "notes": "The screenshot is supplied by the course author."
+  }
+ ]
+}

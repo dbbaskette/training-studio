@@ -100,6 +100,8 @@ NO_BRAND = ('No brand was chosen for the deck when this training was started, an
 # Where a deck's files are, from its training's folder or its level's.
 HANDOFF = 'deck-handoff.md'
 OUTLINE = 'deck/outline.json'       # what the deck says
+DESIGN = 'deck/design.json'         # how each slide is drawn, as proposed with what it says
+DESIGNS = 'deck'                    # where the slides tool keeps its record of the design
 SHOWS = 'deck/review.json'          # what its gate shows of the deck that was saved
 WORK = 'work/deck'                  # what it is built with: never shared
 BUILT = f'{WORK}/state.json'        # what this computer has built, and from what
@@ -111,6 +113,7 @@ SECTION = re.compile(r'^section-[1-9]\d{0,2}$')
 # What of the slides tool's own guidance each worker of a deck is handed, by the names
 # `slides.reading()` gives. A composer also gets the example of each relation it draws.
 DRAFTING = ('drafting guidance',)
+DESIGNING = ('design guidance',)    # the outline's writer, when it proposes a design too
 COMPOSING = ('design guidance', 'composition guidance', 'gallery')
 OUTLINE_CHECKED = (
     'The slides tool checked its shape and its own limits.',
@@ -121,6 +124,11 @@ OUTLINE_CHECKED = (
     'The cover carries a title and one subtitle line, and no more.',
     "Nothing the blueprint lists under its open gaps is on a slide in the blueprint's own "
     'words.')
+DESIGN_CHECKED = ('The slides tool took the design: every slide has a claim, a visual with '
+                  'its purpose, an alternative it was weighed against and a decision about '
+                  'its asset, and its copy keeps the wording it must.')
+UNCHANGED = ('The design is the same as the one you asked to change, so the slides tool still '
+             'waits for those changes. Ask for them again.')
 IN_OTHER_WORDS = ('The blueprint lists open gaps. Whether a slide teaches one of them in '
                   'other words is for you to read.')
 DECLARED = ('Coverage is declared: each section says in a comment what it teaches, and the '
@@ -298,6 +306,13 @@ class Deck:
     @property
     def start(self) -> dict:
         return self.built.get('start') or {}
+
+    @property
+    def designed(self) -> bool | None:
+        """Whether what this deck says is written with its design: chosen when it is first
+        written, and kept. None until then."""
+        drafted = self.kept.get('outline')
+        return None if not drafted else bool(drafted.get('design'))
 
     @property
     def last(self) -> dict | None:
@@ -791,11 +806,16 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
     built, outline = read_built(root, level), outline_of(root, level)
     brand, start = built.get('brand') or {}, built.get('start') or {}
     work, said = place(root, level, WORK), workspace.sha256_file(place(root, level, OUTLINE))
+    # How each slide is drawn counts only for a deck whose outline was written with it.
+    drawn_as = workspace.sha256_file(place(root, level, DESIGN)) \
+        if ((kept.get('outline') or {}).get('design')) else None
     entry = session['artifacts'].get(name) or {}
     file = root / workspace.artifact(root, session, name)['file']
     rounds = tuple(made for made in built.get('rounds') or ()
                    if made.get('start') == start.get('folder'))
-    waiting = bool(said) and (kept.get('waiting') or {}).get('sha256') == said
+    asked_of = kept.get('waiting') or {}
+    waiting = bool(said) and asked_of.get('sha256') == said \
+        and (asked_of.get('design') or {}).get('sha256') == drawn_as
     if state.get(name) in CURRENT and name not in asked and entry.get('sha256') \
             and entry['sha256'] == workspace.sha256_file(file):
         # Saved and current: nothing is left before its gate, wherever it was built.
@@ -808,13 +828,18 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
             and (brand.get('brand'), brand.get('variant')) == brand_of(session) \
             and workspace.sha256_file(work / str(brand.get('contract'))) == brand['sha256']:
         done.add('deck-brand')
-    if said and drafted.get('sha256') == said and not kept.get('asked') \
-            and drafted.get('from') == made_from(root, session, name) \
+    # A deck written with its design binds both files: what it says and how it is drawn.
+    if said and drafted.get('sha256') == said and drafted.get('design') == drawn_as \
+            and not kept.get('asked') and drafted.get('from') == made_from(root, session, name) \
             and (request is None or drafted.get('answers') == request.get('at')):
         done.add('deck-outline')
-    if said and (kept.get('approved') or {}).get('sha256') == said:
+    approved = kept.get('approved') or {}
+    if said and approved.get('sha256') == said \
+            and (approved.get('design') or {}).get('sha256') == drawn_as:
         done.add('gate:deck-outline')
     if start.get('outline') == said and start.get('brand') == brand.get('sha256') \
+            and start.get('design') == approved.get('design') \
+            and (start.get('design') or {}).get('sha256') == drawn_as \
             and (work / str(start.get('folder')) / 'parts.json').is_file():
         done.add('deck-start')
     sections = [section['id'] for section in start.get('sections') or ()]
@@ -1431,16 +1456,17 @@ def naming_rules(root: Path, mine: Deck) -> str | None:
 
 
 def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
-                 error: str | None, answered: list[dict]) -> Work:
+                 error: str | None, answered: list[dict], designed: bool = False) -> Work:
     """The job of writing what one deck says: its outline, from the handoff, the
-    blueprint, the guide and the research findings."""
+    blueprint, the guide and the research findings. When `designed`, the worker proposes
+    how each slide is drawn as well, and hands both in together."""
     session, name = found.session, 'outline'
     level = workspace.split(step.artifact)[1]
     mine = found.decks[level]
     blueprint = _text(root, session, workspace.qualify('blueprint', level)) or ''
     inputs = {'handoff': _read(place(root, level, HANDOFF)) or '',
               'outline contract': _told(root, mine, 'outline-contract.txt')}
-    _read_also(root, mine, inputs, DRAFTING)
+    _read_also(root, mine, inputs, [*DRAFTING, *(DESIGNING if designed else ())])
     inputs['blueprint'] = blueprint
     guide = (_text(root, session, workspace.qualify('document', level))
              if 'document' in wanted(session) else None)
@@ -1451,13 +1477,18 @@ def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
     said = [finding for finding in ((mine.last or {}).get('review') or {}).get('findings')
             or () if finding['about'] == deck.ABOUT[1]] if request else []
     earlier = _read(place(root, level, OUTLINE))
+    if earlier and designed and _read(place(root, level, DESIGN)):
+        earlier = ('The outline:\n\n' + earlier.rstrip('\n') + '\n\nThe proposal made from '
+                   'it and its design:\n\n' + _read(place(root, level, DESIGN)))
     dated = bool(earlier) and (mine.kept.get('outline') or {}).get('from') != made_from(
         root, session, step.artifact)
-    task = (f'Write what {workspace.label(step.artifact)} says: its outline.\n\n'
+    task = (f'Write what {workspace.label(step.artifact)} says: its outline'
+            + (', and how each slide is drawn: its design' if designed else '') + '.\n\n'
             f'{_about(root, session)}\n'
             + (f'This deck is for level {level}.\n' if level else '')
             + f'\nYour inputs are {_inputs(inputs)}.\n'
-            'Hand the outline in with submit_outline.'
+            + ('Hand the outline in with its design, together, with submit_outline.'
+               if designed else 'Hand the outline in with submit_outline.')
             + _again(request, earlier, error, answered, 'the outline', dated)
             + ('\n\nWhen the slides were drawn, a review found these things about what '
                'they say. Put right the ones the person\'s request covers:\n\n'
@@ -1465,9 +1496,10 @@ def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
                if said else ''))
     prepared = {'inputs': inputs,
                 'artifacts': {name: {'kind': 'outline', 'brand': str(contract(root, mine)),
-                                     'blueprint': blueprint}},
+                                     'blueprint': blueprint, 'design': designed}},
                 'ask': _can_ask(answered)}
-    return Work(briefs.guidance('deck-outline'), task, 'write', prepared, name)
+    return Work(briefs.guidance('deck-outline', design=designed), task, 'write', prepared,
+                name)
 
 
 def numbered(ident: str | None) -> int:
@@ -1554,15 +1586,17 @@ NAMED = ('document', 'brief', 'scenario')   # the writers a brand's naming rules
 
 
 def work(root: Path, found: Survey, step: Step, request: dict | None, error: str | None,
-         answered: list[dict], sources=None, naming: str | None = None) -> Work:
+         answered: list[dict], sources=None, naming: str | None = None,
+         designed: bool = False) -> Work:
     """The job a drafting step gives a worker. `sources` is what `documents.sources`
     returned, which only the research questions are drafted from. `naming` is how the
     training's brand names the organisation and its products, which the writers of the
-    guide, the brief and the scenarios are given."""
+    guide, the brief and the scenarios are given. `designed` says the writer of what a deck
+    says proposes its design too."""
     if step.id == 'research-plan':
         return plan_work(root, found, request, error, answered, sources)
     if bare(step.id) == 'deck-outline':
-        return outline_work(root, found, step, request, error, answered)
+        return outline_work(root, found, step, request, error, answered, designed)
     if bare(step.id) == 'deck-review':
         return review_work(root, found, step, error)
     kind = workspace.split(step.artifact)[0].partition(':')[0]
@@ -1821,16 +1855,25 @@ def keep_report(root: Path, found: Research, reasons: dict) -> None:
 
 
 def keep_outline(root: Path, found: Survey, level: str | None, handed: dict,
-                 request: dict | None) -> dict:
-    """Keep what a deck says in the deck's own folder, as the checks let it through.
-    Returns what the run record holds of it: its hash, what it was written from, what was
+                 request: dict | None, designed: bool = False) -> dict:
+    """Keep what a deck says in the deck's own folder, as the checks let it through, and
+    when it was `designed`, the design proposal made with it beside it. Returns what the run
+    record holds of it: its hash, the proposal's, what it was written from, what was
     checked, the worker's own notes, and the request it answers. Nothing is approved here:
     the outline's gate is the person's, on the page."""
     draft = next(iter(handed['artifacts'].values()))
     target, name = place(root, level, OUTLINE), workspace.qualify('deck', level)
-    workspace.write_atomic(target, draft['text'].encode('utf-8'))
+    text, design = draft['text'], None
+    if designed:    # handed in as {'outline', 'design'}: the proposal is kept beside it
+        given = json.loads(text)
+        text = json.dumps(given['outline'], indent=2, ensure_ascii=False) + '\n'
+        design = place(root, level, DESIGN)
+        workspace.write_atomic(design, (json.dumps(given['design'], indent=2,
+                                                   ensure_ascii=False) + '\n').encode('utf-8'))
+    workspace.write_atomic(target, text.encode('utf-8'))
     about_deck = found.asked.get(name)
     return {'sha256': workspace.sha256_file(target), 'from': made_from(root, found.session, name),
+            'design': workspace.sha256_file(design) if design else None,
             'checks': draft['checks'], 'warnings': draft['warnings'],
             'notes': (handed['review'] or '').strip() or None,
             'answers': about_deck.get('at') if about_deck else None,
@@ -1860,14 +1903,27 @@ def outline_view(root: Path, found: Survey, level: str | None) -> dict | None:
         worth.append(f'This version was written because you asked for {asked}'
                      + (f": {workspace.shortened(because['note'])}" if because.get('note')
                         else '.'))
+    design = home.read_json(place(root, level, DESIGN), None) if mine.designed else None
+    design = design if isinstance(design, dict) else None
+    worth += deck.unresolved(design) if design else []
+    asked = ((mine.kept.get('waiting') or {}).get('design') or {}) if mine.waiting else {}
+    question = asked.get('question') or {}
+    if asked and not question and not asked.get('allowed'):
+        # The tool still waits for the changes asked for: this design is the one sent back.
+        worth.append(UNCHANGED)
+        question = {'slides': [slide.get('id') for slide in deck.slides_of(design)]}
     if current and drafted.get('notes'):
         worth.append("The worker's own notes, which are its judgment and not a check: "
                      + drafted['notes'])
-    return {'level': level, 'waiting': mine.waiting, 'slides': deck.shown(mine.outline),
+    passed = bool(ran) and all(outcome['status'] == 'passed' for outcome in ran)
+    return {'level': level, 'waiting': mine.waiting,
+            'slides': deck.shown(mine.outline, design),
             'sha256': workspace.sha256_file(place(root, level, OUTLINE)),
-            'checked': list(OUTLINE_CHECKED) if ran and all(
-                outcome['status'] == 'passed' for outcome in ran) else [],
-            'worth': worth, 'note': (because or {}).get('note')}
+            'checked': (list(OUTLINE_CHECKED) + ([DESIGN_CHECKED] if design else [])
+                        if passed else []),
+            'worth': worth, 'note': (because or {}).get('note'),
+            'design': None if design is None else {
+                'revision': asked.get('revision'), 'asked': list(question.get('slides') or ())}}
 
 
 def deck_view(root: Path, found: Survey, level: str | None, live: dict | None = None,

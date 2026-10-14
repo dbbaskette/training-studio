@@ -2276,9 +2276,12 @@ MODELS = {'GET /api/models?agent=claude': [ok(CLAUDE_MODELS)],
 RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'effort', 'steps', 'workers', 'spent',
               'question', 'problem', 'documents', 'copies', 'deck_left', 'finished', 'outline',
               'deck'}
-OUTLINE_FIELDS = {'level', 'waiting', 'slides', 'sha256', 'checked', 'worth', 'note'}
+OUTLINE_FIELDS = {'level', 'waiting', 'slides', 'sha256', 'checked', 'worth', 'note',
+                  'design'}
 OUTLINE_SLIDE_FIELDS = {'id', 'kind', 'title', 'subtitle', 'understand', 'points', 'caveat',
-                        'source', 'notes', 'serves'}
+                        'source', 'notes', 'serves', 'design'}
+DESIGN_FIELDS = {'claim', 'question', 'family', 'purpose', 'drawn', 'why', 'alternative',
+                 'asset', 'candidates', 'keeps'}
 DECK_FIELDS = {'level', 'sections', 'pictures', 'before'}
 SECTION_FIELDS = {'id', 'state', 'previews', 'slides', 'titles'}
 FINDING_FIELDS = {'slide', 'number', 'severity', 'about', 'note', 'fix'}
@@ -2360,8 +2363,10 @@ def deck_steps(*statuses: str) -> list:
 def a_slide(ident: str, kind: str, title: str, **more) -> dict:
     """One slide of what a deck says."""
     slide = {'id': ident, 'kind': kind, 'title': title, 'subtitle': None, 'understand': None,
-             'points': [], 'caveat': None, 'source': None, 'notes': None, 'serves': [], **more}
+             'points': [], 'caveat': None, 'source': None, 'notes': None, 'serves': [],
+             'design': None, **more}
     assert set(slide) == OUTLINE_SLIDE_FIELDS, slide
+    assert slide['design'] is None or set(slide['design']) == DESIGN_FIELDS, slide
     return slide
 
 
@@ -2370,7 +2375,7 @@ def an_outline(*slides: dict, **more) -> dict:
     outline = {'level': None, 'waiting': True, 'slides': list(slides or SAID), 'note': None,
                'checked': ['Every objective is served by a slide.',
                            'Every slide is within its budget of words.'],
-               'worth': ['Slide 2 is three words under its budget.'], **more}
+               'worth': ['Slide 2 is three words under its budget.'], 'design': None, **more}
     # The runner names the version it shows by the hash of the outline's file.
     outline['sha256'] = hashlib.sha256(json.dumps(outline['slides']).encode()).hexdigest()
     assert set(outline) == OUTLINE_FIELDS, outline
@@ -4285,6 +4290,72 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         run = shots['run']
         self.assertEqual((run['heading'], run['filled']), ('Rolling restarts', []))
         self.assertIn('Read what the deck says', run['buttons'])
+
+    def test_with_a_design_each_slide_shows_how_it_is_drawn_beside_its_words(self):
+        self.started()
+        asking = 'Waiting for your decision on what the deck says.'
+        going = 'Drawing the slides, in two sections.'
+        drawn = {'claim': 'Restarting in turn keeps the service answering.',
+                 'question': 'Why not restart everything at once?', 'family': 'diagram',
+                 'purpose': 'Show one instance away while the others serve.',
+                 'drawn': 'Three boxes in a row, the middle one greyed, arrows to the others.',
+                 'why': 'The order is spatial: a row shows who serves while one is away.',
+                 'alternative': {'treatment': 'A numbered list',
+                                 'reason': 'A list hides that the others keep serving.'},
+                 'asset': {'description': 'Native boxes and a server icon.',
+                           'disposition': 'selected', 'reason': 'The icon names an instance.'},
+                 'candidates': [{'kind': 'icon', 'ref': 'server', 'concept': 'An instance',
+                                 'status': 'pending'}],
+                 'keeps': ['Capacity drops']}
+        text = {**drawn, 'family': 'text', 'purpose': 'Name the subject plainly.',
+                'drawn': 'The title slide, words alone.', 'alternative': None,
+                'asset': {'description': 'No asset.', 'disposition': 'not-needed',
+                          'reason': 'The words are the slide.'}, 'candidates': [], 'keeps': []}
+        slides = (dict(SAID[0], design=text), dict(SAID[1], design=drawn),
+                  dict(SAID[2], design=text), dict(SAID[3], design=text))
+        outline = an_outline(*slides, design={'revision': 'r' * 64, 'asked': ['s1', 's2']})
+        waiting = a_run('waiting', asking, steps=deck_steps('done', 'done', 'waiting'),
+                        outline=outline)
+        drawing = a_run('working', going, steps=deck_steps('done', 'done', 'done', 'working'),
+                        outline=an_outline(*slides, waiting=False,
+                                           design={'revision': None, 'asked': []}))
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('waiting', asking, needs=True),
+                                   self.listed('working', going)],
+            'GET /api/training': [self.detail('working', going)],
+            'GET /api/run': [waiting, waiting, drawing], 'POST /api/outline': [drawing]})
+        result = self.run_page(answers, [
+            {'click': 'Review what the deck says'}, {'snapshot': 'outline'},
+            {'click': 'Approve'}, {'snapshot': 'confirm'},
+            {'click': 'Approve'}, {'snapshot': 'approved'},
+        ])
+        shots = result['snapshots']
+        gate = shots['outline']
+        self.assertEqual(gate['filled'], ['Approve'], 'still one decision')
+        for shown in ('beside how each is drawn', 'How it is drawn',
+                      'Diagram: Show one instance away while the others serve.',
+                      'Three boxes in a row, the middle one greyed, arrows to the others.',
+                      'Claim: Restarting in turn keeps the service answering.',
+                      'Why: The order is spatial',
+                      'Weighed against: A numbered list. A list hides that the others keep '
+                      'serving.', 'Asset: Native boxes and a server icon.',
+                      'Icon “server” for An instance · \nnot resolved yet',
+                      'Must keep: “Capacity drops”', 'Text: Name the subject plainly.',
+                      'No asset: The words are the slide.',
+                      'Caveat: Capacity drops while an instance is away.'):
+            self.assertIn(shown, gate['text'])
+        # The words of a slide come before how it is drawn.
+        self.assertLess(gate['text'].index('In turn: One instance stops'),
+                        gate['text'].index('Diagram: Show one instance away'))
+        # Slides 3 and 4 were approved before and are unchanged: said so, not asked again.
+        self.assertEqual(gate['text'].count('Its design is as you approved it before.'), 2)
+        self.assertIn('You are approving what each slide says and how it is drawn, together.',
+                      shots['confirm']['sheet'])
+        self.assertEqual(self.posts(result), [('/api/outline', {
+            'path': str(self.root), 'level': None, 'decision': 'approve', 'note': None,
+            'seen': outline['sha256'], 'design': 'r' * 64})])
+        self.assertIn('The slides are drawn from these words and this design.',
+                      shots['approved']['text'])
 
     def test_changes_to_what_a_deck_says_are_asked_for_from_the_run_and_come_back(self):
         self.started('--levels', '101,301')

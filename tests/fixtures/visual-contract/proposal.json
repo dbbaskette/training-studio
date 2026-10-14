@@ -1,0 +1,185 @@
+{
+  "schema": 2,
+  "title": "Kubernetes operators: how a controller keeps a cluster in shape",
+  "scope": "new",
+  "slides": [
+    {
+      "id": "operator_architecture",
+      "title": "An operator is a controller that runs inside the cluster",
+      "sources": [
+        "brief:operators-101"
+      ],
+      "objectives": [
+        "objective_operator_parts"
+      ],
+      "copy": {
+        "points": [
+          {
+            "label": "Custom resource",
+            "text": "Declares the state you want"
+          },
+          {
+            "label": "Controller",
+            "text": "Runs in a pod and watches the resource"
+          },
+          {
+            "label": "API server",
+            "text": "Stores both and tells watchers what changed"
+          }
+        ],
+        "focal": "Controller",
+        "caveat": "An operator manages only the resources it was written for.",
+        "source": "Kubernetes documentation, Operator pattern"
+      },
+      "qualifications": [
+        "manages only the resources it was written for"
+      ],
+      "notes": "Point at the cluster boundary first: everything here runs inside it.",
+      "composition": "Native cluster boundary holding the API server and an operator pod. The controller box is the focal node; edges show it watching the custom resource through the API server.",
+      "intent": {
+        "takeaway": "An operator is an ordinary controller, running in the cluster, that owns one kind of custom resource.",
+        "audienceQuestion": "Where does an operator run, and what does it own?",
+        "relationship": "containment and ownership",
+        "rationale": "Containment and the watch relationship are spatial; a diagram shows what is inside the cluster and who owns what.",
+        "evidence": [
+          "brief:operators-101"
+        ],
+        "alternative": {
+          "treatment": "Three cards defining each part",
+          "reason": "Cards would define the parts but hide that the controller runs inside the cluster and watches through the API server."
+        },
+        "visual": {
+          "family": "diagram",
+          "purpose": "Show what runs inside the cluster and which part owns the custom resource."
+        }
+      },
+      "asset": {
+        "description": "Native nested boxes for the cluster and the operator pod, with approved Kubernetes and pod icons labelling the two actors.",
+        "disposition": "selected",
+        "reason": "The icons make the Kubernetes actors recognisable; the native boxes carry the containment.",
+        "candidates": [
+          {
+            "assetId": "icon_kubernetes",
+            "kind": "icon",
+            "ref": "kubernetes",
+            "concept": "Kubernetes cluster",
+            "alt": "Kubernetes",
+            "status": "resolved"
+          },
+          {
+            "assetId": "icon_pod",
+            "kind": "icon",
+            "ref": "pod",
+            "concept": "Operator pod",
+            "status": "pending"
+          }
+        ]
+      }
+    },
+    {
+      "id": "reconcile_loop",
+      "title": "The controller closes the gap, again and again",
+      "sources": [
+        "brief:operators-101"
+      ],
+      "objectives": [
+        "objective_reconciliation"
+      ],
+      "copy": {
+        "points": [
+          {
+            "label": "Desired state",
+            "text": "What the custom resource declares"
+          },
+          {
+            "label": "Observe",
+            "text": "Read what is running now"
+          },
+          {
+            "label": "Act",
+            "text": "Change the cluster toward the desired state"
+          }
+        ],
+        "focal": "Desired state",
+        "caveat": "Reconciliation repeats; it is not a one-time install step."
+      },
+      "qualifications": [
+        "Reconciliation repeats"
+      ],
+      "notes": "Walk the loop twice: once when the resource is created, once after someone deletes a pod by hand.",
+      "composition": "Native row of three steps, desired state first as the focal node, with labelled edges and a curved edge from act back to observe that closes the loop.",
+      "intent": {
+        "takeaway": "A controller compares desired and observed state and acts on the difference, again and again.",
+        "audienceQuestion": "What does the controller actually do all day?",
+        "relationship": "cycle",
+        "rationale": "The repetition is the point; a closed loop shows that acting leads back to observing.",
+        "evidence": [
+          "brief:operators-101"
+        ],
+        "alternative": {
+          "treatment": "A numbered list of three steps",
+          "reason": "A list reads as a one-time sequence and loses the loop."
+        },
+        "visual": {
+          "family": "diagram",
+          "purpose": "Show desired state, observation and corrective action as one repeating loop."
+        }
+      },
+      "asset": {
+        "description": "A refresh icon at the centre of the ring was considered.",
+        "disposition": "not-needed",
+        "reason": "The drawn loop already carries the repetition; an icon would decorate it without explaining anything."
+      }
+    },
+    {
+      "id": "knowledge_check",
+      "title": "Check: a managed pod is deleted. What happens?",
+      "sources": [
+        "brief:operators-101"
+      ],
+      "objectives": [
+        "objective_reconciliation"
+      ],
+      "copy": {
+        "points": [
+          {
+            "label": "A",
+            "text": "Nothing until the operator is reinstalled"
+          },
+          {
+            "label": "B",
+            "text": "The controller notices and recreates it"
+          },
+          {
+            "label": "C",
+            "text": "The custom resource is deleted too"
+          }
+        ]
+      },
+      "notes": "Answer: B. The controller observes the drift and acts to restore the desired state.",
+      "composition": "Direct text: the question as the title and three lettered choices in one column, equal weight.",
+      "intent": {
+        "takeaway": "Learners can predict reconciliation in a concrete failure.",
+        "audienceQuestion": "Can I apply the loop to a real situation?",
+        "relationship": "assessment",
+        "rationale": "A knowledge check needs the question and its choices, read as equals.",
+        "evidence": [
+          "brief:operators-101"
+        ],
+        "alternative": {
+          "treatment": "The reconciliation diagram with the deleted pod marked",
+          "reason": "The diagram would show the answer before the learner chooses."
+        },
+        "visual": {
+          "family": "text",
+          "purpose": "Pose the question and its choices with nothing that hints at the answer."
+        }
+      },
+      "asset": {
+        "description": "No asset; a question mark illustration was considered.",
+        "disposition": "not-needed",
+        "reason": "Direct text is the treatment: a graphic would add decoration or give away the answer."
+      }
+    }
+  ]
+}

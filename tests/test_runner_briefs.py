@@ -47,8 +47,8 @@ class BriefTests(JobCase):
                                        'document', 'brief', 'scenario', 'yoodli',
                                        'deck-outline', 'deck-section', 'deck-review'))
         self.assertEqual(sorted(path.name for path in briefs.HERE.glob('*.md')),
-                         ['blueprint-level.md', 'blueprint.md', 'brief.md', 'deck-outline.md',
-                          'deck-repair.md', 'deck-review.md', 'deck-section.md',
+                         ['blueprint-level.md', 'blueprint.md', 'brief.md', 'deck-design.md',
+                          'deck-outline.md', 'deck-repair.md', 'deck-review.md', 'deck-section.md',
                           'document.md', 'level.md', 'naming.md', 'research-plan.md',
                           'research-question.md', 'scenario.md', 'yoodli.md'])
         with self.assertRaisesRegex(WorkspaceError, 'There is a brief for: research-plan'):
