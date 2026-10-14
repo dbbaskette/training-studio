@@ -8,8 +8,12 @@
 // A step is one of: {snapshot: name}, {click: the name of a control}, {fill: the label of a
 // box, value: what is typed}, {type: text} for the note in the sheet, {enter: the label of a
 // box} for Enter pressed in it, {poll: true} for the page's own refresh, {key: 'Escape'},
-// {notification: which one} for a click on a notification the page showed, and {attach: the
-// label of a file picker, files: what is chosen in it}. A box that is filled is left as a
+// {notification: which one} for a click on a notification the page showed, {attach: the
+// label of a file picker, files: what is chosen in it}, {polls: how many} for the page's own
+// refresh asked for that many times at once, {hidden: true or false} for the tab put behind
+// another or brought back, and {hold: the name of a control} to follow that very node: each
+// snapshot then says, in `still`, which of those held are still on the page, and in `asked`
+// how many requests had been made by then. A box that is filled is left as a
 // person leaves it, unless the step says {stay: true}: then they are still typing in it. A chosen file is {name, text} or {name,
 // bytes}; {size} says how large it claims to be, for one too large to write out here.
 //
@@ -37,6 +41,8 @@ const shown = [];
 // The pictures the page holds in memory: the address it made up for each, and what it is of.
 const kept = new Map();
 const watchers = [];
+// The nodes a step said to follow, each with its name when it was held.
+const followed = [];
 
 // --- a document with no parser -------------------------------------------------------
 
@@ -473,6 +479,8 @@ function snapshot() {
     sidebar: !document.getElementById('sidebar').hidden,
     inert: document.body.all().filter((node) => node.inert).map((node) => node.id),
     pace: report.paces[report.paces.length - 1] || 0,
+    asked: report.requests.length,
+    still: followed.filter(([node]) => document.body.contains(node)).map(([, named]) => named),
   };
 }
 
@@ -659,6 +667,15 @@ async function app(file) {
       }
       if (step.see !== undefined) see(step.see);
       if (step.poll) await timers.filter((timer) => timer.name === 'refresh').pop()();
+      if (step.polls) {
+        const refresh = timers.filter((timer) => timer.name === 'refresh').pop();
+        await Promise.all(Array.from({ length: step.polls }, () => refresh()));
+      }
+      if (step.hidden !== undefined) {
+        document.hidden = step.hidden;
+        for (const listener of documentListeners.visibilitychange || []) listener({});
+      }
+      if (step.hold !== undefined) followed.push([control(step.hold), step.hold]);
       if (step.key) for (const listener of documentListeners.keydown || []) listener({ key: step.key });
     } catch (failure) {
       report.errors.push(String(failure && failure.stack ? failure.stack : failure));

@@ -62,7 +62,8 @@ Added to the above
   {'fileId', 'url'}. Pass that `fileId` to the next preview, or a second file is made.
 - `ready()` returns {'tool', 'version', 'pictures', 'local', 'drive', 'missing'}: four
   yes-or-no answers, the version, and the sentences. `ready(slides, which=...)` asks a given
-  Slides, and looks for programs some other way, which is how a test asks.
+  Slides, and looks for programs some other way, which is how a test asks. With
+  `drive=False` Drive is not asked at all, and `drive` is None.
 - Every call that writes removes what it wrote when it fails, so the same path can be
   tried again. Nothing that was there before the call is ever removed.
 - `reading()` returns the guidance the tool's own workers are sent to read, as
@@ -388,8 +389,10 @@ class Slides:
         return self._json('drive', 'import', '--file', str(deck), '--name', name)
 
 
-def ready(slides: Slides | None = None, which=shutil.which) -> dict:
-    """What this computer has for a deck. Nothing is written; Drive is asked one question."""
+def ready(slides: Slides | None = None, which=shutil.which, drive: bool = True) -> dict:
+    """What this computer has for a deck. Nothing is written; Drive is asked one question,
+    unless `drive` is False: then it is not asked, and `drive` is None."""
+    asking = drive
     version, missing = None, []
     try:
         slides = slides or Slides()
@@ -404,8 +407,9 @@ def ready(slides: Slides | None = None, which=shutil.which) -> dict:
     def has(program: str) -> bool:
         return which(os.environ.get(PROGRAMS[program]) or program) is not None
 
-    pictures, local, drive = has('pdftoppm') and has('pdfinfo'), has('soffice'), False
-    if slides is not None:
+    pictures, local = has('pdftoppm') and has('pdfinfo'), has('soffice')
+    drive = False if asking else None
+    if slides is not None and asking:
         try:
             drive = slides.drive_check()
         except WorkspaceError:
@@ -416,7 +420,7 @@ def ready(slides: Slides | None = None, which=shutil.which) -> dict:
     if not local:
         missing.append('LibreOffice was not found, so previews cannot be rendered on this '
                        'computer. Install it, or render previews through Google Drive.')
-    if slides is not None and not drive:
+    if slides is not None and drive is False:
         missing.append('Google access does not reach Drive, so previews cannot be rendered '
                        'there. Run `gcloud auth login --enable-gdrive-access`, or render '
                        'previews with LibreOffice.')

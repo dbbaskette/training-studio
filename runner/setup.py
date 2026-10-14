@@ -21,11 +21,13 @@ What a caller needs to know
 - When to share is written `each-decision` or `when-asked` here; `gitstate` calls them
   `decision` and `asked`.
 - `previews` is the person's choice between LibreOffice on this computer (`local`) and
-  Google Drive (`drive`), with which of the two this computer can use, and the preview
-  files the runner has left in Drive. It never deletes one, so it lists them. `brand` is
-  the brand skill that was found and the brands it has, with every brand skill found
-  under `skills` as {'name', 'path', 'chosen'}; `brand_skill` names one of those paths to
-  use. Both are asked of the engine, which looks at this computer and reuses the look.
+  Google Drive (`drive`), with which of the two this computer can use (`drive` is None
+  once LibreOffice is chosen: Drive is not asked then), and the preview files the runner
+  has left in Drive. It never deletes one, so it lists them. `brand` is the brand skill
+  that was found and the brands it has, with every brand skill found under `skills` as
+  {'name', 'path', 'chosen'}; `brand_skill` names one of those paths to use. Both are
+  asked of the engine, which looks at this computer and reuses the look, so asking for
+  this again starts nothing while nothing has changed.
 - `notify` is {'on', 'can', 'problem'}: whether the runner tells the person through the
   computer's own notifications when no page is open, whether this computer has a way to,
   and a sentence when it has none. It is sent as true or false, and cannot be turned on
@@ -338,6 +340,6 @@ def apply(engine, wanted: dict) -> dict:
                 gitstate.local(path, wanted['folder'], wanted['branch'], wanted['name'],
                                share)
     settings.save(wanted['settings'])
-    engine.deck_needs(fresh=True)
+    engine.saved()
     engine.resume()
     return describe(engine)

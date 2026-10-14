@@ -1,7 +1,8 @@
 /* The page, in the manner of a Mac app.
    Glass for the things you steer with: the sidebar, the toolbar, sheets, toasts and controls.
    Solid paper for the things you read: a document, a comparison, a review note.
-   A soft backdrop drifts behind it all so the glass has something to bend.
+   A soft backdrop lies behind it all so the glass has something to bend. It stays still, so
+   what the glass blurs is worked out once and not again on every frame.
 
    Only four layers blur what is behind them: the sidebar, the toolbar, a sheet and a toast.
    Cards sit straight on the backdrop, which is already smooth, so they need no blur.
@@ -195,7 +196,7 @@ textarea {
   stroke-linejoin: round;
 }
 
-/* --- the backdrop: washes of colour, drifting slowly -------------------------------- */
+/* --- the backdrop: washes of colour, lying still ------------------------------------ */
 
 .backdrop {
   position: fixed;
@@ -208,18 +209,6 @@ textarea {
     radial-gradient(44vmax 40vmax at 78% 74%, var(--wash-3), transparent 70%),
     radial-gradient(40vmax 40vmax at 26% 76%, var(--wash-4), transparent 70%),
     radial-gradient(34vmax 30vmax at 52% 52%, var(--wash-5), transparent 70%);
-  animation: drift 90s ease-in-out infinite alternate;
-  will-change: transform;
-}
-
-@keyframes drift {
-  from {
-    transform: translate3d(-4%, -3%, 0) rotate(0deg) scale(1);
-  }
-
-  to {
-    transform: translate3d(4%, 3%, 0) rotate(14deg) scale(1.08);
-  }
 }
 
 /* --- the materials ------------------------------------------------------------------ */
@@ -2239,7 +2228,7 @@ summary {
   }
 }
 
-/* The person asked for less motion: nothing drifts, slides or follows the pointer. */
+/* The person asked for less motion: nothing slides, shimmers or follows the pointer. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
