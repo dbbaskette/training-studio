@@ -13,6 +13,8 @@ What a caller needs to know
     deck.brief(written, whole, previews)        # a section's brief, for a worker with tools
     spec = deck.fixed(whole, ids, number)       # what a section's composer may not change
     deck.kept(section, spec)                    # what the runner refuses in a section
+    deck.as_approved(section, spec)             # each approved intent, as it was approved
+    deck.icons(design)                          # each concept's icon, across the deck
     deck.checked(finding, slides)               # one finding of a review, or why it is wrong
     deck.to_repair(findings, sections)          # the sections a review sends back
     deck.before(slides)                         # what a deck of this size has cost before
@@ -31,7 +33,15 @@ What a caller needs to know
   2, taking each slide's title, copy, notes and objectives from the outline, so that the
   copy the person approves has one source.
 - HOUSE is what the composers are told that no program can check. It goes into the outline
-  as its house rules and into each section's brief.
+  as its house rules and into each section's brief. A deck drawn from an approved design
+  has DESIGNED_HOUSE instead, which draws what the design approved rather than leaving its
+  visuals to the composer.
+- `design` is the plan the slides tool approved, as `design check` returns it. Each
+  section's brief then carries the approved design of its slides and the icon each concept
+  has across the whole deck, and a composer copies each slide's `intent` into its section
+  exactly. `fixed` takes the wording from the approved copy and adds the intent and the
+  wording the copy must keep. A deck without a design is told and held to what it always
+  was.
 - `brief` rewrites the brief the slides tool writes for one section. That brief is written
   for a worker at a shell, with paths to read and a folder to write in. A worker here has
   tools and no files, so those parts are replaced and everything else is kept as written.
@@ -84,6 +94,11 @@ HOUSE = (
     'them.',
     'An icon is optional. Use one only where it names a recognisable thing, the same icon '
     'for the same thing, never twice on one slide.',
+)
+DESIGNED_HOUSE = HOUSE[:-1] + (
+    'Draw what the approved design says: its visual, its composition and the assets it '
+    'selected. An icon names a recognisable thing: the same icon for the same concept '
+    'across the deck, never twice on one slide.',
 )
 QUESTIONS = (
     'After three seconds, is the main point clear, and is it the claim in the title?',
@@ -432,13 +447,13 @@ def layouts(listed, slides: list[dict]) -> dict:
     return chosen
 
 
-def complete(outline: dict, listed, words: list[str]) -> dict:
+def complete(outline: dict, listed, words: list[str], designed: bool = False) -> dict:
     """An approved outline as the slides tool starts a deck from: with the direction, a
     layout for each kind of lead slide, the house rules, and the person's own words of
-    approval."""
+    approval. A deck `designed` is drawn from its approved design."""
     return {**outline, 'delivery': DELIVERY, 'direction': dict(DIRECTION),
-            'layouts': layouts(listed, slides_of(outline)), 'house': list(HOUSE),
-            'approval': list(words)}
+            'layouts': layouts(listed, slides_of(outline)),
+            'house': list(DESIGNED_HOUSE if designed else HOUSE), 'approval': list(words)}
 
 
 def lead(part: dict) -> dict:
@@ -459,14 +474,18 @@ def _part(text: str, heading: str, body: str, renamed: str | None = None) -> str
     return text.rstrip('\n') + '\n\n' + new
 
 
-def brief(written: str, whole: dict, previews: int = PREVIEWS) -> str:
+def brief(written: str, whole: dict, previews: int = PREVIEWS, design=None) -> str:
     """The brief the slides tool wrote for one section, for a worker with tools and no
-    files. Its slides, their order and the direction are kept as written."""
+    files. Its slides, their order and the direction are kept as written. With `design`,
+    the plan the slides tool approved, it also carries the approved design of each of its
+    slides and the icon of each concept across the deck."""
     skeleton = json.dumps({'version': 1, 'title': whole.get('title'),
                            'direction': whole.get('direction') or DIRECTION,
                            'slides': ['your slides, in order']}, ensure_ascii=False)
     text = POINTER.sub('Your instructions say how to work; `list_inputs` shows what you '
                        'can read.', written)
+    named = ('id', 'title', 'sources', *(('intent',) if design else ()))
+    shape, copied = (''.join(f'{mark}{key}{mark}, ' for key in named) for mark in '"`')
     text = _part(text, 'Paths', f'''
 One JSON object, the section, handed in with `submit_section`:
 
@@ -474,13 +493,88 @@ One JSON object, the section, handed in with `submit_section`:
 {skeleton}
 ```
 
-Each slide is `{{"id", "title", "sources", "brief": {{"relation", "focal": the ID of the node that carries the point, "rhythm"}}, "canvas", "connect"?, "caveat"?, "source"?, "notes"}}`. Copy each slide's `id`, `title`, `sources`, caveat, source line and notes exactly as they are given below, and keep every word of every point. The input "composition contract" has the exact format.''',
+Each slide is `{{{shape}"brief": {{"relation", "focal": the ID of the node that carries the point, "rhythm"}}, "canvas", "connect"?, "caveat"?, "source"?, "notes"}}`. Copy each slide's {copied}caveat, source line and notes exactly as they are given below, and keep every word of every point. The input "composition contract" has the exact format.''',
                  'What you write')
-    text = _part(text, 'House style', '\n'.join(f'- {line}' for line in HOUSE))
+    text = _part(text, 'House style', '\n'.join(
+        f'- {line}' for line in (DESIGNED_HOUSE if design else HOUSE)))
+    if design:
+        text = _part(text, 'The approved design', drawn_from(design, named_in(written, whole)))
+        text = _part(text, 'Icons across the deck', _icons_told(icons(design)))
     text = _part(text, 'Preview', f'''
 `preview_section` renders your whole section and returns a picture of every slide, with what the renderer found. You have {previews} previews. `check_section` is free: use it until the section compiles before you spend a preview.''')
     return _part(text, 'Return', '''
 Hand the section in with `submit_section`. It must be the version you last previewed. Say what you changed after looking at the pictures and what still bothers you, naming your weakest slide.''')
+
+
+def _json(value) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def drawn_from(design, ids: list[str]) -> str:
+    """What a section's composer is told of the approved design of its slides, one record
+    each, with the intent it copies."""
+    by_id = {slide.get('id'): slide for slide in slides_of(design)}
+    lines = ['The person approved how each of your slides teaches together with what it '
+             'says, in one decision. Draw each as its design says: the visual, what the '
+             'composition places and joins, and the asset it selected. How you realise it '
+             'is yours: the layout, the sizes, what is large. A slide whose visual is `text` '
+             'is direct text by decision: draw it as text and add nothing to decorate it. If '
+             'a design cannot be drawn as approved, draw the nearest you can and say so when '
+             'you hand in. Another concept needs the person\'s approval.', '',
+             'Only icons can be placed in this version. Where a design selects a picture, '
+             'draw the rest as designed and name the picture when you hand in.', '',
+             'Copy each slide\'s `intent` into it exactly as it is given here. The slides '
+             'tool checks it against the approval.']
+    for ident in ids:
+        slide = by_id.get(ident) or {}
+        shown = drawn_as(slide)
+        lines += ['', f'### `{ident}`', '', f"- Claim: {shown['claim']}",
+                  f"- The question it answers: {shown['question']}",
+                  f"- Relationship: {(slide.get('intent') or {}).get('relationship')}",
+                  f"- Visual: {shown['family']}. Its purpose: {shown['purpose']}",
+                  f"- How it is drawn: {shown['drawn']}", f"- Why: {shown['why']}"]
+        if shown['alternative']:
+            lines.append(f"- Weighed against: {shown['alternative']['treatment']}. "
+                         f"{shown['alternative']['reason']}")
+        asset = shown['asset']
+        lines.append(f"- Asset: {asset['description']} ({asset['disposition']}: "
+                     f"{asset['reason']})")
+        lines += [f"  - {candidate['kind']} \"{candidate['ref']}\" for {candidate['concept']}"
+                  + (', still to be found' if candidate['status'] == 'pending' else '')
+                  for candidate in shown['candidates']]
+        lines += [f'- Wording it must keep: {_json(kept)}' for kept in shown['keeps']]
+        lines += ['- `intent`, to copy:', '', '```json', _json(slide.get('intent')), '```']
+    return '\n'.join(lines)
+
+
+def icons(design) -> list[dict]:
+    """The icon the approved design names for each concept, across every slide of the
+    deck, as {'concept', 'ref', 'status', 'slides'}, in the order they first appear."""
+    found: dict = {}
+    for slide in slides_of(design):
+        for candidate in drawn_as(slide)['candidates']:
+            if candidate['kind'] != 'icon':
+                continue
+            made = found.setdefault((candidate['concept'], candidate['ref']), {
+                'concept': candidate['concept'], 'ref': candidate['ref'],
+                'status': candidate['status'], 'slides': []})
+            made['status'] = 'resolved' if 'resolved' in (made['status'], candidate['status']) \
+                else made['status']
+            if slide.get('id') not in made['slides']:
+                made['slides'].append(slide.get('id'))
+    return list(found.values())
+
+
+def _icons_told(listed: list[dict]) -> str:
+    if not listed:
+        return ('The approved design names no icon. Use one only where it names a '
+                'recognisable thing, and the same one for the same thing in every section.')
+    return '\n'.join(['The same concept has the same icon in every section of the deck. These '
+                      'are the icons the approved design names, on every slide. Find each with '
+                      '`search_icons` by its name and use the ID it gives you for that '
+                      'concept, on any slide of yours that shows it.', ''] + [
+        f"- {icon['concept']}: \"{icon['ref']}\", on " + ', '.join(
+            f'`{ident}`' for ident in icon['slides']) for icon in listed])
 
 
 def named_in(written: str, whole: dict) -> list[str]:
@@ -489,12 +583,15 @@ def named_in(written: str, whole: dict) -> list[str]:
             if slide.get('kind') == 'content' and f"`{slide.get('id')}`" in written]
 
 
-def fixed(whole: dict, ids: list[str], number: int) -> dict:
+def fixed(whole: dict, ids: list[str], number: int, design=None) -> dict:
     """What the composer of one section may not change: the deck's title and direction,
     and for each of its slides the title, the objectives, the points, the caveat, the
-    source line and the notes that were approved."""
+    source line and the notes that were approved. With `design`, the plan the slides tool
+    approved, the title and the visible copy are the approved ones, and each slide also
+    has the wording it must keep and its approved `intent`, as the JSON text the slides
+    tool compares: a text keeps the order of its keys wherever it is kept."""
     by_id = {slide.get('id'): slide for slide in slides_of(whole)}
-    return {'title': whole.get('title'), 'direction': whole.get('direction') or DIRECTION,
+    made = {'title': whole.get('title'), 'direction': whole.get('direction') or DIRECTION,
             'prefix': f's{number}_',
             'slides': [{'id': ident, 'title': by_id[ident].get('title'),
                         'sources': list(by_id[ident].get('sources') or ()),
@@ -503,6 +600,19 @@ def fixed(whole: dict, ids: list[str], number: int) -> dict:
                         'caveat': by_id[ident].get('caveat'),
                         'source': by_id[ident].get('source'),
                         'notes': by_id[ident].get('notes')} for ident in ids]}
+    if design is None:
+        return made
+    approved = {slide.get('id'): slide for slide in slides_of(design)}
+    for slide in made['slides']:
+        mine = approved.get(slide['id']) or {}
+        copy = mine.get('copy') if isinstance(mine.get('copy'), dict) else {}
+        slide.update(title=mine.get('title'), points=[
+            {'label': point.get('label'), 'text': point.get('text')}
+            for point in copy.get('points') or () if isinstance(point, dict)],
+            caveat=copy.get('caveat'), source=copy.get('source'),
+            intent=json.dumps(mine.get('intent'), separators=(',', ':'), ensure_ascii=False),
+            qualifications=[str(kept) for kept in mine.get('qualifications') or ()])
+    return made
 
 
 # --- a section, as it is handed in -------------------------------------------------------
@@ -575,7 +685,32 @@ def kept(section, spec: dict) -> list[str]:
                                 + (f': {json.dumps(theirs[name])}' if theirs[name]
                                    and name != 'notes' else '.' if theirs[name]
                                    else ': the slide has none.'))
+        if 'intent' not in theirs:
+            continue
+        if mine.get('intent') != json.loads(theirs['intent']):
+            problems.append(f'{ident}: `intent` is copied exactly as it was approved. Your '
+                            'brief gives it under the approved design.')
+        shown = ' '.join(plain(text) for text in (*texts, _caveat(mine), mine.get('source'))
+                         if isinstance(text, str))
+        problems += [f'{ident}: the approved design keeps this wording, which is missing or '
+                     f'changed: {json.dumps(kept)}' for kept in theirs['qualifications']
+                     if plain(kept) and plain(kept) not in shown]
     return problems
+
+
+def as_approved(section, spec: dict):
+    """A section whose intents are written exactly as they were approved: each one that is
+    the approved intent is given its keys in the approved order, which the slides tool
+    compares as written. Anything else is left as it is, to be refused."""
+    wanted = {slide['id']: json.loads(slide['intent']) for slide in spec['slides']
+              if 'intent' in slide}
+    if not wanted or not isinstance(section, dict) or not isinstance(section.get('slides'),
+                                                                     list):
+        return section
+    return {**section, 'slides': [
+        {**slide, 'intent': wanted[slide['id']]} if isinstance(slide, dict)
+        and slide.get('id') in wanted and slide.get('intent') == wanted[slide['id']] else slide
+        for slide in section['slides']]}
 
 
 # --- what a review finds -----------------------------------------------------------------

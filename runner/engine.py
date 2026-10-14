@@ -253,6 +253,9 @@ DECK_KEPT = ('What you approved the deck should say is kept, and so is everythin
 CHANGED = '{it} has changed since it was opened. Read the new version before deciding.'
 DESIGN_GONE = ('What this deck says is written with its design, which the slides tool on '
                'this computer cannot keep. Update harness-slides, then try again.')
+SECTIONS_GONE = ('This deck is drawn from the design you approved, and the slides tool on '
+                 'this computer cannot check a section against it. Update harness-slides, '
+                 'then try again.')
 DESIGN_DIFFERS = ('The design you approved is not what the slides tool holds as approved, so '
                   'the deck cannot be started. {said}')
 NOT_CHOSEN = ("How a deck's previews are rendered has not been chosen. Choose Google Drive "
@@ -1467,6 +1470,20 @@ class Engine:
             can = False
         return can if mine.designed is None else (True if can else None)
 
+    def _sections_bound(self, root: Path, it: pipeline.Step, design) -> bool:
+        """Whether a deck can be built here: one drawn from its approved design needs a
+        slides tool that checks a section against it. Stops the training and says so when
+        it cannot."""
+        if not design:
+            return True
+        try:
+            can = self.slides().sections()
+        except WorkspaceError:
+            can = False
+        if not can:
+            self._problem(root, it.id, 'stopped', SECTIONS_GONE, DECK_KEPT)
+        return can
+
     def _propose(self, root: Path, level: str | None) -> dict:
         """Propose a deck's design to the slides tool as one question for the whole plan, in
         the deck's own folder, and say what is put to the person: the design file's hash,
@@ -1525,21 +1542,25 @@ class Engine:
         mine, work = found.decks[level], pipeline.place(root, level, pipeline.WORK)
         folder, source = work / f'start-{token}', work / f'outline-{token}.json'
         approved = mine.kept['approved']
-        design = approved.get('design')
+        design, plan = approved.get('design'), None
         if design:
+            if not self._sections_bound(root, it, design):
+                return
             try:
                 checked = self.slides().design_check(pipeline.place(root, level,
                                                                     pipeline.DESIGNS))
                 if checked.get('revision') != design['revision']:
                     raise WorkspaceError('It holds another revision.')
-            except WorkspaceError as refusal:
+                plan = checked['plan']
+            except (WorkspaceError, KeyError, TypeError) as refusal:
                 return self._problem(root, it.id, 'stopped', DESIGN_DIFFERS.format(
                     said=refusal), DECK_KEPT)
         words = [f"Approved on the page, {approved['at']}."]
         words += [approved['note']] if approved.get('note') else []
         try:
             listed = home.read_json(work / mine.built['brand']['told'] / 'layouts.json', {})
-            whole = deck.complete(mine.outline, (listed or {}).get('layouts'), words)
+            whole = deck.complete(mine.outline, (listed or {}).get('layouts'), words,
+                                  designed=plan is not None)
             home.write_json(source, whole)
             self.slides().outline_start(source, pipeline.contract(root, mine), folder)
             sections = []
@@ -1554,11 +1575,15 @@ class Engine:
                 if not slides:
                     raise WorkspaceError(f'The slides tool gave {ident} no slides.')
                 worker_tools._write(folder / 'given' / f'{ident}.md', deck.brief(
-                    written, whole).replace(str(folder), '.').replace(str(Path.home()), '~'))
+                    written, whole, design=plan).replace(str(folder), '.').replace(
+                    str(Path.home()), '~'))
                 sections.append({'id': ident, 'file': part, 'slides': slides})
             if not sections:
                 raise WorkspaceError('The slides tool split the deck into no sections.')
             home.write_json(folder / 'given' / 'outline.json', whole)
+            if plan is not None:   # as the tool gave it: the order of its keys is kept
+                worker_tools._write(folder / pipeline.APPROVED_DESIGN, json.dumps(
+                    plan, indent=2, ensure_ascii=False) + '\n')
         except (WorkspaceError, OSError, KeyError, ValueError, TypeError) as refusal:
             shutil.rmtree(folder, ignore_errors=True)
             return self._problem(root, it.id, 'failed', (
@@ -1583,7 +1608,10 @@ class Engine:
         previews are still taken one at a time."""
         if not self._brand_holds(root, found, step.step):
             return
-        how = self._how(root, found, self._level(step.step))
+        level = self._level(step.step)
+        if not self._sections_bound(root, step.step, found.decks[level].start.get('design')):
+            return
+        how = self._how(root, found, level)
 
         def one(section: str) -> None:
             if self._may_go(root):
@@ -1657,6 +1685,11 @@ class Engine:
         folder, shots = start / f'whole-{secrets.token_hex(3)}', pipeline.place(
             root, level, pipeline.SHOTS)
         drawn = mine.built.get('sections') or {}
+        if not self._sections_bound(root, it, mine.start.get('design')):
+            return
+        # A deck drawn from its approved design is checked whole against it.
+        bound = {'design': pipeline.place(root, level, pipeline.DESIGNS)} \
+            if mine.start.get('design') else {}
         try:
             folder.mkdir()
             shutil.copyfile(start / 'parts.json', folder / 'parts.json')
@@ -1667,9 +1700,9 @@ class Engine:
             tool = self.slides()
             tool.merge(folder / 'parts.json', folder / 'composition.json')
             tool.compile(folder / 'composition.json', pipeline.contract(root, mine),
-                         folder=folder / 'compiled')
+                         folder=folder / 'compiled', **bound)
             shown = worker_tools.render(tool, folder / 'compiled', folder / 'preview',
-                                        self._how(root, found, level))
+                                        {**self._how(root, found, level), **bound})
             file = Path(str(shown['deck'])).resolve()
             if (folder / 'preview').resolve() not in file.parents \
                     or file.read_bytes()[:4] != workspace.PPTX_SIGNATURE:

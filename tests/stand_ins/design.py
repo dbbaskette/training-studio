@@ -7,11 +7,14 @@ question and refusals as JSON.
     session.status()
     session.check()                                    # {'plan', 'revision', 'buildAllowed'}
     session.respond(reply)
+    bound(slides, project, section)                    # a build, checked against the approval
     refusal(error, revision)                           # what --json prints for a refusal
 
 It keeps the tool's own rules, messages and codes, ported from scripts/lib/design-session.mjs,
 slide-decisions.mjs and refusals.mjs, and writes the session where the tool does. It stops
 at the design: nothing is rendered here, so it never asks the rendered-review question.
+The session names no project: the tool is told it with --project each time. A session
+written when it did name one is read all the same, and loses the name when next written.
 """
 from __future__ import annotations
 
@@ -53,6 +56,8 @@ CODES = {
                                         'propose it again'),
     'design-revision-stale': (True, 'Run design status and use its current revision and '
                                     'question'),
+    'design-mismatch': (True, 'Build the approved slides in the approved order with their '
+                              'approved titles, or propose the change for approval'),
     'design-state-invalid': (False, 'The design record was changed outside Harness Slides; '
                                     'propose the design again in a fresh project'),
     'design-busy': (True, 'Retry when the other design command ends. If none is running, a '
@@ -60,6 +65,9 @@ CODES = {
                           'it and retry'),
     'invalid-response': (True, "Answer the current question with questionId, planRevision, "
                                "a decision and the person's words"),
+    'composition-invalid': (True, 'Fix the composition and compile again'),
+    'icon-unavailable': (True, 'Search the brand icon library for a current native icon ID'),
+    'layout-unavailable': (True, 'Choose a layout listed by compose layouts'),
     'input-missing': (True, 'Check the path given on the command line'),
     'input-invalid': (True, 'Correct the input named in the detail and retry'),
     'unclassified': (False, 'Read the detail; ask the person before working around it'),
@@ -69,6 +77,8 @@ KNOWN = ((re.compile(r'Question or design revision changed|Design revision chang
                      r'design revision changed|No existing design revision'),
           'design-revision-stale'),
          (re.compile(r'Awaiting design approval'), 'design-awaiting-approval'),
+         (re.compile(r'differs? from the approved design'), 'design-mismatch'),
+         (re.compile(r'New creative authoring needs --design-project'), 'design-missing'),
          (re.compile(r'changed outside the checkpoint|real directories'),
           'design-state-invalid'),
          (re.compile(r'Record the actual user response|Unknown design response|Autonomy is '
@@ -150,7 +160,7 @@ def _candidates(found) -> bool:
                     and item.get('status') in ('resolved', 'pending') for item in found))
 
 
-def _decision(intent, sources) -> None:
+def decision(intent, sources) -> None:
     """slide-decisions.mjs: a content-based intent, required on every proposed slide."""
     if not intent:
         raise ValueError('Every new slide needs a content-based intent')
@@ -202,7 +212,7 @@ def validate(plan) -> dict:
                           'composition and source/brief IDs', at)
         seen.add(ident)
         try:
-            _decision(slide.get('intent'), slide['sources'])
+            decision(slide.get('intent'), slide['sources'])
         except ValueError as wrong:
             raise Refusal(str(wrong), at)
         asset = slide.get('asset')
@@ -290,10 +300,10 @@ def _question(session: dict) -> dict | None:
             'wait': True, 'rule': RULE}
 
 
-def _status(session: dict) -> dict:
+def _status(session: dict, project: Path) -> dict:
     waiting, question = _pending(session), _question(session)
     plan = session['plan']['slides']
-    return {'project': session['project'], 'revision': session['revision'],
+    return {'project': str(project), 'revision': session['revision'],
             'mode': session['mode'],
             'buildAllowed': not waiting and not session.get('awaitingRevision'),
             'pending': [slide['id'] for slide in waiting],
@@ -333,6 +343,7 @@ class Session:
                 or value.get('revision') != digest(value.get('plan')):
             raise Refusal('Design state changed outside the checkpoint; recover the proposal')
         validate(value['plan'])
+        value.pop('project', None)  # named by a session written before --project named it
         return value
 
     def _needed(self, root: Path) -> dict:
@@ -366,7 +377,7 @@ class Session:
             temporary.replace(root / RECORD)
         finally:
             temporary.unlink(missing_ok=True)
-        return _status(session)
+        return _status(session, root)
 
     def revision(self) -> str | None:
         """The current revision, for a refusal: None when there is no readable record."""
@@ -389,7 +400,7 @@ class Session:
             if not old and expected:
                 raise Refusal('No existing design revision')
             revision = digest(plan)
-            session = {'schema': 1, 'tool': 'harness-slides-design', 'project': str(root),
+            session = {'schema': 1, 'tool': 'harness-slides-design',
                        'plan': json.loads(json.dumps(plan)), 'revision': revision,
                        'mode': mode or (old or {}).get('mode') or 'guided',
                        'approvals': (old or {}).get('approvals') or {},
@@ -408,9 +419,16 @@ class Session:
         return self._locked(act)
 
     def status(self) -> dict:
-        return _status(self._needed(self.project))
+        return _status(self._needed(self.project), self.project)
 
     def check(self) -> dict:
+        session = self.approved()
+        return {'plan': session['plan'], 'revision': session['revision'], 'buildAllowed': True}
+
+    def approved(self, ids: list | None = None, section: bool = False) -> dict:
+        """getApprovedDesign: the session once every slide is approved, and with `ids` only
+        when they are the slides of a build in an order the approval allows: the whole plan,
+        or with `section` a run of it."""
         session = self._needed(self.project)
         if session.get('awaitingRevision'):
             asked = (session['feedback'][-1] if session['feedback'] else {}).get('slides') or []
@@ -422,7 +440,13 @@ class Session:
         if waiting:
             raise Refusal('Awaiting design approval; show the proposed slide(s) and wait for an '
                           'actual user response before building', *waiting)
-        return {'plan': session['plan'], 'revision': session['revision'], 'buildAllowed': True}
+        found = order_problem([slide['id'] for slide in session['plan']['slides']], ids,
+                              section) if ids is not None else None
+        if found:
+            raise Refusal(("The section's" if section else 'Authored') + ' slide IDs/order '
+                          f"differ from the approved design: {found['why']}",
+                          {'code': 'design-mismatch', 'slide': found['slide']})
+        return session
 
     def respond(self, reply) -> dict:
         if not _fields(reply, ('questionId', 'planRevision', 'decision', 'feedback',
@@ -471,6 +495,63 @@ class Session:
         return self._locked(act)
 
 
+def order_problem(planned: list, ids: list, section: bool) -> dict | None:
+    """Where a build's slide IDs leave the approved order, as {'slide', 'why'}, or None. A
+    deck starts at the first approved slide and ends at the last; a section starts wherever
+    its first slide is approved and may end early."""
+    start = (planned.index(ids[0]) if ids and ids[0] in planned else -1) if section else 0
+    if start < 0:
+        first = ids[0] if ids else None
+        return {'slide': first, 'why': f'{first} is not in the approved design'}
+    for at in range(max(len(ids), 0 if section else len(planned) - start)):
+        want = planned[start + at] if start + at < len(planned) else None
+        got = ids[at] if at < len(ids) else None
+        if got == want:
+            continue
+        if got is None:
+            return {'slide': want, 'why': f'approved slide {want} is missing at the end'}
+        if got not in planned:
+            return {'slide': got, 'why': f'{got} is not in the approved design'}
+        if want is None or planned.index(got) < start + at or want in ids:
+            return {'slide': got, 'why': f'{got} is out of the approved order'
+                                         + (f'; {want} comes next' if want else '')}
+        return {'slide': want, 'why': f'approved slide {want} is missing before {got}'}
+    return None
+
+
+def bound(slides: list, project, section: bool = False) -> dict | None:
+    """requireSceneDesign: a build's slides, each {'id', 'title', 'intent'?}, held to the
+    design approved in `project` now. Without a project nothing is checked, unless a slide
+    carries an intent. Returns {'plan', 'revision', 'scope', 'slides'}, or None."""
+    if not project:
+        if any(slide.get('intent') for slide in slides):
+            raise Refusal('New creative authoring needs --design-project and actual design '
+                          'approval', {'code': 'design-missing', 'next': 'Pass '
+                                       '--design-project with the project whose design the '
+                                       'person approved'})
+        return None
+    ids = [slide['id'] for slide in slides]
+    session = Session(project).approved(ids, section)
+    by_id = {slide['id']: slide for slide in session['plan']['slides']}
+    problems = []
+    for slide in slides:
+        want, ident = by_id[slide['id']], slide['id']
+        if slide.get('title') != want['title']:
+            problems.append({'code': 'design-mismatch', 'slide': ident, 'detail': (
+                f'{ident}: its title differs from the approved design; revise the proposal '
+                'before construction')})
+        elif slide.get('intent') and digest(slide['intent']) != digest(want['intent']):
+            problems.append({'code': 'design-mismatch', 'slide': ident, 'detail': (
+                f'{ident}: its intent differs from the approved design; revise the proposal '
+                'before construction')})
+    if problems:
+        raise Refusal(problems[0]['detail'] if len(problems) == 1 else
+                      f'{len(problems)} slides differ from the approved design:\n'
+                      + '\n'.join(problem['detail'] for problem in problems), *problems)
+    return {'plan': session['plan'], 'revision': session['revision'],
+            'scope': 'section' if section else 'deck', 'slides': ids}
+
+
 def _classify(message: str) -> dict:
     if message.startswith('ENOENT'):
         return {'code': 'design-missing' if message.endswith("session.json'")
@@ -488,7 +569,8 @@ def _shape(problem: dict, detail: str) -> dict:
     recoverable, then = CODES[code]
     shaped = {'code': code, 'slide': problem.get('slide'), 'asset': problem.get('asset'),
               'provider': problem.get('provider'), 'detail': problem.get('detail') or detail,
-              'recoverable': recoverable, 'next': then}
+              'recoverable': problem.get('recoverable', recoverable),
+              'next': problem.get('next') or then}
     if problem.get('fallback'):
         shaped['fallback'] = {**problem['fallback'], 'needsApproval': True}
     return shaped

@@ -102,6 +102,7 @@ HANDOFF = 'deck-handoff.md'
 OUTLINE = 'deck/outline.json'       # what the deck says
 DESIGN = 'deck/design.json'         # how each slide is drawn, as proposed with what it says
 DESIGNS = 'deck'                    # where the slides tool keeps its record of the design
+APPROVED_DESIGN = Path('given') / 'design.json'   # in a start: the plan the tool approved
 SHOWS = 'deck/review.json'          # what its gate shows of the deck that was saved
 WORK = 'work/deck'                  # what it is built with: never shared
 BUILT = f'{WORK}/state.json'        # what this computer has built, and from what
@@ -837,10 +838,13 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
     if said and approved.get('sha256') == said \
             and (approved.get('design') or {}).get('sha256') == drawn_as:
         done.add('gate:deck-outline')
+    # A start drawn from its approved design gives its sections that design to draw from.
     if start.get('outline') == said and start.get('brand') == brand.get('sha256') \
             and start.get('design') == approved.get('design') \
             and (start.get('design') or {}).get('sha256') == drawn_as \
-            and (work / str(start.get('folder')) / 'parts.json').is_file():
+            and (work / str(start.get('folder')) / 'parts.json').is_file() \
+            and (not start.get('design')
+                 or (work / str(start.get('folder')) / APPROVED_DESIGN).is_file()):
         done.add('deck-start')
     sections = [section['id'] for section in start.get('sections') or ()]
     drawn = {ident: made for ident, made in (built.get('sections') or {}).items()
@@ -1518,6 +1522,10 @@ def section_work(root: Path, found: Survey, step: Step, section: str, error: str
     work, start = place(root, level, WORK), mine.start
     folder, number = work / start['folder'], numbered(section)
     whole = home.read_json(folder / 'given' / 'outline.json', {})
+    # A deck drawn from its approved design is built against it, a section at a time.
+    design = home.read_json(folder / APPROVED_DESIGN, None) if start.get('design') else None
+    bound = {'design': str(place(root, level, DESIGNS)), 'section': True} \
+        if design is not None else {}
     ids = next(listed['slides'] for listed in start['sections'] if listed['id'] == section)
     inputs = {'brief': _read(folder / 'given' / f'{section}.md') or '',
               'composition contract': _told(root, mine, 'compose-contract.txt')}
@@ -1547,9 +1555,10 @@ def section_work(root: Path, found: Survey, step: Step, section: str, error: str
     task += _again(None, None, error, [], 'the section')
     prepared = {'inputs': inputs, 'ask': False, 'look': look,
                 'artifacts': {name: {'kind': 'section', 'brand': str(contract(root, mine)),
-                                     **deck.fixed(whole, ids, number),
-                                     'previews': deck.PREVIEWS, **how}}}
-    return Work(briefs.guidance('deck-section', repair=again), task, 'write', prepared, name)
+                                     **deck.fixed(whole, ids, number, design),
+                                     'previews': deck.PREVIEWS, **how, **bound}}}
+    return Work(briefs.guidance('deck-section', repair=again, design=design is not None),
+                task, 'write', prepared, name)
 
 
 def review_work(root: Path, found: Survey, step: Step, error: str | None) -> Work:

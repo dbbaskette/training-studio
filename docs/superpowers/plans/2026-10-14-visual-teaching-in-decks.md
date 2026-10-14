@@ -2,7 +2,7 @@
 
 Make technical training decks explain concepts through diagrams, approved icons, and useful images. Harness Slides owns design, asset handling, compilation, and creative review. Training Studio supplies teaching requirements, presents decisions, and tracks approved inputs and outputs.
 
-Status: in progress. Harness Slides has the design contract on `main`, unreleased (its #46 and #47). Training Studio proposes copy and visuals together at the outline gate, where the installed Harness Slides can take them (#43). Sections, assets and review are still to come.
+Status: in progress. Harness Slides has the design contract on `main`, unreleased (its #46 to #50). Training Studio proposes copy and visuals together at the outline gate, where the installed Harness Slides can take them (#43), and draws each section from the approved design and builds it against it (#44). Assets and review are still to come.
 
 ## Evidence and intended outcome
 
@@ -42,8 +42,8 @@ Acceptance: an integration test can propose and validate one architecture slide,
 - [x] In Training Studio, replace the text-only outline review with a combined copy and visual proposal at the existing outline gate. Show proposed visible copy, a wireframe or sufficiently concrete visual description, asset candidates, important caveats and any unresolved needs.
 - [x] Keep one outline decision for the person. Record that decision against the exact copy and design revision in Harness Slides, through an adapter that accepts actual page decisions rather than simulated worker approval.
 - [x] Separate learning requirements from verbatim slide copy during drafting. Preserve objective coverage and source qualifications while moving explanation into notes where the visible diagram remains understandable by itself.
-- [ ] Carry the approved design and selected assets into every section brief. Retain the deck direction and shared concept-to-icon mapping across sections.
-- [ ] Remove wording that makes visuals an afterthought. Keep relevance requirements and the freedom to choose direct text when it best teaches the claim.
+- [x] Carry the approved design and selected assets into every section brief. Retain the deck direction and shared concept-to-icon mapping across sections.
+- [x] Remove wording that makes visuals an afterthought. Keep relevance requirements and the freedom to choose direct text when it best teaches the claim.
 
 Likely Training Studio files: `runner/briefs/deck-outline.md`, `runner/briefs/deck-section.md`, `runner/deck.py`, `runner/pipeline.py`, `runner/engine.py`, `runner/slides.py`, the outline review controls and their server handlers.
 
@@ -88,7 +88,7 @@ Acceptance: a prose-card rendering of a reconciliation mechanism receives a spec
 
 These rows are implementation requirements, not new public status names. Map them to the existing state model and add new names only where necessary.
 
-Implemented: V01, V02, V03 and V13, each a test of its name in Training Studio's `tests/test_runner_deck.py` (`DesignTests`). They map to the runner's own outline gate: "awaiting review" is `waiting` in the run record with the design's revision and question, and "approved" is `approved` holding the outline's hash and the design's hash and revision. The [milestone 4 spec](../specs/2026-10-13-milestone-4-slides.md#the-outline-gate-with-a-design) says how.
+Implemented: V01, V02, V03, V04, V13 and V14, each a test of its name in Training Studio's `tests/test_runner_deck.py` (`DesignTests`). They map to the runner's own outline gate: "awaiting review" is `waiting` in the run record with the design's revision and question, and "approved" is `approved` holding the outline's hash and the design's hash and revision. V04 and V14 map to the deck's start and its sections: "the approval holds" is `approved` and the tool's revision unchanged with nothing sent to the tool, and "stops" is the run's `stopped` problem with the approval kept. The milestone 4 spec says how, for [the outline gate](../specs/2026-10-13-milestone-4-slides.md#the-outline-gate-with-a-design) and for [the sections](../specs/2026-10-13-milestone-4-slides.md#sections-built-from-the-approved-design).
 
 | Row | Starting condition | Event | Required result and test |
 | --- | --- | --- | --- |
@@ -105,6 +105,7 @@ Implemented: V01, V02, V03 and V13, each a test of its name in Training Studio's
 | V11 | Legacy workflow in progress | Person chooses redesign | Preserve previous artifacts; create proposal in the new workflow and invalidate affected outputs; `test_visual_11_explicit_redesign_migrates` |
 | V12 | Setup reports deck capability missing | Compatible runtime installed and person checks again | Readiness refreshes; eligible waiting work resumes through existing scheduling rules; `test_visual_12_compatibility_refresh` |
 | V13 | Proposal waiting for review | Person submits a decision for an older revision | Refused; current proposal and approvals remain unchanged; `test_visual_13_stale_decision_refused` |
+| V14 | Design approved; installed Harness Slides cannot check a section against it | Deck construction starts | Stops with a request to update; the approval is kept and nothing is built; once the tool can, trying again builds without asking again; `test_visual_14_sections_need_a_tool_that_checks_them_against_the_design` |
 
 ## Verification and acceptance
 
