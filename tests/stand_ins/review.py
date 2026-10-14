@@ -1,12 +1,17 @@
 """Harness Slides' design-bound review of a composition, for the stand-in: `review --compiled`,
 `--slide`, `--mark` and `--assessment` as its `main` has them (harness-slides-skill#50, with
-#65's icons placed by asset ID).
+#65's icons placed by asset ID), and `--packets`, `--renderer google` and an assessment's
+sources taken from its slide as 0.14.1 has them (#67).
 
-    Review(output, deck=draw, picture=picture, screens=screens, local=True)
+    Review(output, deck=draw, picture=picture, screens=screens, local=True, has=(),
+           google=None)
     review.prepare(compiled, project)        # renders REVIEW/deck.pptx, and the summary
+    review.prepare(compiled, project, renderer='google', file_id=None)   # through Drive
     review.inspect(slide)                    # one slide's prompt, findings and binding
+    review.packets()                         # every slide's, in one call
     review.mark(revision, numbers, note)     # pixels looked at
     review.assess(revision, assessment)      # the creative assessment, with what is unresolved
+    findings(record)                         # what design present lists for the person
 
 It keeps the tool's rules, messages and codes, ported from scripts/lib/slide-review.mjs and
 native-quality.mjs: the build's own prompts (an approved asset missing, a candidate not
@@ -19,6 +24,9 @@ Where it is simpler than the real thing: the deck is what the stand-in's compose
 writes, its pictures are the stand-in's own, the slide IDs a presentation program would give
 are 256 on, and the screens are the stand-in preview's. `local` False is a computer without
 LibreOffice, refused as `renderer-unavailable` once the deck is written, as the tool does.
+`has` is what the tool lists in `version`: `review-packets`, `review-google-renderer` and
+`review-sources-from-slide` are played only where listed. `google(file_id, data, title)`
+stands in for Drive: it returns {'fileId', 'url'} or refuses as the upload would.
 """
 from __future__ import annotations
 
@@ -88,6 +96,7 @@ BUILD = ('scene.json', 'structure.json', 'compose-report.json', 'brand-contract.
 IMAGE = re.compile(r'^slide-\d+-[a-f0-9]+\.png$')
 MARKER = 'harness-slides-review-v1\n'
 RENDERER = 'LibreOffice PDF / Poppler; verify fidelity in the target editor'
+GOOGLE = 'Google Slides PDF export / Poppler; Google draws with its own fonts'
 STATUSES = ('pass', 'issue', 'uncertain')
 
 
@@ -368,6 +377,62 @@ def categorized(quality: dict, assessment) -> dict:
             'complete': bool(judged and judged['complete'])}
 
 
+def plan_id(record: dict, ident: str) -> str:
+    """planIdOf: the approved slide a rendered slide is, or the ID itself."""
+    return next((entry['planId'] for entry in record.get('designBinding') or ()
+                 if entry['nativeId'] == ident), ident)
+
+
+def findings(record: dict) -> list[dict] | None:
+    """reviewFindings: what the assessment leaves unresolved, by the approved slide's ID, as
+    design present --accept-findings lists it for the person. None without an assessment."""
+    if not record.get('creativeQuality') or not record.get('creativeAssessment'):
+        return None
+    return [{'slide': plan_id(record, entry['slide']), 'criterion': entry['criterion'],
+             'status': entry['status'], 'category': entry['category'],
+             'detail': entry['detail'], **({'objects': entry['objects']}
+                                           if entry.get('objects') else {})}
+            for entry in assessed(record['creativeQuality'],
+                                  record['creativeAssessment'])['unresolved']]
+
+
+def from_slide(quality: dict, assessment):
+    """withSlideSources: a check that leaves out its sources takes its slide's; sources that
+    are given must be the slide's."""
+    if not isinstance(assessment, dict) or not isinstance(assessment.get('slides'), list):
+        return assessment
+    problems, slides = [], []
+    for slide in assessment['slides']:
+        prompt = next((p for p in quality['prompts'] if isinstance(slide, dict)
+                       and p['slide'] == slide.get('id')), None)
+        if prompt is None or not isinstance(slide.get('checks'), list):
+            slides.append(slide)
+            continue
+        checks = []
+        for check in slide['checks']:
+            if isinstance(check, dict) and check.get('sources') is None:
+                check = {**check, 'sources': list(prompt['sources'])}
+            elif isinstance(check, dict):
+                given = check['sources']
+                stray = [x for x in given if x not in prompt['sources']] \
+                    if isinstance(given, list) else []
+                if not isinstance(given, list) or not given or stray:
+                    problems.append({'code': 'input-invalid', 'slide': slide['id'], 'detail': (
+                        f"{slide['id']}: {check.get('criterion')} "
+                        + (f"cites {', '.join(stray)}, not among the slide's sources "
+                           f"({', '.join(prompt['sources'])})" if stray else
+                           "gives sources that are not a list of the slide's sources")
+                        + ". Leave sources out to use the slide's own")})
+            checks.append(check)
+        slides.append({**slide, 'checks': checks})
+    if problems:
+        raise designs.Refusal(problems[0]['detail'] if len(problems) == 1 else
+                              f'{len(problems)} problems in the assessment:\n'
+                              + '\n'.join(problem['detail'] for problem in problems),
+                              *problems)
+    return {**assessment, 'slides': slides}
+
+
 def _recorded(base: Path, target, project) -> str:
     """recordedPath: relative to the record's folder when both lie in the project."""
     target, base = Path(os.path.abspath(target)), Path(os.path.abspath(base))
@@ -388,9 +453,11 @@ class Review:
     `picture(slide, scene)` gives a slide's PNG, and `screens(scene, structure)` the
     preview's screens, each with its slide."""
 
-    def __init__(self, output, deck, picture, screens, local: bool = True):
+    def __init__(self, output, deck, picture, screens, local: bool = True, has=(),
+                 google=None):
         self.output = Path(os.path.abspath(output))
         self.deck, self.picture, self.screens, self.local = deck, picture, screens, local
+        self.has, self.google = frozenset(has or ()), google
 
     # --- the folder ---
 
@@ -464,8 +531,11 @@ class Review:
         temporary.write_text(json.dumps(record, indent=2, ensure_ascii=False) + '\n',
                              encoding='utf-8')
         temporary.replace(self.output / 'review.json')
-        quality = record.get('creativeQuality')
+        quality, remote = record.get('creativeQuality'), record.get('remote')
         return {
+            **({'fileId': remote['fileId'], 'url': remote['url'],
+                'next': 'Reuse this Drive file for the next Google render: --file-id '
+                        + remote['fileId']} if remote else {}),
             'output': str(self.output), 'record': str(self.output / 'review.json'),
             'contactSheet': str(self.output / 'contact-sheet.html'),
             'revision': record['revision'], 'slides': len(record['slides']),
@@ -487,8 +557,16 @@ class Review:
 
     # --- the commands ---
 
-    def prepare(self, compiled, project, refresh: bool = False) -> dict:
-        """review --compiled COMPILED --output REVIEW --design-project DIR"""
+    def prepare(self, compiled, project, refresh: bool = False, renderer: str = 'local',
+                file_id: str | None = None) -> dict:
+        """review --compiled COMPILED --output REVIEW --design-project DIR, rendered with
+        LibreOffice or, with `renderer` google, through Drive"""
+        if renderer not in ('local', 'google'):
+            raise _refused('Choose --renderer local or google', 'input-invalid')
+        if file_id and renderer != 'google':
+            raise _refused('--file-id names the Drive file a Google render reuses: give it '
+                           'with --renderer google', 'input-invalid')
+
         def act(previous: dict | None) -> dict:
             build = self._build(compiled)
             if not build['report'].get('designRevision'):
@@ -506,7 +584,8 @@ class Review:
                                'Compile the composition again against the approved design, '
                                'then review it', 'review-stale', next='Compile the composition '
                                'again with --design-project, then prepare the review')
-            designs.bound(build['scene']['slides'], project)
+            designs.bound(build['scene']['slides'], project,
+                          canonical='canonical-digests' in self.has)
             manifest.verify(build['dir'])
             file = self.output / 'deck.pptx'
             current = _hash(file.read_bytes()) if file.exists() else None
@@ -519,13 +598,21 @@ class Review:
                     shutil.copyfile(Path(scratch) / 'deck.pptx', file)
             data = file.read_bytes()
             revision = _hash(data)
-            if not self.local:   # the renderer is named before anything is rendered
+            key = 'stand-in' if renderer == 'local' else 'stand-in google'
+            if renderer == 'local' and not self.local:   # named before anything is rendered
                 raise _refused('soffice is not installed. Review renders PPTX with LibreOffice '
                                '(soffice) and Poppler (pdftoppm, pdfinfo)',
                                'renderer-unavailable', provider='libreoffice')
             source = {'type': 'pptx', 'file': str(file), 'sha256': revision}
             same = bool(previous) and previous['source'].get('type') == 'pptx' \
-                and _located(self.output, previous['source']['file']) == file
+                and _located(self.output, previous['source']['file']) == file \
+                and previous.get('rendererKey') == key
+            # An unchanged deck drawn by Google before keeps its pictures and uploads nothing.
+            remote = (previous or {}).get('remote') if same else None
+            if renderer == 'google' and not (same and previous['revision'] == revision
+                                             and remote):
+                remote = {'provider': 'google', **self.google(file_id, data,
+                                                              build['scene'].get('title'))}
             pages = []
             for number, slide in enumerate(build['scene']['slides'], 1):
                 page = {'number': number, 'id': str(255 + number),
@@ -554,9 +641,12 @@ class Review:
                                 imageSha256=digest)
                 pages.append(page)
             record = {'schemaVersion': 1, 'tool': 'harness-slides-review', 'source': source,
-                      'revision': revision, 'renderer': RENDERER, 'rendererKey': 'stand-in',
-                      'slides': pages, 'designProject': str(Path(os.path.abspath(project))),
-                      'designRevision': approved['revision'], 'creativeReviewRequired': True}
+                      'revision': revision,
+                      'renderer': RENDERER if renderer == 'local' else GOOGLE,
+                      'rendererKey': key, 'slides': pages,
+                      'designProject': str(Path(os.path.abspath(project))),
+                      'designRevision': approved['revision'], 'creativeReviewRequired': True,
+                      **({'remote': remote} if remote else {})}
             if len(pages) != len(approved['plan']['slides']):
                 raise ValueError('The rendered deck and the approved design have different '
                                  'slide counts')
@@ -646,10 +736,41 @@ class Review:
                     or not record.get('creativeReviewRequired'):
                 raise ValueError('Assess the current creative review revision')
             self.verify(record)
-            receipt = assessed(record['creativeQuality'], assessment)
-            record['creativeAssessment'] = assessment
+            given = from_slide(record['creativeQuality'], assessment) \
+                if 'review-sources-from-slide' in self.has else assessment
+            receipt = assessed(record['creativeQuality'], given)
+            record['creativeAssessment'] = given
             return {**self._save(record), 'unresolved': receipt['unresolved']}
         return self._locked(act)
+
+    def packets(self) -> dict:
+        """review --output REVIEW --packets"""
+        record = self.verify()
+        quality = record.get('creativeQuality')
+        if not quality:
+            raise _refused('This review is not bound to a design, so it has no packets',
+                           'input-invalid')
+        slides = []
+        for page in record['slides']:
+            ident = plan_id(record, page['id'])
+            packet = next((p for p in quality['prompts'] if p['slide'] in (page['id'], ident)),
+                          None)
+            slides.append({'number': page['number'], 'id': page['id'], 'planId': ident,
+                           'title': page['title'], 'hidden': page['hidden'],
+                           'image': str(self.output / page['image']),
+                           'imageSha256': page['imageSha256'],
+                           'mark': page.get('finalReview'), 'packet': packet,
+                           'findings': [f for f in quality['findings']
+                                        if packet and f['slide'] == packet['slide']]})
+        return {'schema': 1, 'output': str(self.output), 'revision': record['revision'],
+                'designRevision': record.get('designRevision'),
+                'renderer': record['renderer'], 'assessmentBinding': self._binding(quality),
+                'contactSheet': str(self.output / 'contact-sheet.html'),
+                'deckReview': quality['deckReview'],
+                'designReview': categorized(quality, record.get('creativeAssessment')),
+                'visualReviewComplete': record['visualReviewComplete'],
+                'creativeReviewComplete': record['creativeReviewComplete'],
+                'readyForUserReview': record['readyForUserReview'], 'slides': slides}
 
     def inspect(self, slide: str) -> dict:
         """review --output REVIEW --slide ID"""

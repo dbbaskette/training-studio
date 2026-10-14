@@ -12,6 +12,7 @@ What a caller needs to know
     briefs.guidance('yoodli')                   laying a scenario out in Yoodli's fields
     briefs.guidance('deck-outline')             writing what a slide deck says
     briefs.guidance('deck-outline', design=True)   and proposing how each slide is drawn
+    briefs.guidance('deck-outline', design=True, icons=True)   naming icons by library ID
     briefs.guidance('deck-section')             drawing one section of a deck
     briefs.guidance('deck-section', repair=True)   drawing it again after a review
     briefs.guidance('deck-section', design=True)   drawing it from an approved design
@@ -43,6 +44,8 @@ What a caller needs to know
   concept or other words would put right.
 - A deck reviewed against its approved design has its reviewer told so in the same way: the
   parts of deck-review-design.md replace the parts of deck-review.md of the same heading.
+- The writer of a design whose slides tool takes an icon by its library ID is told to find
+  each icon with `search_icons` and name it so: deck-design-icons.md, after the design.
 - A deck's briefs have no example. The format of an outline and of a section is the slides
   tool's own, and goes to the worker as an input, with the brand's limits in it.
 - The writers of a guide, a brief and a scenario are told, when the training has a brand,
@@ -100,14 +103,15 @@ def mode(name: str) -> str:
 
 def guidance(job: str, level: str | None = None, kind: str | None = None,
              naming: bool = False, repair: bool = False, design: bool = False,
-             assets: bool = False, beyond: bool = False) -> str:
+             assets: bool = False, beyond: bool = False, icons: bool = False) -> str:
     """The guidance for one kind of job, whole. `naming` says the job has the brand's
     naming rules among its inputs, `repair` that a section is drawn again, and `design`
     that the writer of what a deck says proposes how each slide is drawn too, or that a
     section is drawn from the design the person approved. `assets` says that section's
     tool keeps the deck's assets, which it may list and ask for, and `beyond` that it is
     drawn again after a review against that design, and may name what drawing cannot put
-    right. A deck's review with `design` is a review against the approved design."""
+    right. A deck's review with `design` is a review against the approved design. `icons`
+    says the writer of a design names each icon by its ID in the brand's library."""
     if job not in JOBS:
         raise WorkspaceError('There is a brief for: ' + ', '.join(JOBS) + '.')
     if level is not None and (job not in LEVELLED or level not in workspace.LEVELS):
@@ -119,7 +123,8 @@ def guidance(job: str, level: str | None = None, kind: str | None = None,
     if (naming and job not in NAMED) or (repair and job != 'deck-section') \
             or (design and job not in DESIGNED) or (assets and not (design
                                                                      and job == 'deck-section')) \
-            or (beyond and not (design and repair)):
+            or (beyond and not (design and repair)) \
+            or (icons and not (design and job == 'deck-outline')):
         raise WorkspaceError('Naming rules are given to the writers of a guide, a brief and '
                              'a scenario, only a section of a deck is drawn again, and only '
                              "a deck's outline and its sections are told of its design, and "
@@ -128,6 +133,7 @@ def guidance(job: str, level: str | None = None, kind: str | None = None,
     text = read(job)
     for added in ((['naming'] if naming else []) + (['deck-repair'] if repair else [])
                   + (['deck-design'] if design and job == 'deck-outline' else [])
+                  + (['deck-design-icons'] if icons else [])
                   + (['deck-section-assets'] if assets else [])
                   + (['deck-repair-beyond'] if beyond else [])):
         text = text.replace(HAND_BACK, f'\n{read(added)}{HAND_BACK}', 1)

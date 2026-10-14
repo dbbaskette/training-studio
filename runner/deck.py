@@ -21,7 +21,7 @@ What a caller needs to know
     deck.checked(finding, slides)               # one finding of a review, or why it is wrong
     deck.judging(objectives, slides, packets)   # a review against the design, as it is asked
     kept, problems = deck.judged(given, packets)    # a reviewer's answer to every criterion
-    deck.assessment(kept, packets, binding)     # that answer, as the slides tool takes it
+    deck.assessment(kept, packets, binding, sources=True)   # as the slides tool takes it
     deck.found(unresolved, kept, slides)        # what it leaves unresolved, as findings
     deck.to_repair(findings, sections)          # the sections a review sends back
     deck.to_outline(findings)                   # what only a change at the outline puts right
@@ -53,7 +53,9 @@ What a caller needs to know
 - `recorded` is the slides tool's asset manifest of the deck, as {asset ID: entry}, for a
   deck whose tool keeps one. A section's brief then names each concept's icon by its ID
   in the brand's library and the asset it is recorded as, and says how a recorded picture
-  is placed. Without it the brief is as it was.
+  is placed; with `by_asset`, for a tool that places a recorded icon by its asset ID, so is
+  each icon. Without it the brief is as it was. A design may name an icon by its library ID
+  (`"refType": "library-id"`), which `candidates` gives as `exact`.
 - `brief` rewrites the brief the slides tool writes for one section. That brief is written
   for a worker at a shell, with paths to read and a folder to write in. A worker here has
   tools and no files, so those parts are replaced and everything else is kept as written.
@@ -148,6 +150,7 @@ KEY_POINT = re.compile(r'^- (K\d+\.\d+):\s*(.+?)\s*(?:\[[^\]]*\]\s*)*$')
 POINTER = re.compile(r'Read `references/[^\n]*')
 DESIGNED = ('id', 'intent', 'composition', 'asset', 'qualifications')   # a worker's to write
 LEAD = 'outline'        # what a cover, section or closing slide cites, as the slides tool does
+LIBRARY = 'library-id'  # an icon candidate whose `ref` is its ID in the brand's library
 PLACED = ("A picture the design selected is recorded in the deck's asset manifest. Place it "
           'by its asset ID: `{"type": "image", "id": "<your ID>", "asset": "<asset ID>"}`, '
           'with `alt` where the recorded one does not say what it shows here. `list_assets` '
@@ -512,12 +515,13 @@ def _part(text: str, heading: str, body: str, renamed: str | None = None) -> str
 
 
 def brief(written: str, whole: dict, previews: int = PREVIEWS, design=None,
-          recorded: dict | None = None) -> str:
+          recorded: dict | None = None, by_asset: bool = False) -> str:
     """The brief the slides tool wrote for one section, for a worker with tools and no
     files. Its slides, their order and the direction are kept as written. With `design`,
     the plan the slides tool approved, it also carries the approved design of each of its
     slides and the icon of each concept across the deck; with `recorded`, the deck's asset
-    manifest, each by the ID it is recorded with."""
+    manifest, each by the ID it is recorded with. With `by_asset`, for a slides tool that
+    places a recorded icon by its asset ID, an icon is placed so."""
     skeleton = json.dumps({'version': 1, 'title': whole.get('title'),
                            'direction': whole.get('direction') or DIRECTION,
                            'slides': ['your slides, in order']}, ensure_ascii=False)
@@ -538,9 +542,9 @@ Each slide is `{{{shape}"brief": {{"relation", "focal": the ID of the node that 
         f'- {line}' for line in (DESIGNED_HOUSE if design else HOUSE)))
     if design:
         text = _part(text, 'The approved design', drawn_from(design, named_in(written, whole),
-                                                             recorded))
-        text = _part(text, 'Icons across the deck', _icons_told(icons(design, recorded),
-                                                                recorded is not None))
+                                                             recorded, by_asset))
+        text = _part(text, 'Icons across the deck', _icons_told(
+            icons(design, recorded), recorded is not None, by_asset and recorded is not None))
     text = _part(text, 'Preview', f'''
 `preview_section` renders your whole section and returns a picture of every slide, with what the renderer found. You have {previews} previews. `check_section` is free: use it until the section compiles before you spend a preview.''')
     return _part(text, 'Return', '''
@@ -551,10 +555,11 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def drawn_from(design, ids: list[str], recorded: dict | None = None) -> str:
+def drawn_from(design, ids: list[str], recorded: dict | None = None,
+               by_asset: bool = False) -> str:
     """What a section's composer is told of the approved design of its slides, one record
     each, with the intent it copies. With `recorded`, each candidate says how it is
-    recorded, and a picture is placed by its asset ID."""
+    recorded, and a picture is placed by its asset ID; with `by_asset`, an icon too."""
     by_id = {slide.get('id'): slide for slide in slides_of(design)}
     lines = ['The person approved how each of your slides teaches together with what it '
              'says, in one decision. Draw each as its design says: the visual, what the '
@@ -583,7 +588,7 @@ def drawn_from(design, ids: list[str], recorded: dict | None = None) -> str:
         lines.append(f"- Asset: {asset['description']} ({asset['disposition']}: "
                      f"{asset['reason']})")
         lines += [f"  - {candidate['kind']} \"{candidate['ref']}\" for {candidate['concept']}"
-                  + (_held(candidate, (recorded or {}).get(candidate['asset']))
+                  + (_held(candidate, (recorded or {}).get(candidate['asset']), by_asset)
                      if recorded is not None else
                      ', still to be found' if candidate['status'] == 'pending' else '')
                   for candidate in _with_ids(slide)]
@@ -592,11 +597,14 @@ def drawn_from(design, ids: list[str], recorded: dict | None = None) -> str:
     return '\n'.join(lines)
 
 
-def _held(candidate: dict, entry: dict | None) -> str:
+def _held(candidate: dict, entry: dict | None, by_asset: bool = False) -> str:
     """How a candidate stands in the deck's asset manifest, as its composer is told."""
     if entry is None:
         return (f", to be made with `request_asset` as `{candidate['asset']}`"
                 if candidate['kind'] == 'generated' else ', not recorded')
+    if candidate['kind'] == 'icon' and by_asset:
+        return (f", recorded as `{candidate['asset']}`, the icon `{entry.get('ref')}`: place "
+                'it by that asset ID')
     if candidate['kind'] == 'icon':
         return f", recorded as `{candidate['asset']}`: the icon `{entry.get('ref')}`"
     return f", recorded as `{candidate['asset']}`: place it by that asset ID"
@@ -613,10 +621,12 @@ def _with_ids(slide: dict) -> list[dict]:
 
 def candidates(design) -> list[dict]:
     """Every asset candidate of the approved design, as {'slide', 'asset', 'kind', 'ref',
-    'concept', 'alt'}, in slide order."""
+    'concept', 'alt', 'exact'}, in slide order. `exact` says an icon's `ref` is its ID in
+    the brand's library."""
     return [{'slide': slide.get('id'), 'asset': candidate.get('assetId'),
              'kind': candidate.get('kind'), 'ref': candidate.get('ref'),
-             'concept': candidate.get('concept'), 'alt': candidate.get('alt')}
+             'concept': candidate.get('concept'), 'alt': candidate.get('alt'),
+             'exact': candidate.get('refType') == LIBRARY}
             for slide in slides_of(design) if isinstance(slide.get('asset'), dict)
             for candidate in slide['asset'].get('candidates') or ()
             if isinstance(candidate, dict)]
@@ -645,10 +655,20 @@ def icons(design, recorded: dict | None = None) -> list[dict]:
     return list(found.values())
 
 
-def _icons_told(listed: list[dict], recorded: bool = False) -> str:
+def _icons_told(listed: list[dict], recorded: bool = False, by_asset: bool = False) -> str:
     if not listed:
         return ('The approved design names no icon. Use one only where it names a '
                 'recognisable thing, and the same one for the same thing in every section.')
+    if by_asset:
+        return '\n'.join(['The same concept has the same icon in every section of the deck. '
+                          'These are the icons the approved design names, found in the '
+                          "brand's library and recorded before any section was drawn. Place "
+                          'each by the asset ID it is recorded as, on any slide of yours that '
+                          'shows that concept: `{"type": "icon", "id": "<your ID>", "asset": '
+                          '"<asset ID>"}`. `search_icons` finds others, for a thing the design '
+                          'does not name.', ''] + [
+            f"- {icon['concept']}: recorded as `{icon['asset']}`, the icon `{icon['icon']}`, on "
+            + ', '.join(f'`{ident}`' for ident in icon['slides']) for icon in listed])
     if recorded:
         return '\n'.join(['The same concept has the same icon in every section of the deck. '
                           'These are the icons the approved design names, found in the '
@@ -720,8 +740,8 @@ def icon_for(ref, found) -> str | None:
 
 def placed(section, recorded: dict) -> list[str]:
     """The assets of the deck's manifest a section draws, by their IDs, in the order it
-    draws them: each picture it names by `asset`, and each recorded icon whose library ID
-    it places."""
+    draws them: each picture or icon it names by `asset`, and each recorded icon whose
+    library ID it places."""
     found: list[str] = []
     by_icon = {entry.get('ref'): ident for ident, entry in recorded.items()
                if entry.get('kind') == 'icon'}
@@ -731,9 +751,10 @@ def placed(section, recorded: dict) -> list[str]:
             for item in node:
                 walk(item)
         elif isinstance(node, dict):
-            # A picture is named by `asset`, in an image node or a layout's picture slot.
-            named = by_icon.get(node.get('icon')) if node.get('type') == 'icon' \
-                else node.get('asset')
+            # A picture is named by `asset`, in an image node or a layout's picture slot, and
+            # so is an icon placed by its asset ID; another icon by its library ID.
+            named = by_icon.get(node.get('icon')) \
+                if node.get('type') == 'icon' and 'asset' not in node else node.get('asset')
             if isinstance(named, str) and named in recorded and named not in found:
                 found.append(named)
             for value in node.values():
@@ -1072,14 +1093,17 @@ def judged(given, packets: list[dict]) -> tuple[list[dict], list[str]]:
     return kept, problems
 
 
-def assessment(kept: list[dict], packets: list[dict], binding: dict) -> dict:
+def assessment(kept: list[dict], packets: list[dict], binding: dict,
+               sources: bool = True) -> dict:
     """A reviewer's answer as the slides tool takes an assessment: bound to the review it
-    answers, each judgement with the sources the slide keeps."""
-    sources = {packet['slide']['slide']: packet['slide']['sources'] for packet in packets}
+    answers, each judgement with the sources the slide keeps. Without `sources`, for a
+    tool that takes each slide's own, they are left out."""
+    kept_by = {packet['slide']['slide']: packet['slide']['sources'] for packet in packets}
     return {**binding, 'slides': [
         {'id': entry['slide'], 'checks': [
             {**{key: check[key] for key in ('criterion', 'status', 'reason', 'objects')},
-             'sources': list(sources[entry['slide']])} for check in entry['checks']]}
+             **({'sources': list(kept_by[entry['slide']])} if sources else {})}
+            for check in entry['checks']]}
         for entry in kept]}
 
 

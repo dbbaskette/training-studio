@@ -49,7 +49,8 @@ checked here before anything is kept. Each job has a folder that only the runner
 - A tool's answer may carry pictures. It is then a `Shown`: the same (ok, text) pair, with
   the PNG files to show after the text in `.pictures`. The server sends each as an image.
 - A deck's jobs have tools of their own, and these and no others beside the inputs:
-  an 'outline' (what each slide says) has `check_outline` and `submit_outline`; a 'section'
+  an 'outline' (what each slide says) has `check_outline` and `submit_outline`, and
+  `search_icons` when its design names icons by their library IDs; a 'section'
   (some slides, drawn) has `check_section`, `preview_section`, `search_icons` and
   `submit_section`, and `list_assets` and `request_asset` when its deck's slides tool keeps
   the deck's assets; a review, set up with `review=`, has `look_at_slide`,
@@ -59,23 +60,28 @@ checked here before anything is kept. Each job has a folder that only the runner
   true, `check_outline` and `submit_outline` take the slides' design beside the outline: it
   is checked with `deck.design_rules`, and the proposal `deck.proposal` makes of the two is
   proposed to the slides tool in a project of the job's own, which is removed after. What
-  is kept is then {'outline', 'design'}, the design being that proposal. No tool answers the
-  tool's question about a design: that is the person's, on the page. A 'section'
+  is kept is then {'outline', 'design'}, the design being that proposal. With 'icons' true
+  as well, that proposal is checked against the brand, each icon named by its library ID.
+  No tool answers the tool's question about a design: that is the person's, on the page.
+  A 'section'
   takes 'brand' and what `deck.fixed` returned, and how its previews are taken:
   'previews' (how many it has), 'renderer', 'lock' and 'kept'. It is checked with
   `deck.kept` and with the slides tool's compiler. What is handed in must be the version
   last previewed; a hand-in that is not costs nothing and is sent back. A deck drawn from
   its approved design adds 'design', the design project, and 'section': its sections are
-  then compiled and previewed against that design, each intent written as it was approved.
-  One whose tool keeps the deck's assets adds 'assets': {'project', 'generated'}, the design
-  project and each generated candidate of its own generated-art slides, by asset ID, with
-  its slide. Its composer may list what is recorded, record a brand icon by its library ID,
-  and have the tool's own image provider make those candidates, GENERATIONS times at most.
-  It can never add a file, or answer for the person.
+  then compiled and previewed against that design, each intent written as it was approved
+  unless the tool compares intents whatever the order of their keys (`canonical-digests`).
+  One whose tool keeps the deck's assets adds 'assets': {'project', 'generated', 'icons'?},
+  the design project and each generated candidate of its own generated-art slides, by asset
+  ID, with its slide, and 'icons' 'asset' where a recorded icon is placed by its asset ID.
+  Its composer may list what is recorded, record a brand icon by its library ID, and have
+  the tool's own image provider make those candidates, GENERATIONS times at most. It can
+  never add a file, or answer for the person.
 - Previews are taken one at a time on this computer, whatever is drawn side by side:
   `render` waits for the file named by 'lock'. 'kept' names the file that remembers the one
   preview file a deck keeps in Google Drive, so that it is written again and no second
-  one is made.
+  one is made. `reviewed` renders a whole deck for its review against its design the same
+  way, through that file where the tool can render a review through Drive.
 - `review` is {'preview', 'deck', 'slides', 'objectives', 'recorded'}: the previewed deck's
   folder and hash, its slides as {'number', 'id', 'title', 'image'}, the blueprint's
   objective IDs, and where an accepted assessment is also kept. The slides tool takes one
@@ -579,16 +585,19 @@ def check_outline(text: str, spec: dict, slides,
                                                           budget))]
     if not spec.get('design'):
         return held(outcomes), outcomes, [], kept
-    problems, proposed = check_design(outline, design, slides, scratch)
+    problems, proposed = check_design(outline, design, slides, scratch,
+                                      spec['brand'] if spec.get('icons') else None)
     outcomes.append(checks.result('outline.design', problems))
     kept = json.dumps({'outline': json.loads(kept), 'design': proposed}, indent=2,
                       ensure_ascii=False) + '\n'
     return held(outcomes), outcomes, [], kept
 
 
-def check_design(outline, design, slides, scratch: Path) -> tuple[list[str], dict | None]:
+def check_design(outline, design, slides, scratch: Path,
+                 brand=None) -> tuple[list[str], dict | None]:
     """The design handed in with an outline: the runner's own rules, then the proposal made
-    from the two, proposed to the slides tool in a project of its own that is thrown away.
+    from the two, proposed to the slides tool in a project of its own that is thrown away,
+    with `brand` when its icons are named by their library IDs, to be checked against it.
     Returns what to put right and the proposal. Nothing the tool keeps outlives the check."""
     if not deck.slides_of(outline):
         return ['The design is checked once the outline has its slides.'], None
@@ -599,7 +608,8 @@ def check_design(outline, design, slides, scratch: Path) -> tuple[list[str], dic
     project = scratch / f'design-{secrets.token_hex(4)}'
     _write(project / 'proposal.json', json.dumps(proposed, ensure_ascii=False))
     try:
-        slides.design_propose(project, project / 'proposal.json')
+        slides.design_propose(project, project / 'proposal.json',
+                              brand=Path(brand) if brand else None)
     except WorkspaceError as refusal:
         found = getattr(refusal, 'found', None)
         if not found:
@@ -640,7 +650,10 @@ def check_section(text: str, spec: dict, slides,
     except Refusal as refusal:
         return [str(refusal)], [], [], text
     ours, found = deck.kept(section, spec), []
-    if spec.get('design'):    # checked against the approved design, as one section of it
+    # Checked against the approved design, as one section of it. A tool that compares an
+    # intent whatever the order of its keys takes it as written; an older one, in the order
+    # it was approved in.
+    if spec.get('design') and not slides.has('canonical-digests'):
         section = deck.as_approved(section, spec)
         kept = json.dumps(section, indent=2, ensure_ascii=False) + '\n'
     if isinstance(section, dict):
@@ -720,23 +733,44 @@ def render(slides, compiled: Path, folder: Path, how: dict) -> dict:
     remember of it beside its ID and address. A preview that fails after it made that
     file says so in its refusal's `left`, as {'fileId', 'url'}, and the file is remembered
     all the same. Returns what the slides tool returned."""
-    kept = Path(how['kept']) if how.get('kept') else None
     with one_at_a_time(Path(how['lock'])):
-        known = home.read_json(kept, {}) if kept else {}
-        known = known if isinstance(known, dict) else {}
-        def remember(ident, url) -> None:
-            if kept and ident and ident != known.get('id'):
-                home.write_json(kept, {**(how.get('named') or {}), 'id': ident, 'url': url})
+        return _in_drive(how, lambda known: slides.preview(
+            compiled, folder, how['renderer'], file_id=known, **against(how)))
 
-        try:
-            found = slides.preview(compiled, folder, how['renderer'],
-                                   file_id=known.get('id'), **against(how))
-        except WorkspaceError as refusal:  # a preview that failed may have made its file
-            left = getattr(refusal, 'left', None) or {}
-            remember(left.get('fileId'), left.get('url'))
-            raise
-        remember(found.get('fileId'), found.get('url'))
+
+def _in_drive(how: dict, made) -> dict:
+    """What `made(file_id)` renders, with the deck's one file in Google Drive remembered:
+    the one it was given, written again, or the one it made. A render that failed after it
+    made that file says so in its refusal's `left`, and the file is remembered all the
+    same."""
+    kept = Path(how['kept']) if how.get('kept') else None
+    known = home.read_json(kept, {}) if kept else {}
+    known = known if isinstance(known, dict) else {}
+
+    def remember(ident, url) -> None:
+        if kept and ident and ident != known.get('id'):
+            home.write_json(kept, {**(how.get('named') or {}), 'id': ident, 'url': url})
+
+    try:
+        found = made(known.get('id'))
+    except WorkspaceError as refusal:  # a render that failed may have made its file
+        left = getattr(refusal, 'left', None) or {}
+        remember(left.get('fileId'), left.get('url'))
+        raise
+    remember(found.get('fileId'), found.get('url'))
     return found
+
+
+def reviewed(slides, compiled: Path, output: Path, design: Path, how: dict) -> dict:
+    """Have the slides tool render a whole deck compiled against its approved design, for
+    its review against that design, when it is this computer's turn at the renderer. Where
+    previews go through Google Drive and the tool can render a review there, it does, into
+    the deck's one file in Drive; otherwise with LibreOffice. Returns what the tool did."""
+    with one_at_a_time(Path(how['lock'])):
+        if how.get('renderer') != 'drive' or not slides.has('review-google-renderer'):
+            return slides.review_prepare(compiled, output, design)
+        return _in_drive(how, lambda known: slides.review_prepare(
+            compiled, output, design, renderer='drive', file_id=known))
 
 
 def pictures(found: dict, folder: Path, target: Path) -> list[dict]:
@@ -999,6 +1033,8 @@ class WorkerTools:
         kinds = {spec['kind'] for spec in job['artifacts'].values()}
         if 'outline' in kinds:
             names += ['check_outline', 'submit_outline', 'submit_review']
+            if any(spec.get('icons') for spec in job['artifacts'].values()):
+                names.append('search_icons')
         elif 'section' in kinds:
             names += ['check_section', 'preview_section', 'search_icons', 'submit_section']
             if any(spec.get('assets') for spec in job['artifacts'].values()):
@@ -1260,7 +1296,10 @@ class WorkerTools:
     @tool
     def search_icons(self, words, limit=5):
         """Search the brand's icons by a word or two."""
-        self._spec('section')
+        drawn = [spec for spec in self.job['artifacts'].values() if spec['kind'] == 'section'
+                 or spec['kind'] == 'outline' and spec.get('icons')]
+        if not drawn:
+            raise Refusal('This job has no section to work on.')
         words = ' '.join(str(words).split())
         if not words or len(words) > 80:
             raise Refusal('Search with one or two plain words.')
@@ -1271,7 +1310,9 @@ class WorkerTools:
         if not found:
             return True, (f'No icon matches "{words}". Every word has to match: try one '
                           'plain noun.')
-        return True, (f'Icons for "{words}". Use an ID as the icon of an icon node:\n'
+        use = 'the icon of an icon node' if drawn[0]['kind'] == 'section' else \
+            'the `ref` of an icon candidate, with "refType": "library-id"'
+        return True, (f'Icons for "{words}". Use an ID as {use}:\n'
                       + '\n'.join(f"- {icon.get('id')}: {icon.get('name')}"
                                   + (f" ({icon['category']})" if icon.get('category') else '')
                                   for icon in found))
@@ -1294,7 +1335,9 @@ class WorkerTools:
             if kind == 'icon':
                 lines.append(f"- `{ident}`: the icon `{entry.get('ref')}`"
                              + (f" ({entry['alt']})" if entry.get('alt') else '')
-                             + '. Place it as an icon node with that icon ID.')
+                             + ('. Place it as an icon node by its asset ID.'
+                                if held.get('icons') == 'asset' else
+                                '. Place it as an icon node with that icon ID.'))
                 continue
             line = (f"- `{ident}`: a {kind} picture of {entry.get('alt') or 'what it shows'}"
                     f". Source: {entry.get('source')}."
@@ -1335,7 +1378,10 @@ class WorkerTools:
                 return False, self._unmade(refusal)
             return True, (f"`{asset}` is the icon `{made.get('ref')}`"
                           + (f" ({made['alt']})" if made.get('alt') else '')
-                          + '. Place it as an icon node with that icon ID.')
+                          + (f'. Place it as an icon node by its asset ID: {{"type": "icon", '
+                             f'"id": "<your ID>", "asset": "{asset}"}}.'
+                             if held.get('icons') == 'asset' else
+                             '. Place it as an icon node with that icon ID.'))
         if asset not in held['generated']:
             listed = ', '.join(f'`{ident}`' for ident in held['generated']) or 'none'
             raise Refusal('Only the generated art the approved design names for your own '
@@ -1541,7 +1587,8 @@ class WorkerTools:
                                       [slide['number'] for slide in review['slides']],
                                       deck.MARKED)
             made = self.slides().review_assess(output, revision, deck.assessment(
-                kept, judged['packets'], judged['binding']))
+                kept, judged['packets'], judged['binding'],
+                sources=not self.slides().has('review-sources-from-slide')))
         except WorkspaceError as refusal:
             return [self._plainly(line) for line in said_no(refusal)]
         numbers = {slide['id']: slide['number'] for slide in review['slides']}

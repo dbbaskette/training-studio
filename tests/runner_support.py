@@ -480,6 +480,12 @@ class Slides:
         # Whether it reviews a whole build against the approved design, played by the
         # stand-in's review, which renders with LibreOffice: `have['local']`.
         self.judges, self.rendered, self.assessed = False, 0, []
+        # What it says it has in `version`, beyond the above: the names the runner asks
+        # `has` about, each played as Harness Slides 0.14.1 has it. `lacking` is what it
+        # says a new deck needs and it lacks: nothing unless a test says, so that a deck
+        # the tests begin without a design stands for one begun before new decks needed
+        # one, and carries on as it began.
+        self.listed, self.lacking, self.presented, self.reviewed = set(), [], [], []
 
     def _asked(self, name: str, *given) -> None:
         from runner import slides
@@ -499,6 +505,15 @@ class Slides:
 
     def version(self) -> str:
         return self.VERSION
+
+    def capabilities(self):
+        return frozenset(self.listed) if self.listed else None
+
+    def has(self, name: str) -> bool:
+        return name in self.listed
+
+    def lacks(self) -> list[str]:
+        return list(self.lacking)
 
     def reading(self, brand=None) -> dict:
         self._asked('reading')
@@ -613,7 +628,7 @@ class Slides:
         if design is None:
             return None
         try:
-            return designs.bound(slides, design, section)
+            return designs.bound(slides, design, section, self.has('canonical-digests'))
         except (designs.Refusal, ValueError) as refused:
             found = designs.refusal(refused, designs.Session(design).revision())
             raise tool.Refused([problem['detail'] for problem in found['problems']], found)
@@ -628,10 +643,11 @@ class Slides:
                     if 'canvas' not in slide and 'layout' not in slide]
         problems += ['A text does not fit: it needs 7 lines and has 4.'] \
             if 'TOO LONG TO FIT' in text else []
-        uses = {}
+        uses, icons = {}, {}
         if self.keeps and design is not None:   # a picture is placed by its asset ID
             from stand_ins import assets as manifest
-            _, uses, unresolved = manifest.resolve(made, design)
+            _, uses, unresolved, icons = manifest.resolve(
+                made, design, self.has('compose-icon-assets'))
             problems += unresolved
         if problems:
             raise slides.Refused(problems)
@@ -655,8 +671,11 @@ class Slides:
         (Path(folder) / 'structure.json').write_text(json.dumps(structure))
         (Path(folder) / 'brand-contract.json').write_text(Path(brand).read_text()
                                                           if Path(brand).is_file() else '{}')
+        placed = [{'object': icon['id'], 'slide': icon['slide'], 'asset': mine['assetId'],
+                   'kind': 'icon', 'ref': mine['ref'], 'sha256': mine['sha256']}
+                  for icon in structure['icons'] for mine in [icons.get(icon['id'])] if mine]
         (Path(folder) / 'compose-report.json').write_text(json.dumps({
-            'inputs': {'assets': []}, **({'designRevision': approved['revision'],
+            'inputs': {'assets': placed}, **({'designRevision': approved['revision'],
                                           'designScope': approved['scope']}
                                          if approved else {})}))
         return {**report, 'output': str(folder)}
@@ -790,19 +809,26 @@ class Slides:
         from runner import slides
         from stand_ins import design as designs
         self._asked(name, project, *given)
-        session = designs.Session(project)
+        session = designs.Session(project, self.listed)
         try:
             return act(session)
         except (designs.Refusal, ValueError) as refused:
             found = designs.refusal(refused, session.revision())
             raise slides.Refused([problem['detail'] for problem in found['problems']], found)
 
-    def design_propose(self, project, proposal, expected=None) -> dict:
+    def design_propose(self, project, proposal, expected=None, brand=None) -> dict:
+        """With `brand`, an icon named by its library ID is held to Brand.ICONS."""
         return self._session('design_propose', project, lambda session: session.propose(
-            self._read(proposal), expected, 'batch'), proposal)
+            self._read(proposal), expected, 'batch', Brand.ICONS if brand else None),
+            proposal, *([f'brand={brand}'] if brand else []))
 
     def design_status(self, project) -> dict:
         return self._session('design_status', project, lambda session: session.status())
+
+    def design_present(self, project, output, revision) -> dict:
+        self.presented.append((str(project), str(output), revision))
+        return self._session('design_present', project,
+                             lambda session: session.present(output, revision), output)
 
     def design_check(self, project) -> dict:
         return self._session('design_check', project, lambda session: session.check())
@@ -836,10 +862,12 @@ class Slides:
     def assets(self) -> bool:
         return self.keeps
 
-    def asset_status(self, project) -> dict:
-        return self._manifest('asset_status', lambda kept: kept.status(project), project)
+    def asset_status(self, project, design=None) -> dict:
+        return self._manifest('asset_status', lambda kept: kept.status(
+            project, design, self.env, self.has('assets-approved-candidates')), project,
+            *([f'design={design}'] if design else []))
 
-    def asset_check(self, project, brand=None) -> dict:
+    def asset_check(self, project, brand=None, design=None) -> dict:
         """This file's small brand has no icon library: an icon is held to Brand.ICONS."""
         def act(kept):
             known = {entry['id']: entry for entry in Brand.ICONS}
@@ -850,8 +878,11 @@ class Slides:
                                           'search the brand icon library for a current ID',
                                           {'code': 'icon-unavailable',
                                            'asset': entry['assetId']})
-            return kept.check(project)
-        return self._manifest('asset_check', act, project)
+            every = self.has('assets-approved-candidates')
+            return kept.check(project, design, None, self.env, every,
+                              Brand.ICONS if brand and every else None)
+        return self._manifest('asset_check', act, project,
+                              *([f'design={design}'] if design else []))
 
     def asset_icon(self, project, icon, ident, alt=None, brand=None) -> dict:
         def act(kept):
@@ -907,18 +938,34 @@ class Slides:
             Path(path).write_bytes(b'PK\x03\x04' + json.dumps(scene).encode()
                                    + str(self.rendered).encode())
 
+        def google(file_id, data, title) -> dict:
+            if not self.have['drive']:
+                raise designs.Refusal('Google Slides could not render the deck: Google API '
+                                      'request failed (HTTP 403).',
+                                      {'code': 'provider-failed', 'provider': 'google'})
+            file_id = file_id or f'review-{len(self.reviewed) + 1}'
+            self.reviewed.append(file_id)
+            return {'fileId': file_id,
+                    'url': f'https://docs.example.com/presentation/d/{file_id}/edit'}
+
         review = reviewing.Review(output, deck=written, picture=picture,
                                   screens=lambda scene, structure: [],
-                                  local=self.have['local'])
+                                  local=self.have['local'], has=self.listed, google=google)
         try:
             return act(review)
         except (designs.Refusal, ValueError) as refused:
             found = designs.refusal(refused, None)
             raise slides.Refused([problem['detail'] for problem in found['problems']], found)
 
-    def review_prepare(self, compiled, output, design) -> dict:
-        return self._reviewing('review_prepare', output,
-                               lambda review: review.prepare(compiled, design), compiled)
+    def review_prepare(self, compiled, output, design, renderer=None, file_id=None) -> dict:
+        through = 'google' if renderer == 'drive' else 'local'
+        made = self._reviewing('review_prepare', output, lambda review: review.prepare(
+            compiled, design, renderer=through, file_id=file_id), compiled,
+            *([f'renderer={through}', f'file={file_id}'] if renderer == 'drive' else []))
+        return {**made, 'fileId': made.get('fileId'), 'url': made.get('url')}
+
+    def review_packets(self, output) -> dict:
+        return self._reviewing('review_packets', output, lambda review: review.packets())
 
     def review_slide(self, output, slide) -> dict:
         return self._reviewing('review_slide', output, lambda review: review.inspect(slide),
@@ -987,6 +1034,9 @@ class Brand:
         self.exports.append((folder.name, brand_id, variant, delivery))
         return {'contract': str(folder / 'brand-contract.json'),
                 'design': str(folder / 'DESIGN.md'), 'voice': str(folder / 'VOICE.md')}
+
+    def contracts(self) -> bool:
+        return 'contracts' not in self.refuse
 
     def check(self, contract) -> None:
         from runner import brand
@@ -1267,16 +1317,19 @@ class StudioCase(unittest.TestCase):
                 'pdfinfo': have['pictures']}
         return f'/usr/bin/{Path(program).name}' if here.get(Path(program).name) else None
 
-    def stand_ins(self, design: bool = False, assets: bool = False) -> tuple:
+    def stand_ins(self, design: bool = False, assets: bool = False,
+                  current: bool = False) -> tuple:
         """The stand-ins in tests/stand_ins, which keep the rules of the real slides tool
         and of a real brand skill. Give them to `self.slides` and `self.brand`. With
         `design`, the slides tool is the one after 0.13.1, with its design session; with
-        `assets`, the one that keeps a deck's assets too, and says so in `version`."""
+        `assets`, the one that keeps a deck's assets too, and says so in `version`; with
+        `current`, the 0.14.1 release."""
         from stand_ins import brand as brand_stand_in, slides as slides_stand_in
         tool, skill = self.real
         with mock.patch.object(self.engines.slides_tool, 'Slides', tool), \
                 mock.patch.object(self.engines.brand_skill, 'Brand', skill):
-            return slides_stand_in.stand_in(design, assets), brand_stand_in.stand_in()
+            return (slides_stand_in.stand_in(design, assets, current),
+                    brand_stand_in.stand_in())
 
     def the_slides(self, runtime=None, run=None):
         from workspace import WorkspaceError

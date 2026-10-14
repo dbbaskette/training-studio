@@ -266,6 +266,15 @@ class CommandTests(unittest.TestCase):
         self.assertEqual((current.name, current.script),
                          ('Acme Brand', Path('/opt/Acme Brand/current/scripts/Acme Brand.mjs')))
 
+    def test_whether_it_can_export_and_check_a_brand_is_asked_with_nothing_written(self):
+        for answer, has in (((1, '', 'Use contract export|check\n'), True),
+                            ((2, '', 'Unknown command: contract. Run acme-brand --help.\n'),
+                             False), ((1, '', 'Use contract export\n'), False)):
+            self.answers = [answer]
+            self.assertIs(self.brand.contracts(), has, answer)
+            self.assertEqual(self.ran[-1][2:], ['contract'])
+        self.assertIs(brand_stand_in.stand_in().contracts(), True, 'as the real one answers')
+
     def test_each_command_is_run_as_the_skill_takes_it(self):
         self.answers = [(0, json.dumps(LISTED), ''), (0, '{}', ''), (0, '{}', ''),
                         (0, '{"results": []}', ''), (0, '{"status": "PASS"}', ''),

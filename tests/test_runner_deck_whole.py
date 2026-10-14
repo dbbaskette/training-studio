@@ -10,6 +10,7 @@ Nothing starts an agent, the slides tool, a brand skill or Google.
 """
 import json
 from pathlib import Path
+from unittest import mock
 
 import helpers  # noqa: F401
 import runner_support
@@ -84,10 +85,17 @@ class Composers:
 
 
 class WholeCase(DeckCase):
-    """A computer whose slides tool and brand skill are the modules' own stand-ins."""
+    """A computer whose slides tool and brand skill are the modules' own stand-ins. With
+    `EARLIER`, a deck begun here stands for one begun before a new deck needed a design: the
+    runner then asked nothing more of the slides tool, so an older one makes it as it did."""
+    EARLIER = False
 
     def setUp(self):
         super().setUp()
+        if self.EARLIER:
+            patch = mock.patch.object(slides_tool, 'NEEDED', ())
+            patch.start()
+            self.addCleanup(patch.stop)
         self.slides, self.brand = self.stand_ins()
         self.tool, self.skill = self.slides.run, self.brand.run
         self.composers = Composers(self)
@@ -108,6 +116,8 @@ class WholeCase(DeckCase):
 
 
 class WholeDeckTests(WholeCase):
+    EARLIER = True
+
     def test_a_deck_goes_from_the_handoff_to_approved_as_powerpoint(self):
         root = self.begin()
         view = self.to_outline(root)
@@ -127,9 +137,12 @@ class WholeDeckTests(WholeCase):
                          'a fresh render would be another file than the one reviewed')
         self.assertEqual(len(self.asked('compose critique')), 1)
         self.assertEqual(len(self.tool.files), 1, 'one preview file in Drive for the deck')
+        # The one call with `--section` is the question whether the tool checks a section,
+        # asked of a file that is not there, since this tool lists no capabilities.
         self.assertEqual([call for call in self.asked('compose compile')
                           + self.asked('compose preview') if {'--design-project', '--section',
-                                                              '--json'} & set(call)], [],
+                                                              '--json'} & set(call)
+                          and Path(call[3]).name != 'none.json'], [],
                          'a deck without a design is built as 0.13.1 builds it')
         shown = self.gate(root)
         self.assertEqual([(slide['number'], slide['id']) for slide in shown['slides']],
@@ -215,7 +228,9 @@ class WholeDeckTests(WholeCase):
 class DesignedDeckTests(WholeCase):
     """The same deck through a slides tool with a design session: the outline's writer
     proposes how each slide is drawn, the tool keeps the proposal, and the person's one
-    decision on the page is the tool's answer."""
+    decision on the page is the tool's answer. That tool is a build before 0.14.0, without
+    the asset manifest or the review against the design."""
+    EARLIER = True
 
     def setUp(self):
         super().setUp()
@@ -377,7 +392,63 @@ class JudgedDeckTests(WholeCase):
         self.assertEqual(self.to_end(root), ['deck', 'scenario:main'])
 
 
+class CurrentDeckTests(WholeCase):
+    """The same deck through Harness Slides 0.14.1, as the stand-in plays it: the design names
+    its icon by its ID in the brand's library, which is checked when it is proposed and
+    recorded with no search; the tool says itself what the approved design still wants; the
+    review's packets come in one call and its assessment takes each slide's sources; and the
+    deck is put to the person with its review, whose approval at gate 6 is sent to it."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides, self.brand = self.stand_ins(current=True)
+        self.tool, self.skill = self.slides.run, self.brand.run
+        self.engine.deck_needs(fresh=True)
+        design = runner_support.designed(PARTED)
+        design['slides'][1]['asset']['candidates'][0].update(ref='ex-database',
+                                                             refType='library-id')
+        self.workers.design_said = design
+
+    def test_a_deck_is_drawn_reviewed_and_approved_as_0_14_1_takes_it(self):
+        root = self.begin()
+        shown = self.to_outline(root)['outline']
+        self.assertEqual(self.engine.deck_needs()['lacks'], [])
+        view = self.engine.outline(root, None, 'approve', seen=shown['sha256'],
+                                   design=shown['design']['revision'])
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'),
+                         view.get('problem'))
+        project, contract = str(root / pipeline.DESIGNS), str(pipeline.contract(
+            root, self.engine._survey(root, self.record(root)).decks[None]))
+        proposed = [call for call in self.asked('design propose') if project in call]
+        self.assertEqual(proposed[-1][-2:], ['--brand', contract])
+        self.assertIn(['assets', 'icon', 'ex-database', '--project', project, '--id',
+                       'icon_instance'], [call[:7] for call in self.asked('assets icon')])
+        self.assertNotIn('ex-database', [call[call.index('--query') + 1] for call
+                                         in self.skill.calls if call[:1] == ['icons']])
+        self.assertTrue(all('--design-project' in call for call in self.asked('assets check')))
+        reviewed = [call for call in self.tool.calls if call[:1] == ['review']]
+        self.assertEqual((sum('--packets' in call for call in reviewed),
+                          sum('--slide' in call for call in reviewed)), (1, 1),
+                         'every packet in one call; one more to check the receipts')
+        last = self.built(root)['rounds'][-1]
+        review = root / 'work' / 'deck' / last['preview']
+        record = json.loads((review / 'review.json').read_text())
+        self.assertEqual(record['creativeAssessment']['slides'][1]['checks'][0]['sources'],
+                         ['O1'], 'taken from the slide by the tool')
+        [present] = self.asked('design present')
+        self.assertEqual(present[-2:], ['--accept-findings', '--json'])
+        self.assertEqual(len(self.asked('design respond')), 1, 'the outline, and no more yet')
+        self.decide(root, 'deck')
+        self.assertEqual(len(self.asked('design respond')), 2)
+        status = json.loads(self.tool(['node', 'script', 'design', 'status', '--project',
+                                       project])[1])
+        self.assertEqual((status['renderedAcceptance'], status['question']), (True, None))
+        self.assertEqual(self.to_end(root), ['scenario:main'])
+
+
 class TroubleTests(WholeCase):
+    EARLIER = True
+
     def test_what_a_deck_needs_is_read_from_what_the_two_modules_say(self):
         needs = self.engine.deck_needs(fresh=True)
         self.assertEqual((needs['missing'], needs['how'], needs['drive'], needs['local']),
@@ -454,6 +525,8 @@ class TroubleTests(WholeCase):
 
 
 class GivenTests(WholeCase):
+    EARLIER = True
+
     def test_a_composer_reads_the_tools_guidance_and_an_example_of_each_relation_it_draws(self):
         self.engine = self.make(at_once=1)
         root = self.begin()
