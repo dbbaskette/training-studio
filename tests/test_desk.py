@@ -2859,8 +2859,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                     self.detail('done', over)]
         answers = self.answers(**{
             'GET /api/trainings': lists, 'GET /api/training': details,
-            # The list is read first, then what a run that needs its person asks, then the run.
-            'GET /api/run': [working, waiting, waiting, failed, failed, again, done],
+            # The open run is read once a refresh: what it asks is read from that, not again.
+            'GET /api/run': [working, waiting, failed, again, done],
             'POST /api/run': [again]})
         result = self.run_page(answers, [
             {'snapshot': 'home'},
@@ -3176,6 +3176,107 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertIn('By Hand', settings['text'].split('Where each training is decided')[1])
         self.assertNotIn('Held', settings['text'].split('Where each training is decided')[1])
         self.assertEqual(self.asked(result, 'run'), [])
+
+    # --- each refresh asks only for what changed -------------------------------------------
+
+    def between(self, result: dict, first: str, second: str) -> list:
+        """What was asked for between two snapshots, each without its query."""
+        shots = result['snapshots']
+        return [request['address'].split('?')[0] for request in
+                result['requests'][shots[first]['asked']:shots[second]['asked']]]
+
+    def test_a_refresh_of_a_run_asks_once_for_each_thing_that_changed(self):
+        self.started()
+        going, asking = 'Drafting the research questions.', 'It has a question for you.'
+        working = a_run('working', going, steps=steps('done', 'working'))
+        same, moved = self.listed('working', going), self.listed('working', going)
+        for item in moved['body']['trainings']:
+            item['touched_at'] = '2030-01-02T03:04:05Z'
+        question = {'id': 'q1', 'from': 'The researcher', 'text': 'Which version is in use?'}
+        answers = self.answers(**{
+            'GET /api/trainings': [same, same, moved,
+                                   self.listed('waiting', asking, needs=True)],
+            'GET /api/run': [working, working, working,
+                             a_run('waiting', asking, question=question,
+                                   steps=steps('done', 'working'))],
+            'GET /api/training': [self.detail('working', going)]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'opened'},
+            {'poll': True}, {'snapshot': 'same'},
+            {'poll': True}, {'snapshot': 'moved'},
+            {'poll': True}, {'snapshot': 'asks'},
+        ])
+        # Only the run moved: the list and the run are all that is asked for. Set-up is read
+        # where it is shown, and this computer was looked at once already.
+        self.assertEqual(self.between(result, 'opened', 'same'), ['/api/trainings', '/api/run'])
+        # The list says the training's record changed, so that is read again, once.
+        self.assertEqual(sorted(self.between(result, 'same', 'moved')),
+                         ['/api/run', '/api/training', '/api/trainings'])
+        # The open run asks something: it is read once, not again for what it asks.
+        self.assertEqual(self.between(result, 'moved', 'asks').count('/api/run'), 1)
+        self.assertIn('Which version is in use?', result['snapshots']['asks']['text'])
+
+    def test_refreshes_never_overlap_and_one_asked_for_meanwhile_comes_after(self):
+        self.started()
+        answers = self.answers(**{'GET /api/trainings': [self.listed(None)]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'polls': 3}, {'snapshot': 'after'}])
+        # Three at once are one, and then one more: never two in hand together.
+        self.assertEqual(self.between(result, 'home', 'after'),
+                         ['/api/setup', '/api/trainings', '/api/setup', '/api/trainings'])
+        self.assertEqual(result['snapshots']['after']['heading'], 'Home')
+
+    def test_a_tab_nobody_is_looking_at_reads_only_the_list(self):
+        self.started()
+        going, asking = 'Drafting the research questions.', 'Waiting for your decision.'
+        quiet = self.listed('working', going)
+        self.at_the_questions_gate()
+        answers = self.answers(**{
+            'GET /api/trainings': [quiet, self.listed('waiting', asking)]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'hidden': True}, {'poll': True}, {'snapshot': 'hidden'},
+            {'hidden': False}, {'snapshot': 'back'},
+        ], notifications='granted')
+        shots = result['snapshots']
+        self.assertEqual(self.between(result, 'home', 'hidden'), ['/api/trainings'])
+        # The count and what to tell still come from the list alone.
+        self.assertEqual((shots['hidden']['badge'], shots['hidden']['title']),
+                         ('1 thing needs you', '(1) Training Studio'))
+        self.assertEqual([note['title'] for note in result['notifications']],
+                         ['Training Studio needs you'])
+        # Looked at again, it reads the rest, what the run that needs you asks among it, and
+        # draws what changed.
+        self.assertEqual(self.between(result, 'hidden', 'back'),
+                         ['/api/setup', '/api/trainings', '/api/run'])
+        self.assertIn('Needs you', shots['back']['text'])
+
+    def test_a_card_is_built_again_only_when_its_own_training_changed(self):
+        self.started()
+        other = self.another('second')
+        lists = [self.listed(None)]
+        for says in ('Something new.', 'Something newer.', 'Something newest.'):
+            changed = json.loads(json.dumps(lists[-1]))
+            for item in changed['body']['trainings']:
+                if item['path'] == str(other):
+                    item['sentence'] = says
+            lists.append(changed)
+        answers = self.answers(**{'GET /api/trainings': lists})
+        result = self.run_page(answers, [
+            {'hold': 'Open Rolling restarts'}, {'hold': 'Open Second'}, {'poll': True},
+            {'snapshot': 'home'}, {'click': 'Trainings'},
+            {'hold': 'Open Rolling restarts'}, {'hold': 'Open Second'}, {'poll': True},
+            {'snapshot': 'trainings'}, {'click': 'Status'},
+            {'hold': 'Open Rolling restarts'}, {'hold': 'Open Second'}, {'poll': True},
+            {'snapshot': 'status'},
+        ])
+        shots = result['snapshots']
+        # Only the other training changed, so only its card is new: this one is the very
+        # node it was, with whatever was selected in it and the reader's place.
+        for name, says in (('home', 'Something new.'), ('trainings', 'Something newer.'),
+                           ('status', 'Something newest.')):
+            with self.subTest(screen=name):
+                self.assertEqual(shots[name]['still'], ['Open Rolling restarts'])
+                self.assertIn(says, shots[name]['text'])
 
     # --- milestone 3: the rest of a training ---------------------------------------------
 
@@ -5168,6 +5269,19 @@ class TeamScreenTests(ScriptedPage, PageCase):
                       'No teammate is running a training right now, as far as this computer '
                       'has been told.'):
             self.assertIn(shown, result['snapshots']['quiet']['text'])
+
+    def test_what_last_went_wrong_in_the_background_is_on_the_status_screen(self):
+        self.started()
+        says = ('The last look for what your team shared did not work: the disk is full. It '
+                'is tried again every few minutes.')
+        answers = self.answers(**{'GET /api/status': [ok({
+            'limit': 1, 'runs': [], 'elsewhere': [],
+            'background': {'at': '2020-01-02T03:04:05Z', 'says': says}})]})
+        result = self.run_page(answers, [{'click': 'Status'}, {'snapshot': 'status'}])
+        text = result['snapshots']['status']['text'].replace('\n', '')
+        self.assertIn('Nothing is running on this computer right now.Up to 1 training works at '
+                      'once on this computer. Any more wait their turn.' + says + ' This was ',
+                      text)
 
     def test_the_computers_own_notification_is_switched_in_settings(self):
         self.started()

@@ -177,6 +177,14 @@ Three rules hold it together.
 - **A worker never holds the keys.** It gets an empty folder outside the workspace and the runner's own tools, and nothing else. Only what those tools accepted is kept, and it is saved through the core, which is the only thing that can approve, and only when the page says a person did.
 - **Every rule about who may ask stays in the desk.** `runner/page.py` adds addresses to the page's server and never loosens one of its rules.
 
+### Each refresh is cheap
+
+The page reads the runner every 2 to 20 seconds, so a refresh asks only for what can have changed.
+
+- **The page.** One refresh is in hand at a time; one asked for meanwhile runs once after it. A hidden tab reads only `/api/trainings`. Set-up is read where it is shown. The run screen reads its run each time, `/api/training` only when the list says the training's record changed, and no run twice for what it asks. Home, Trainings, Status and Settings are drawn in parts through `fit`, a card or row per training, so a card whose training did not change keeps its node.
+- **The runner.** `Engine._look` is taken one at a time and reused for five minutes, with the brand skills `brand.found()` lists. Drive is not asked once LibreOffice is chosen for previews. `shared()` keeps its count while the clone's ref files are unchanged, so `/api/setup` starts no process when nothing has changed. A run waiting its turn reads the limit when it starts to wait and when set-up saves, not every half second.
+- **What goes wrong in the background is said.** `_serve` keeps the last error of each job, fetching and notifying, until that job next works; `/api/status` returns it as `background` and the Status screen shows it.
+
 No test starts a real agent, the real harness-research, the slides tool or a brand skill. Each is replaceable: `agents.Scripted`, `research.StandIn`, `slides.StandIn` and `brand.StandIn`. A change to the engine or the pipelines is finished with one real training, through the page, on each agent it claims to support.
 
 ### The slide deck
