@@ -1080,6 +1080,15 @@ code,
   border-top: 1px solid var(--hair);
 }
 
+/* --- with a team --------------------------------------------------------------------
+   Who runs a training is said in a sentence under it, in the same quiet voice wherever
+   the training is listed. A long name wraps rather than pushing the row wide. */
+
+.who {
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
 /* --- forms: set-up and a new training ------------------------------------------------
    What is typed is typed on paper, like anything else that is read. The choices are
    capsules, like every other control. */
