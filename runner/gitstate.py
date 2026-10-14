@@ -20,6 +20,8 @@ What a caller needs to know
     gitstate.set_aside(workspace, 'rolling-restarts')   # unshared commits, out of the branch
     gitstate.kept(workspace, 'rolling-restarts')     # the refs that keep what was set aside
     gitstate.undo(workspace, 'rolling-restarts')     # take back the last, unshared commit
+    gitstate.remove(workspace, 'rolling-restarts', 'Rolling restarts: Alex deletes it')
+    gitstate.known(workspace, 'rolling-restarts')    # the branch has ever had it
 
 - A workspace is a repository, a folder in it (`trainings` unless named or found) and a
   branch. `join` works in a clone the runner keeps for itself under the per-user data
@@ -475,6 +477,26 @@ def discard(workspace: Workspace, path) -> list[str]:
     if top.is_dir() and not top.is_symlink() and not any(top.iterdir()):
         top.rmdir()
     return lost
+
+
+def known(workspace: Workspace, path) -> bool:
+    """True when this copy's branch has ever had a path under the folder, whether or not
+    it has it now. One git command, and nothing is asked of the shared repository."""
+    done = hub.run(workspace.repo, 'log', '-1', '--format=%H', 'HEAD', '--',
+                   inside(workspace, path))
+    return done.returncode == 0 and bool(done.stdout.strip())
+
+
+def remove(workspace: Workspace, path, message: str) -> bool:
+    """Take one path under the folder out of the branch in one commit: every file git
+    keeps there goes, and so does anything never committed that is not ignored. Ignored
+    files, such as saved sources, are left for the caller. Nothing is pushed. False when
+    there was nothing to remove."""
+    scope, repo = inside(workspace, path), workspace.repo
+    discard(workspace, path)
+    for name in hub.names(hub.run(repo, 'ls-files', '-z', '--', scope).stdout):
+        (repo / name).unlink(missing_ok=True)
+    return commit(workspace, message, [path])
 
 
 # --- sharing -----------------------------------------------------------------------------

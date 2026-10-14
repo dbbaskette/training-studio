@@ -240,6 +240,18 @@ const NOTIFY_SAYS = 'When no page is open and a training needs you, this compute
   + 'decision, once for each thing that needs you.';
 const NOTIFY_DIFFERS = 'This is not the browser’s notification above. That one works only '
   + 'while this page is open in a tab; this one is for when no page is open at all.';
+// Deleting a training: what the card offers, and what its confirmation says. The runner says
+// what goes and what stays for each training; these are the words around it.
+const DELETE_SAYS = 'If you no longer want this training, delete it. It goes from this '
+  + 'computer and from your team’s workspace.';
+const DELETE_STOPS = 'It is working now. Deleting it stops it first, and ends everything it '
+  + 'is running.';
+const DELETE_SHARED = { decision: 'Your team sees it gone straight away.',
+  asked: 'Your team sees it gone the next time you press Share now.' };
+const DELETE_UNDO = 'This cannot be undone from this page. Its history stays in git, where '
+  + 'someone who knows git can bring it back.';
+const DELETE_DRIVE = 'Training Studio never deletes anything in your Google Drive. Remove '
+  + 'these yourself if you no longer want them:';
 // Where a finished training's index is, in its folder.
 const INDEX = 'README.md';
 const HALTED = 'This training is not running, so nothing more happens until you resume it or '
@@ -270,6 +282,8 @@ const view = {
   // has each training, a look for teammates' work and what it brought, and the switch for
   // the computer's own notifications while it is being changed.
   status: null, shelf: null, issued: null, adopted: null, noticed: {},
+  // What deleting the open training would do, as the runner said when its sheet was opened.
+  leaving: null,
   fetching: false, fetched: null, notifying: false, unnotified: '',
   // Why moving where a training is decided was refused, by training, and why bringing a stage
   // back was, by stage: each is said until it is tried again or the screen is left. And what
@@ -940,6 +954,7 @@ function open(next) {
   view.steered = '';
   view.barred = '';
   view.deciding = null;
+  view.leaving = null;
   view.beside = null;
   view.unadded = '';
   view.undone = '';
@@ -1086,6 +1101,7 @@ function closeSheet() {
   view.sheet = '';
   view.after = null;
   view.deciding = null;
+  view.leaving = null;
   drawSheet();
   if (view.gate) paintGate(false);
   else if (view.screen === 'run' && view.run) paintRun(false);
@@ -1197,7 +1213,7 @@ function afterSheet() {
 function drawSheet() {
   const holder = byId('sheet');
   const shown = view.after || (view.sheet && (view.gate || view.deciding || outlined()
-    || TEAM_SHEETS.includes(view.sheet)));
+    || TEAM_SHEETS.includes(view.sheet) || view.sheet === 'delete'));
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
@@ -1210,6 +1226,7 @@ function drawSheet() {
   }
   let body;
   if (view.after) body = afterSheet();
+  else if (view.sheet === 'delete') body = deleteSheet();
   else if (TEAM_SHEETS.includes(view.sheet)) body = teamSheet(view.sheet);
   else if (FORMS[view.sheet]) body = noteSheet(view.sheet);
   else body = confirmSheet(view.sheet);
@@ -2616,7 +2633,11 @@ function paintTraining(fresh) {
     decisionsCard(training),
     // One driver for a training: while the page runs it, nobody is sent to an assistant.
     theirs || (training.run && training.run.state !== 'done') ? null
-      : folderCard(training)], fresh);
+      : folderCard(training),
+    // A training the runner drives can be deleted from here too; one a conversation made
+    // is never the runner's to delete.
+    training.run && deletable({ mine: known.mine, driver: known.driver,
+      finished: (known.run || training.run).state === 'done' }) ? deleteCard() : null], fresh);
 }
 
 async function drawTraining(fresh) {
@@ -4715,6 +4736,7 @@ function paintRun(fresh) {
     // What this computer runs for a team can be handed over, for anyone to take.
     !theirs && driver && driver.here ? ['mine', [driver, title, run.kept],
       () => minePart(driver, run.kept)] : null,
+    deletable(run) ? ['delete', [title], () => deleteCard()] : null,
   ], fresh);
   tickSteps(run);
   tidyPictures();
@@ -5405,6 +5427,118 @@ async function settleTeam(kind, problem, pressed) {
     window.scrollTo(0, 0);
     byId('title').focus({ preventScroll: true });
   }
+  refresh();
+}
+
+// --- deleting a training ---------------------------------------------------------------
+// A training this computer runs, or a finished one nobody runs, can be deleted. What goes and
+// what stays is the runner's to say, so the sheet asks it first; nothing is sent until the
+// person presses the button that names the training.
+
+// Whether a run of the open training may be offered for deletion here. The runner decides;
+// this only keeps the card off a training someone else runs.
+function deletable(run) {
+  return Boolean(view.runner && run && (run.mine !== false || (run.finished && !run.driver)));
+}
+
+function deleteCard() {
+  return add(card('Delete this training'), make('p', 'quiet', DELETE_SAYS),
+    add(make('div', 'bar'), capsule('Delete this training', 'quiet', askDelete('delete'),
+      'delete')));
+}
+
+function askDelete(opener) {
+  return async () => {
+    const turn = view.turn;
+    view.leaving = null;
+    openSheet('delete', opener)();
+    if (view.screen === 'run' && view.run) paintRun(false);
+    let found;
+    try {
+      found = await ask('delete', { path: view.path });
+    } catch (failure) {
+      found = { failed: failure.message };
+    }
+    if (turn !== view.turn || view.sheet !== 'delete') return;
+    view.leaving = found;
+    drawSheet();
+    byId('sheet').focus();
+  };
+}
+
+// One file left in Google Drive, as a link that opens in a new tab.
+function driveItem(found) {
+  const words = found.what + ': ' + (found.name || 'untitled');
+  if (!WEB_LINK.test(String(found.url || ''))) return make('li', '', words);
+  const node = make('a', 'link', words);
+  node.href = found.url;
+  node.rel = 'noopener noreferrer';
+  node.target = '_blank';
+  node.setAttribute('aria-label', words + ', in a new tab');
+  return add(make('li'), node);
+}
+
+function deleteSheet() {
+  const title = (listed(view.path) || view.training || {}).title || 'Untitled';
+  const found = view.leaving;
+  const head = sheetTitle('Delete ' + title + '?');
+  const cancel = capsule('Cancel', 'quiet', closeSheet, 'cancel');
+  if (!found) {
+    return [head, make('p', 'quiet', 'Reading what would go.'), add(make('div', 'bar'), cancel)];
+  }
+  if (found.failed || !found.may) {
+    return [head, make('p', '', (found.failed || found.why || 'It cannot be deleted from '
+      + 'here.') + ' Nothing was deleted.'), add(make('div', 'bar'), cancel)];
+  }
+  const documents = Number(found.documents) || 0;
+  const revisions = Number(found.revisions) || 0;
+  const drive = list(found.drive);
+  const goes = [['Its folder in your workspace, with every file in it.',
+    DELETE_SHARED[found.share] || ''].filter(Boolean).join(' '),
+  'What only this computer kept for it: ' + (documents ? count(documents,
+    'document you supplied', 'documents you supplied') + ', ' : '')
+    + 'the pages saved for its research, its previews and its run record.'];
+  const stays = [revisions ? count(revisions, 'published revision', 'published revisions')
+    + '. ' + (revisions === 1 ? 'It stays' : 'They stay') + ' in your workspace’s history, '
+    + 'and the page no longer lists ' + (revisions === 1 ? 'it.' : 'them.') : null,
+  DELETE_UNDO].filter(Boolean);
+  const problem = problemLine();
+  const confirm = capsule('Delete ' + title, 'danger', () => settleDelete(title, problem,
+    confirm), 'send');
+  return [head,
+    found.stops ? state('late', DELETE_STOPS) : null,
+    make('h3', 'sheet-part', 'What goes'), bullets(goes),
+    make('h3', 'sheet-part', 'What stays'), bullets(stays),
+    drive.length ? make('p', '', DELETE_DRIVE) : null,
+    drive.length ? add(make('ul', 'plain'), ...drive.map(driveItem)) : null,
+    problem, add(make('div', 'bar'), confirm, cancel)].filter(Boolean);
+}
+
+// Send the deletion. A refusal is said in the sheet, in the runner's own words. Once it is
+// done the training is gone, so the page goes home, in place of the screen it was on.
+async function settleDelete(title, problem, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  view.busy = true;
+  pressed.disabled = true;
+  let found;
+  try {
+    found = await send('delete', { path: view.path, title });
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    say(problem, failure.message + (/\bdeleted\b/.test(failure.message) ? ''
+      : ' Nothing was deleted.'));
+    pressed.disabled = false;
+    pressed.focus();
+    return;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  view.sheet = '';
+  view.leaving = null;
+  toast('Deleted ' + title + '.' + (found && found.notice ? ' ' + found.notice : ''));
+  show('home', null, true);
   refresh();
 }
 

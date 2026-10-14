@@ -47,6 +47,13 @@ What a caller needs to know
   "by", "ready", "current"}]}, each training's latest revision; `current` is false when
   the training has changed here since. A training someone else drives is
   not published from here.
+- `GET /api/delete?path=` answers what deleting a training would do: {"path", "title",
+  "state", "may", "why", "stops", "share", "revisions", "documents", "drive"}, where
+  `drive` lists each file it left in Google Drive as {"what", "name", "url"}. `POST
+  /api/delete` with {"path", "title"} deletes it, stopping it first, and answers
+  {"deleted", "title", "shared", "notice"}. The title must be the training's own. A
+  training a conversation made is 404 here: the runner never deletes a folder it does
+  not drive.
 - `POST /api/adopt` with {"path"} copies a training this computer knows, started in a
   conversation, into the workspace, and answers {"path", "id"} of the copy.
 - Every request that passes the rules tells the engine a page is open, which is how the
@@ -105,10 +112,10 @@ from runner import engine as engines
 from runner import gitstate, pipeline, setup
 
 READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/run',
-         '/api/slide', '/api/status', '/api/published')
+         '/api/slide', '/api/status', '/api/published', '/api/delete')
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
-          '/api/publish', '/api/adopt', '/api/fetch')
+          '/api/publish', '/api/adopt', '/api/fetch', '/api/delete')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 DOCUMENT_LIMIT = 12_000_000     # bytes: one document of the largest size, in base64
@@ -155,6 +162,8 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, shaped(self.engine.models, one('agent')))
         if path == '/api/run':
             return desk.as_json(HTTPStatus.OK, self.run(one('path')))
+        if path == '/api/delete':
+            return desk.as_json(HTTPStatus.OK, self.engine.leaving(self.driving(one('path'))))
         if path == '/api/gate':
             return desk.as_json(HTTPStatus.OK, self.gate(one('path'), one('artifact')))
         if path == '/api/slide':
@@ -259,6 +268,14 @@ class RunnerPage(desk.Page):
                  'reachable': ready.reachable, 'version': ready.version,
                  'problem': ready.problem} for name, ready in zip(names, found)]
 
+    def driving(self, path: str) -> str:
+        """A training this computer knows, once a run drives it. Any other folder, such as
+        one a conversation made, is never the runner's to change."""
+        desk.registered(path)
+        if self.engine.driven(path) is None:
+            raise desk.Refusal(HTTPStatus.NOT_FOUND, 'No run is driving this training.')
+        return path
+
     def run(self, path: str) -> dict:
         """One training's run, for a training this computer knows."""
         desk.registered(path)
@@ -350,6 +367,10 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.adopt(sent))
         if path == '/api/fetch':
             return desk.as_json(HTTPStatus.OK, self.engine.fetch())
+        if path == '/api/delete':
+            title = desk.text(sent, 'title')
+            return desk.as_json(HTTPStatus.OK, self.engine.delete(
+                self.driving(desk.text(sent, 'path')), title))
         if path == '/api/setup/check':
             return desk.as_json(HTTPStatus.OK, shaped(setup.check, sent))
         if path == '/api/setup':

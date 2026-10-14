@@ -495,6 +495,14 @@ textarea {
   box-shadow: none;
 }
 
+/* What cannot be undone from the page, such as deleting a training. It names what it does. */
+.button-danger {
+  background: var(--late);
+  color: var(--paper);
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), 0 6px 16px rgb(150 30 20 / 0.24);
+}
+
 .button-round {
   width: 2.6rem;
   padding: 0;
@@ -1788,6 +1796,11 @@ summary {
 .sheet-title {
   font-size: 1.12rem;
   font-weight: 700;
+}
+
+.sheet-part {
+  font-size: 1rem;
+  font-weight: 650;
 }
 
 .note-label {

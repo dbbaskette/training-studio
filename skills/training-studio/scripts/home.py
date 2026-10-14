@@ -70,6 +70,17 @@ def remember(root: Path, title: str, levels: list[str]) -> None:
         pass
 
 
+def forget(root: Path) -> None:
+    """Stop remembering a training at `root`. Never fails the command that calls it."""
+    try:
+        registry = read_json(registry_path(), {})
+        trainings = registry.get('trainings') if isinstance(registry, dict) else None
+        if isinstance(trainings, dict) and trainings.pop(str(root), None) is not None:
+            write_json(registry_path(), {'schema': 1, 'trainings': trainings})
+    except OSError:
+        pass
+
+
 def trainings() -> list[dict]:
     """Every remembered training whose directory still holds one, newest first."""
     registry = read_json(registry_path(), {})

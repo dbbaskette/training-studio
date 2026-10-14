@@ -103,7 +103,7 @@ Drop `--dry-run` to run it. The clone is deleted afterwards; its logs are kept.
 | `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
 | `tests/test_desk.py` | The page: what it reads and records, everything it refuses, the command, the check of this computer with its commands stubbed, and the page's scripts and colours |
 | `tests/test_hub.py` | The team hub, against bare git repositories in temporary directories |
-| `tests/test_runner_*.py` | The runner: workers with a scripted agent, the worker tools against a pretend web, the workspace against bare git repositories, research against a stand-in for harness-research, the slide deck against stand-ins for the slides tool and a brand skill, the pipelines, the engine and its server, and two people sharing one workspace |
+| `tests/test_runner_*.py` | The runner: workers with a scripted agent, the worker tools against a pretend web, the workspace against bare git repositories, research against a stand-in for harness-research, the slide deck against stand-ins for the slides tool and a brand skill, the pipelines, the engine and its server, two people sharing one workspace, and deleting a training |
 
 The page's scripts are tested in a document that has no HTML parser, so a script that wrote markup would fail. That checks what the scripts build, name and send. It does not replace looking at the page in a browser.
 

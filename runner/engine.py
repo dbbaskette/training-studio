@@ -26,6 +26,8 @@ What a caller needs to know
     engine.standing()                        # every run here, and those driven elsewhere
     engine.publish(path)                     # the next revision of a training, as a tag
     engine.published()                       # each training's latest published revision
+    engine.leaving(path)                     # what deleting a training would do
+    engine.delete(path, title)               # stop it, delete it, and share that
     engine.bring(folder)                     # copy a conversation's training in, and run it
     engine.serving()                         # fetch on a timer, and notify, while serving
     engine.seen(); engine.tell()             # a page asked; notify if none has for a while
@@ -136,6 +138,16 @@ What a caller needs to know
   is sent once for each thing, and what was sent is remembered in the data folder.
 - A published revision is a tag on the commit where the workspace stands, numbered from
   1 for each training, never moved, and pushed without force. See `team.publish`.
+- `delete` takes a training this computer runs, in any state, or a finished one nobody
+  runs. A run that works is stopped first, as Stop does, and the deletion waits until no
+  thread, step or slot of it is left; one that has not ended in STOP_WAIT seconds is left
+  stopped and nothing is deleted. The folder is taken out of the branch in one commit that
+  says who and when, shared as any change is, and what only this computer kept for it
+  goes: its ignored files, its job folders, its notes in the data folder and its place in
+  the lists. Published revisions, files in Google Drive and anything `set_aside` kept stay.
+  A deletion that is not yet shared, of a training a teammate takes meanwhile, is set
+  aside when that is learned, so their version comes back whole and `notice` says so. A
+  training a fetch brings in deleted elsewhere is let go of here, leftovers and all.
 - `bring` copies a training's folder into the workspace under the name its title gives,
   moves its decisions to the page, gives it a run record that takes it, and commits. The
   folder it came from is only read. The run then carries on from what the files say.
@@ -247,6 +259,21 @@ BRAND_CHANGED = ('The brand changed underneath this deck after it was exported. 
                  'again to export it afresh. The slides are then drawn again from what you '
                  'approved the deck should say.')
 NO_PICTURE = 'There is no picture of that slide on this computer.'
+STOP_WAIT = 30          # seconds a run that is being deleted may take to end
+NOT_YOURS = ('{name} runs this training from another computer, so it cannot be deleted from '
+             'here. Take it over first if you mean to delete it.')
+NOT_TAKEN = ('Nobody is running this training, so it cannot be deleted from here until '
+             'someone takes it. Take it first if you mean to delete it.')
+MISTITLED = ('That is not the title of this training. Nothing was deleted: open the training '
+             'again before you delete it.')
+NOT_ENDED = ('It was stopped, but something it started has not ended yet, so it was not '
+             'deleted. Try deleting it again in a moment.')
+KEPT_BACK = ('{name} took this training on {when}, before your deletion of it was shared, so '
+             'it was not deleted. It is as they shared it.')
+WAITS = ('It is gone from this computer. Your team sees it gone the next time the workspace '
+         'is shared.')
+DRIVE = {'preview': 'Preview presentation', 'slides': 'Google Slides deck',
+         'doc': 'Google Doc'}
 
 
 def read_record(root: Path) -> dict | None:
@@ -435,6 +462,7 @@ class Engine:
         self._stalled: str | None = None    # what went wrong picking the trainings up
         self._sharing: threading.Thread | None = None
         self._share_again = False
+        self._dropped: set[str] = set()     # trainings a fetch brings in deleted elsewhere
         self._ready: dict[str, tuple[float, agents.Readiness]] = {}
         self._models: dict[str, tuple[float, dict]] = {}  # each agent's list, and when
         self._listing: dict[str, threading.Lock] = {}     # one listing per agent at a time
@@ -689,14 +717,17 @@ class Engine:
             self._step(space, push=True)
 
     def _aside(self, root: Path, space: gitstate.Workspace, kept: str | None,
-               name: str | None = None, when: str | None = None) -> None:
-        """Remember what was set aside for a training, and who took it when that is why."""
+               name: str | None = None, when: str | None = None,
+               deleted: bool = False) -> None:
+        """Remember what was set aside for a training, and who took it when that is why.
+        `deleted` says that what was set aside is this computer's deletion of it."""
         self._as_of.pop(('kept', str(root)), None)
         taken = team.kept('taken')
         before = taken.get(str(root)) or {}
         taken[str(root)] = {'name': name or before.get('name'),
                             'at': when or before.get('at'),
-                            'kept': kept or before.get('kept')}
+                            'kept': kept or before.get('kept'),
+                            **({'deleted': True} if deleted else {})}
         team.keep('taken', taken)
 
     def _learn(self, space: gitstate.Workspace, at: str | None = None) -> None:
@@ -724,6 +755,41 @@ class Engine:
             by = gitstate.last_by(space, root / RECORD, at) or ('Someone', home.now())
             self._aside(root, space, gitstate.set_aside(space, root, at),
                         who['name'] if who else by[0], who['since'] if who else by[1])
+        self._deleted(space, arrived, at)
+
+    def _deleted(self, space: gitstate.Workspace, arrived: set[str], at: str | None) -> None:
+        """What a fetch says about deletions, before anything is replayed. A training
+        deleted elsewhere is noted, to be let go of once the replay has taken its files
+        away. A deletion of this computer's that was never shared, of a training someone
+        else changed meanwhile, is set aside, so their version comes back whole. Call it
+        holding `files`."""
+        names = set()
+        for name in arrived:
+            parts = PurePosixPath(name).parts
+            if len(parts) > 2 and parts[0] == space.folder:
+                names.add(parts[1])
+        for name in sorted(names):
+            root = space.training(name)
+            session = root / workspace.STATE_DIR / 'session.json'
+            try:
+                if session.is_file():
+                    if gitstate.theirs(space, session, at) is None:
+                        self._dropped.add(str(root))
+                    continue
+                # A training new to this copy was never here to be deleted.
+                if not gitstate.known(space, root):
+                    continue
+                theirs = gitstate.theirs(space, root / RECORD, at)
+                if theirs is None or not gitstate.unshared(space, root, at):
+                    continue
+                record = json.loads(theirs)
+            except (WorkspaceError, ValueError):
+                continue
+            who = team.driver(space, record if isinstance(record, dict) else None)
+            by = gitstate.last_by(space, root / RECORD, at) or ('Someone', home.now())
+            self._aside(root, space, gitstate.set_aside(space, root, at),
+                        who['name'] if who else by[0], who['since'] if who else by[1],
+                        deleted=True)
 
     def _clashed(self, space: gitstate.Workspace, report: dict) -> None:
         """Note which trainings the same file was changed for on two computers."""
@@ -750,6 +816,9 @@ class Engine:
         lost = team.kept('taken').get(str(root))
         if not lost:
             return None
+        if lost.get('deleted'):
+            return KEPT_BACK.format(name=lost.get('name') or 'Someone',
+                                    when=team.day(lost.get('at')))
         said = TAKEN.format(name=lost.get('name') or 'Someone', when=team.day(lost.get('at'))) \
             if lost.get('name') else ''
         return (said + (SET_ASIDE if lost.get('kept') else '')).strip() or None
@@ -956,8 +1025,10 @@ class Engine:
                     return self._hand_on(root, found)
                 if self.background and not held:
                     run.queued = True
-                    held = self._slots.take(lambda: self._closing, run)
+                    held = self._slots.take(lambda: self._closing or run.stop.is_set(), run)
                     run.queued = False
+                    if not held:
+                        return  # closing, stopped, or no longer this computer's
                     continue  # it may have waited a while: look at the files again
                 if step.kind == 'code' and step.step.id == last:
                     return self._problem(root, step.step.id, 'failed', (
@@ -976,9 +1047,9 @@ class Engine:
             (root / IN_HAND).unlink(missing_ok=True)
             self._trouble(root, failure)
         finally:
-            run.queued = run.busy = False
-            if held:
+            if held:    # given back before the run counts as ended
                 self._slots.give_back()
+            run.queued = run.busy = False
 
     def _do(self, root: Path, run: _Run, found: pipeline.Survey,
             step: pipeline.Next) -> None:
@@ -2215,6 +2286,10 @@ class Engine:
                 report['notice'] = ' '.join(self._clash.values())
             if report.get('reached'):
                 self._fetched += 1
+            dropped, self._dropped = self._dropped, set()
+            for name in sorted(dropped):    # gone here too, unless the replay stopped
+                if not (Path(name) / workspace.STATE_DIR / 'session.json').is_file():
+                    self._let_go(Path(name))
         if report.get('reached'):
             if not push:
                 team.fetch_tags(space)
@@ -2797,7 +2872,177 @@ class Engine:
         """What the workspace has published, as far as this copy knows: each training's
         latest revision."""
         space = self.workspace
-        return [] if space is None else team.published(space)
+        if space is None:
+            return []
+        # A training deleted since keeps its revisions in git, and is not listed.
+        return [entry for entry in team.published(space)
+                if (Path(entry['path']) / workspace.STATE_DIR / 'session.json').is_file()]
+
+    # --- deleting a training -------------------------------------------------------------
+
+    def _why_not(self, space: gitstate.Workspace, record: dict, state: str) -> str | None:
+        """Why this computer may not delete a training, in a sentence; None when it may.
+        A training is deleted by the computer that runs it, or, once it is finished and
+        nobody runs it, by anyone."""
+        if self._checking:
+            return CHECKING
+        if team.ours(space, record):
+            return None
+        who = team.driver(space, record)
+        if who is None:
+            return None if state == 'done' else NOT_TAKEN
+        return NOT_YOURS.format(name=who['name'])
+
+    def _drive_files(self, root: Path, copies: list[dict]) -> list[dict]:
+        """What a training left in Google Drive, which the runner never deletes: the
+        preview presentation of each deck, a deck kept as Google Slides, and each Google
+        Doc copy. Each is {'what', 'name', 'url'}."""
+        found, folder = [], self._previews()
+        for path in sorted(folder.glob('*.json')) if folder.is_dir() else ():
+            entry = home.read_json(path, None)
+            if isinstance(entry, dict) and entry.get('url') and entry.get('path') == str(root):
+                found.append({'what': DRIVE['preview'], 'name': entry.get('name'),
+                              'url': entry['url']})
+        for path in sorted(root.rglob('deck-link.md')):
+            if 'work' in path.relative_to(root).parts:
+                continue
+            said = dict(re.findall(r'^- (URL|Title): (.+)$', path.read_text(encoding='utf-8',
+                                                                            errors='replace'),
+                                   re.MULTILINE))
+            if said.get('URL'):
+                found.append({'what': DRIVE['slides'], 'name': said.get('Title'),
+                              'url': said['URL'].strip()})
+        found += [{'what': DRIVE['doc'], 'name': workspace.sentence(entry['label']),
+                   'url': entry['link']} for entry in copies
+                  if entry.get('kind') == 'google' and entry.get('link')]
+        return found
+
+    def leaving(self, path) -> dict:
+        """What deleting a training would do, for the confirmation: whether this computer
+        may (`may`, and `why` not), whether it is stopped first (`stops`), when the team
+        sees it gone (`share`: None, 'decision' or 'asked'), and what stays: its published
+        `revisions` and the files it left in Google Drive (`drive`). `documents` is how
+        many documents the person supplied for it."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        space, record = self.space(), self._load(root)
+        copies = self._wanted(root, record)
+        found = self._survey(root, record, copies)
+        run = self._run(root)
+        state = self._state(record, found, run)[0]
+        why = self._why_not(space, record, state)
+        mine, _, shown, _, _ = self._whose(root, record, found, state, '')
+        return {'path': str(root), 'title': found.session['title'], 'state': shown,
+                'may': why is None, 'why': why,
+                'stops': bool(mine and (state == 'working' or run.workers or run.busy)),
+                'share': None if space.address is None else space.share,
+                'revisions': team.revisions(space, root.name),
+                'documents': len(self.documents.listed(root)) if record.get('documents')
+                else 0,
+                'drive': self._drive_files(root, copies)}
+
+    def delete(self, path, title: str) -> dict:
+        """Delete a training, as the person asks on the page. `title` is the one the page
+        showed, so a page that is out of date deletes nothing.
+
+        A run that is working is stopped first, as Stop does, and nothing more it does is
+        kept; once nothing of it is in hand, its folder is taken out of the branch in one
+        commit that says who deleted it and when, and shared as any change is. What only
+        this computer kept for it goes too. Published revisions and files in Google Drive
+        stay. Returns {'deleted', 'title', 'shared', 'notice'}. If a teammate took the
+        training before the deletion was shared, their version comes back whole and the
+        refusal says so."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        space = self.space()
+        by = gitstate.identity(space.repo)
+        run = self._run(root)
+
+        def allowed() -> None:
+            record = self._load(root)
+            if workspace.load(root)['title'] != title:
+                raise WorkspaceError(MISTITLED)
+            why = self._why_not(space, record, self._state(
+                record, self._survey(root, record), run)[0])
+            if why:
+                raise Elsewhere(why)
+
+        with self.files:
+            allowed()
+            run.gone = True     # the step in hand keeps nothing, as when it is taken
+            run.stop.set()      # and every agent and command it started is ended
+        if not self._ended(run):
+            with self.files:
+                run.gone = False
+                record = self._load(root)
+                record['halt'] = 'stopped'
+                self._store(root, record)
+                self._commit(root, 'stopped on the page')
+            raise WorkspaceError(NOT_ENDED)
+        with self.files:
+            if not (root / RECORD).is_file():
+                raise WorkspaceError('This training is not here any more.')
+            allowed()           # a fetch meanwhile may have made it someone else's
+            gitstate.remove(space, root, f'{title}: {by} deletes this training, on '
+                                         f'{team.day(home.now())}')
+            self._let_go(root, keep=True)
+        report = None
+        if space.address is not None and space.share == gitstate.SHARE[0]:
+            report = self._step(space, push=True)
+            self._unshared = None if report['shared'] else report['notice']
+        with self.files:
+            back = (root / RECORD).is_file()    # a teammate's version came back over it
+            if not back:
+                shutil.rmtree(root, ignore_errors=True)
+        if back:
+            self.adopt()
+            raise WorkspaceError(self._notice(root) or KEPT_BACK.format(
+                name='Someone', when='a moment ago'))
+        shared = None if space.address is None else bool(report and report['shared'])
+        return {'deleted': True, 'title': title, 'shared': shared,
+                'notice': None if shared in (None, True) else WAITS}
+
+    @staticmethod
+    def _ended(run: _Run) -> bool:
+        """Wait until nothing of a run is in hand: no thread, no step and no slot. False
+        when something has not ended in STOP_WAIT seconds."""
+        deadline = time.monotonic() + STOP_WAIT
+        while True:
+            thread = run.thread
+            alive = (thread is not None and thread.is_alive()
+                     and thread is not threading.current_thread())
+            if not alive and not run.busy:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    def _let_go(self, root: Path, keep: bool = False) -> None:
+        """Forget a training that is gone: what this computer kept for it outside the
+        workspace, its place in the lists, and what the engine held for it. Its folder
+        goes too, unless `keep`, for a caller that removes it later. What `set_aside`
+        kept in git is never deleted. Call it holding `files`."""
+        run = self._run(root)
+        run.gone = True
+        run.stop.set()
+        if not keep:
+            shutil.rmtree(root, ignore_errors=True)
+        jobs = agents.staging()
+        for old in jobs.iterdir() if jobs.is_dir() else ():
+            if old.name.startswith(f'{root.name}--'):
+                shutil.rmtree(old, ignore_errors=True)
+        for name in ('notified', 'taken'):
+            kept = team.kept(name)
+            if kept.pop(str(root), None) is not None:
+                team.keep(name, kept)
+        home.forget(root)
+        with self._lock:
+            self._runs.pop(str(root), None)
+        self._clash.pop(root.name, None)
+        self._as_of = {key: value for key, value in self._as_of.items()
+                       if key[1] != str(root)}
 
     # --- bringing a training in ----------------------------------------------------------
 
