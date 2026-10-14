@@ -1346,6 +1346,9 @@ class RepairTests(DeckCase):
         self.assertEqual(view['state'], 'failed')
         self.assertIn('This step did not work in 3 tries: Draw section', view['problem']['what'])
         self.assertIn('failed', [section['state'] for section in view['deck']['sections']])
+        # The sections are drawn side by side, so the other one may not have used all its
+        # failures before the training stopped. Whatever is left must not fail the retry.
+        self.workers.queued.pop('section', None)
         view = self.engine.act(root, 'retry')
         self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'))
 
