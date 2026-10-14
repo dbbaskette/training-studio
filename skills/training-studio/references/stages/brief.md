@@ -44,4 +44,4 @@ Save the first version with `training.py save brief --built`. Run `training.py c
 On approval:
 
 1. `training.py approve brief`.
-2. Make the copies `training.py status` asks for, as the workspace reference describes: `training.py google push brief` if `google_docs` lists `brief`; a Word copy, then `training.py export brief`, if `exports` does. With Yoodli on, that reference also says which copy the user uploads.
+2. Make the copies `training.py status` asks for, as the workspace reference describes: `training.py google push brief` if `google_docs` lists `brief`; `training.py export brief` if `exports` does. With Yoodli on, that reference also says which copy the user uploads.

@@ -114,11 +114,13 @@ The skill drives a small command-line helper, `skills/training-studio/scripts/tr
 | `status` | The stage, what is waiting, and the status of every file |
 | `check` | Runs every check that applies and reports readiness |
 | `save`, `approve` | Record a version, and record your approval of it, which moves the training on once its stage is finished |
-| `export` | Records a Word copy, when you asked for them |
+| `export` | Makes a Word copy with pandoc and records it, when you asked for them. Without pandoc, it records why there is none |
 | `google` | Sends the guide or the brief to a Google Doc and brings edits back |
 | `skip` | Leaves a stage out, or brings it back |
 | `checkpoint` | Records where the run stopped and what is at the gate, and changes settings such as which copies to keep. `--add-level` adds a level; a level with work in it is never dropped |
 | `list` | The trainings on this computer |
 | `desk` | Serves [the page](desk.md) until it is stopped |
+
+`--help` after any command lists its flags and the values each takes. A reason is always given with `--reason`, and a list is separated by spaces. A refusal says what puts it right.
 
 It needs only Python and never commits to git. Apart from `google`, the team hub and, on the page, the check of this computer that you ask for, none of it touches the network. The assistant's instructions for using it are in [the workspace reference](../skills/training-studio/references/workspace.md).

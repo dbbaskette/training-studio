@@ -137,3 +137,40 @@ class TrainingCase(unittest.TestCase):
     def state(self) -> dict:
         import workspace
         return workspace.statuses(self.root, workspace.load(self.root))
+
+
+# What a stand-in for pandoc does once it has logged its arguments. Each is the body of a
+# Python script; `arguments` holds what pandoc was given.
+PANDOC_MAKES = ("target = Path(arguments[arguments.index('--output') + 1])\n"
+                "target.write_bytes(b'docx of ' + Path(arguments[-1]).read_bytes())\n")
+PANDOC_FAILS = ("sys.stderr.write('[WARNING] Could not fetch resource\\n'\n"
+                "                 'pandoc: Could not parse ' + arguments[-1] + '\\n')\n"
+                'sys.exit(64)\n')
+PANDOC_WITHOUT_SANDBOX = ("if '--sandbox' in arguments:\n"
+                          "    sys.stderr.write('Unknown option --sandbox.\\n')\n"
+                          '    sys.exit(2)\n' + PANDOC_MAKES)
+PANDOC_HANGS = 'time.sleep(30)\n'
+
+
+def fake_pandoc(folder: Path, body: str = PANDOC_MAKES) -> Path:
+    """A stand-in for pandoc in `folder`, to put first on PATH. It writes each call's
+    arguments, as a JSON list, to calls.log beside it. No test needs pandoc installed."""
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / 'pandoc.py'
+    script.write_text('import json, sys, time\nfrom pathlib import Path\n'
+                      'arguments = sys.argv[1:]\n'
+                      "with open(Path(__file__).with_name('calls.log'), 'a') as log:\n"
+                      "    log.write(json.dumps(arguments) + '\\n')\n" + body, encoding='utf-8')
+    launcher = folder / 'pandoc'
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n',
+                        encoding='utf-8')
+    launcher.chmod(0o755)
+    return launcher
+
+
+def pandoc_calls(folder: Path) -> list[list[str]]:
+    """The arguments of every call made to the stand-in in `folder`."""
+    import json
+    log = folder / 'calls.log'
+    return ([json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+            if log.is_file() else [])

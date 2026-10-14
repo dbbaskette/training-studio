@@ -41,4 +41,4 @@ Save the first version with `training.py save document --built`. Run `training.p
 On approval:
 
 1. `training.py approve document`.
-2. Make the copies `training.py status` asks for, as the workspace reference describes, and tell the user what happened. Often there are none. `training.py google push document` if `google_docs` lists `document`; a Word copy, then `training.py export document`, if `exports` does.
+2. Make the copies `training.py status` asks for, as the workspace reference describes, and tell the user what happened. Often there are none. `training.py google push document` if `google_docs` lists `document`; `training.py export document` if `exports` does.

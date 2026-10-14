@@ -22,7 +22,7 @@ If `status` shows `approval: page`, the user decides on the page, not here: foll
 
 - **Approve.** Only on a clear yes from the user, in chat, about this artifact. Run `training.py approve <artifact>`. Once its stage is finished, the training moves on by itself; `next_step` says what comes next.
 - **Revise or rebuild.** Write the new version to a scratch file outside the directory, save it with `training.py save <artifact> --from <file>`, check, and present again. A file another tool writes in place is saved as its stage reference says.
-- **Stale.** Say so at the gate. The user either has it rebuilt or accepts it as it is: `training.py approve <artifact> --accept-stale "<their reason>"`. The reason is recorded. Accepting one artifact approves nothing below it.
+- **Stale.** Say so at the gate. The user either has it rebuilt or accepts it as it is: `training.py approve <artifact> --accept-stale --reason "<their reason>"`. The reason is recorded. Accepting one artifact approves nothing below it.
 - **Skip.** `training.py skip <stage> --reason "<their reason>"`. Skipping the current stage moves on too.
 
 An approval covers the content and what it was built from. Rebuilding against changed inputs needs approval again, even if the text came out the same.

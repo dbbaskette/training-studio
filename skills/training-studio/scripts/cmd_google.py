@@ -50,7 +50,7 @@ def register(commands) -> None:
     pushing.set_defaults(handler=push)
 
     recording = actions.add_parser('record', help='record a push a connector made')
-    recording.add_argument('artifact')
+    recording.add_argument('artifact', help='the artifact the connector pushed')
     recording.add_argument('--file-id', required=True, help="the Doc's Google file ID")
     recording.add_argument('--url', required=True, help="the Doc's address")
     recording.add_argument('--export', required=True, metavar='FILE',
@@ -59,7 +59,7 @@ def register(commands) -> None:
     recording.set_defaults(handler=record)
 
     pulling = actions.add_parser('pull', help="bring the Doc's edits into the artifact")
-    pulling.add_argument('artifact')
+    pulling.add_argument('artifact', help='the artifact whose Doc to bring back')
     pulling.add_argument('--from', dest='source', metavar='FILE',
                          help="the Doc's markdown export, fetched by a connector")
     pulling.set_defaults(handler=pull)
@@ -70,5 +70,5 @@ def register(commands) -> None:
     reporting.set_defaults(handler=status)
 
     unlinking = actions.add_parser('unlink', help='forget the link; the Doc is not deleted')
-    unlinking.add_argument('artifact')
+    unlinking.add_argument('artifact', help='the artifact to forget the Doc of')
     unlinking.set_defaults(handler=unlink)
