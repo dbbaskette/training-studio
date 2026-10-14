@@ -389,13 +389,17 @@ textarea {
   line-height: 1.3;
 }
 
+/* A long title takes two lines before it is cut, and its whole text is in its tooltip. */
 .title {
+  display: -webkit-box;
   overflow: hidden;
   font-size: 1.08rem;
   font-weight: 650;
   line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .title:focus {
@@ -1078,6 +1082,11 @@ code,
   gap: 0.6rem 1rem;
   padding: 0.8rem 0;
   border-top: 1px solid var(--hair);
+}
+
+/* Why a setting was not changed goes on a line of its own, under the control. */
+.setting > .problem {
+  flex: 1 1 100%;
 }
 
 /* --- with a team --------------------------------------------------------------------
@@ -1813,12 +1822,12 @@ summary {
   border-width: 2px;
 }
 
-/* --- toasts: they slide in from the top right ---------------------------------------- */
+/* --- toasts: they slide in at the bottom right, clear of the toolbar ------------------- */
 
 .toasts {
   position: fixed;
-  top: 1rem;
   right: 1rem;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
   z-index: 20;
   display: grid;
   justify-items: end;
@@ -2163,9 +2172,10 @@ summary {
     text-align: left;
   }
 
+  /* Above the bar of screens along the foot. */
   .toasts {
-    top: 0.6rem;
     right: 0.6rem;
+    bottom: calc(5rem + env(safe-area-inset-bottom));
   }
 
   .field > .segmented {
