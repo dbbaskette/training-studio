@@ -2,6 +2,7 @@
 installed skill is needed, no program renders anything, and nothing touches the network.
 """
 import copy
+import hashlib
 import json
 import os
 import struct
@@ -17,6 +18,8 @@ from unittest import mock
 import runner_support  # noqa: F401  puts the runner on the import path
 
 from runner import brand, slides
+from stand_ins import brand as brand_stand_in
+from stand_ins import slides as slides_stand_in
 from workspace import WorkspaceError
 
 SCRIPT = Path('scripts') / 'harness-slides.mjs'
@@ -152,7 +155,7 @@ class FindingTheRuntimeTests(unittest.TestCase):
         self.assertEqual(slides.Slides(runtime=self.home / 'nowhere', run=says()).reading(), {})
 
     def test_the_stand_in_has_short_guidance_of_its_own(self):
-        found = slides.stand_in().reading()
+        found = slides_stand_in.stand_in().reading()
         self.assertEqual(list(found), [
             'design guidance', 'composition guidance', 'drafting guidance', 'gallery',
             *(slides.example(relation) for relation in slides.RELATIONS[:-1])])
@@ -437,7 +440,7 @@ class Deck(unittest.TestCase):
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
         self.root = Path(holder.name).resolve()
-        self.slides, self.brand = slides.stand_in(), brand.stand_in()
+        self.slides, self.brand = slides_stand_in.stand_in(), brand_stand_in.stand_in()
         self.tool = self.slides.run
         self.contract = self.brand.export(self.root / 'brand', 'example', 'light')['contract']
         self.wrote = 0
@@ -464,7 +467,7 @@ class Deck(unittest.TestCase):
                  **({'subtitle': s['subtitle']} if 'subtitle' in s else {}),
                  'sources': ['outline'], 'brief': {'rhythm': 'anchor'}}
                 for s in OUTLINE['slides'] if s['kind'] != 'content']
-        whole = [lead[0], slides.sketch(STEPS, 's1_'), slides.sketch(PAIR, 's1_'), lead[1]]
+        whole = [lead[0], slides_stand_in.sketch(STEPS, 's1_'), slides_stand_in.sketch(PAIR, 's1_'), lead[1]]
         return self.write({'version': 1, 'title': OUTLINE['title'], 'direction': DIRECTION,
                            'slides': list(drawn) or whole, **changes})
 
@@ -1003,7 +1006,7 @@ class StandInCompositionTests(Deck):
                     slide.pop('focal')
                     if focal:
                         slide['focal'] = focal
-                    drawn = slides.sketch(slide, 's2_')
+                    drawn = slides_stand_in.sketch(slide, 's2_')
                     self.assertEqual((drawn['id'], drawn['title'], drawn['sources'],
                                       drawn['caveat'], drawn['source'], drawn['notes']),
                                      tuple(STEPS[key] for key in (
@@ -1011,14 +1014,14 @@ class StandInCompositionTests(Deck):
                                          'notes')))
                     report = self.slides.compile(self.composed(drawn), self.contract)
                     self.assertEqual(report['slides'], 1)
-        self.assertEqual(slides.sketch(STEPS, 's1_')['brief'],
+        self.assertEqual(slides_stand_in.sketch(STEPS, 's1_')['brief'],
                          {'relation': 'order', 'focal': 's1_whatitis_p2'})
 
     def test_sections_are_merged_in_the_order_their_manifest_lists(self):
         build = self.root / 'build'
         self.slides.outline_start(self.outline(), self.contract, build)
         section = {'version': 1, 'title': OUTLINE['title'], 'direction': DIRECTION,
-                   'slides': [slides.sketch(STEPS, 's1_'), slides.sketch(PAIR, 's1_')]}
+                   'slides': [slides_stand_in.sketch(STEPS, 's1_'), slides_stand_in.sketch(PAIR, 's1_')]}
         self.assertEqual(self.refusal(self.slides.merge, build / 'parts.json',
                                       build / 'composition.json'),
                          ['section-1.json: cannot be read as JSON (ENOENT)'])
@@ -1087,7 +1090,7 @@ class StandInCompositionTests(Deck):
         self.assertEqual(len({rows for _, _, rows in drawn}), 4, 'each slide looks different')
         self.assertEqual(picture(shown['contactSheet'])[:2], (640, 90))
         self.assertEqual(shown['deckSha256'],
-                         slides.hashlib.sha256(Path(shown['deck']).read_bytes()).hexdigest())
+                         hashlib.sha256(Path(shown['deck']).read_bytes()).hexdigest())
         kept = json.loads((folder / 'preview.json').read_text())
         self.assertEqual((kept['schema'], kept['renderer'], kept['emitter'], kept['next']),
                          (1, 'Google Slides PDF export', 'native template', 'Reuse this '
@@ -1240,7 +1243,7 @@ class StandInCompositionTests(Deck):
         self.assertEqual(data[:4], b'PK\x03\x04')
         self.assertEqual(made, {
             'output': str(self.root / 'deck.pptx'), 'slides': 4, 'editable': True,
-            'sha256': slides.hashlib.sha256(data).hexdigest(), 'status': 'unreviewed draft',
+            'sha256': hashlib.sha256(data).hexdigest(), 'status': 'unreviewed draft',
             'emitter': 'native template'})
         with zipfile.ZipFile(self.root / 'deck.pptx') as deck:
             self.assertEqual(deck.namelist(), [

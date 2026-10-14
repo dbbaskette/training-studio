@@ -21,6 +21,7 @@ import workspace
 from workspace import WorkspaceError
 
 from runner import documents, research, worker_tools
+from stand_ins import research as research_stand_in
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 STRICT = 'http://purl.oclc.org/ooxml/wordprocessingml/main'
@@ -680,7 +681,7 @@ class SourceTests(Supplied):
             'sources': plan, 'items': [{'id': 'instance-min', 'public_query': None,
                                         'question': 'How many instances keep capacity?',
                                         'claim': None}]}))
-        found = research.stand_in()
+        found = research_stand_in.stand_in()
         status = found.plan(self.root, file)
         self.assertEqual((status['scope'], status['sourceGaps']), ('supplied-only', []))
         status = found.record(self.root, status['run'], 'instance-min', finding)

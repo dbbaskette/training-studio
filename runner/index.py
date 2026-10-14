@@ -29,9 +29,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
+import assess
 import checks
 import desk
-import training
 import workspace
 
 from runner import copies as copying
@@ -80,7 +80,7 @@ class _Training:
         return self.status['files'][name]
 
     def text(self, name: str) -> str | None:
-        return training.read(self.root, self.file(name))
+        return assess.read(self.root, self.file(name))
 
     def left(self, stage: str) -> str | None:
         """The word for a stage that has nothing to show, or None when it was made."""
@@ -101,7 +101,7 @@ def _read(root: Path, copies: list[dict] | None) -> _Training:
     root = Path(root)
     session = workspace.load(root)
     found = _Training(root, session, workspace.status(root),
-                      training.run_checks(root, show_all=True),
+                      assess.run_checks(root, show_all=True),
                       copying.wanted(root) if copies is None else list(copies), {})
     for level in found.levels:
         text = found.text(workspace.qualify('blueprint', level))
@@ -224,7 +224,7 @@ def _about(found: _Training, report: dict) -> list[str]:
                  f'listed {where}.']
     else:
         lines = ['This training is ready.']
-    intake = _headed(training.read(found.root, 'intake.md') or '')
+    intake = _headed(assess.read(found.root, 'intake.md') or '')
     # Each level's blueprint says who that level is for, so only a plain training's stands
     # in for an answer intake does not have.
     frame = {} if found.session['levels'] else _framed(found, None)
@@ -405,7 +405,7 @@ def _scenarios(found: _Training) -> list[str]:
         return ['No scenario has been written yet.']
     lines, laid_out = [], []
     for name, file in written.items():
-        scenario = checks.parse_scenario(training.read(found.root, file) or '')
+        scenario = checks.parse_scenario(assess.read(found.root, file) or '')
         level = workspace.split(name)[1]
         lines.append(f"- {_link(file, file)}: {_line(scenario['title']) or 'untitled'} "
                      f"({scenario['mode']}" + (f', level {level})' if level else ')'))
@@ -435,7 +435,7 @@ def _scenarios(found: _Training) -> list[str]:
                          + ', '.join(laid_out) + '. Building the roleplay in Yoodli\'s '
                          'Builder, pasting each block into the field its heading names, is '
                          'the baseline.')
-            if training.PROVISIONAL in found.checked['warnings']:
+            if assess.PROVISIONAL in found.checked['warnings']:
                 lines[-1] += (' Yoodli\'s limits are taken from its public help pages and '
                               'are provisional until you confirm that a paste was accepted.')
     return lines
