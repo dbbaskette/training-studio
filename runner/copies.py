@@ -21,7 +21,8 @@ What a caller needs to know
 - `google` is a `gdocs.Transport`; left out, it is `gdocs.GcloudTransport()`, which uses
   the Google access this computer already has. No credential is asked for, stored or
   printed here. `word` is a callable (source: Path, target: Path) -> None; left out, it
-  runs `pandoc`, and a computer without it gets a sentence saying so.
+  runs pandoc through the core's `workspace.pandoc`, with its reasons worded for a person,
+  and a computer without pandoc gets a sentence saying so.
 - Nothing is approved, skipped or decided here.
 
 `made` holds the entries of the copies this call made, as `wanted` would now give them.
@@ -31,7 +32,6 @@ problem: it is made when its file is approved.
 from __future__ import annotations
 
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -42,13 +42,19 @@ from workspace import WorkspaceError
 
 STATES = {'current': 'made', 'outdated': 'out-of-date', 'missing': 'not-made',
           'unavailable': 'not-made'}
-TIMEOUT = 120           # seconds for one conversion
 AGAIN = 'try the copies again'
 NOT_SET_UP = ('Google access is not set up on this computer: the gcloud command was not '
               'found. Install the Google Cloud CLI, run `gcloud auth login '
               f'--enable-gdrive-access` in a terminal, then {AGAIN}.')
 NO_PANDOC = ('Word copies are made with pandoc, which is not on this computer. Install it, '
              f'then {AGAIN}.')
+PANDOC_SAYS = {   # the core's reasons for no Word copy, said for a person
+    'missing': NO_PANDOC,
+    'slow': ('pandoc did not finish in {seconds} seconds, so the Word copy was not made. '
+             f'{workspace.sentence(AGAIN)}.'),
+    'start': ('pandoc could not be started ({why}), so the Word copy was not made. '
+              f'{workspace.sentence(AGAIN)}.'),
+    'said': f'pandoc could not make the Word copy ({{said}}). Put that right, then {AGAIN}.'}
 # What the core says to an assistant, which has commands to run, said here for a person.
 REWORDED = (
     ('changed since the last sync',
@@ -59,7 +65,6 @@ REWORDED = (
      f'cannot open it. Ask your assistant to unlink it from the training, then {AGAIN} to '
      'make a new one.'),
 )
-PICTURE = ('![', '<img')    # how a Markdown file names a picture for pandoc to fetch
 
 
 # --- what is wanted ------------------------------------------------------------------------
@@ -164,42 +169,7 @@ def _word(root: Path, name: str, convert) -> None:
 
 
 def pandoc(source: Path, target: Path) -> None:
-    """Convert a Markdown file to Word with pandoc. Refuses with a sentence when pandoc is
-    not on this computer or does not finish.
-
-    pandoc is kept to the one file it is given. A Markdown file can name a picture
-    anywhere on this computer or on the web, and pandoc would fetch it into the copy. Where
-    a pandoc cannot be kept so, it is used as it is only for a file that names no picture.
-    """
-    program = shutil.which('pandoc')
-    if program is None:
-        raise WorkspaceError(NO_PANDOC)
-    command = [program, '--from', 'markdown-raw_attribute', '--to', 'docx',
-               '--output', str(target), str(source)]
-    done = _run([command[0], '--sandbox', *command[1:]])
-    if done.returncode != 0:
-        text = source.read_text(encoding='utf-8', errors='replace').lower()
-        if not any(mark in text for mark in PICTURE):
-            done = _run(command)
-    if done.returncode != 0 or not target.is_file():
-        # Its first line that is not a warning says what went wrong.
-        lines = [line.strip() for line in (done.stderr or '').splitlines()
-                 if line.strip() and not line.lstrip().startswith('[')]
-        said = lines[0] if lines else f'it ended with exit code {done.returncode}'
-        for folder in (str(source.parent), str(target.parent)):
-            said = said.replace(folder, '')     # where this computer keeps things stays here
-        raise WorkspaceError(f"pandoc could not make the Word copy ({said[:200].rstrip('.')}). "
-                             f'Put that right, then {AGAIN}.')
-
-
-def _run(command: list[str]) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
-                              timeout=TIMEOUT, encoding='utf-8', errors='replace')
-    except subprocess.TimeoutExpired:
-        raise WorkspaceError(f'pandoc did not finish in {TIMEOUT} seconds, so the Word copy '
-                             f'was not made. {workspace.sentence(AGAIN)}.') from None
-    except OSError as failure:
-        raise WorkspaceError('pandoc could not be started '
-                             f'({failure.strerror or type(failure).__name__}), so the Word '
-                             f'copy was not made. {workspace.sentence(AGAIN)}.') from None
+    """Convert a Markdown file to Word through the core's pandoc, kept to the one
+    file it is given. Refuses with a sentence for a person when pandoc is not on this
+    computer, does not finish or makes no copy."""
+    workspace.pandoc(source, target, PANDOC_SAYS)
