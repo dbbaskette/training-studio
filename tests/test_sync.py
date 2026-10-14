@@ -76,6 +76,15 @@ class StartTests(SyncCase):
         self.assertEqual(Path(result['helper']), helpers.SCRIPTS / 'training.py')
         self.assertIsNone(result['notice'])
 
+    def test_the_helper_is_the_command_that_ran_this_when_there_is_one(self):
+        command = self.project.parent / 'training'
+        command.write_text('#!/bin/sh\n')
+        with mock.patch.dict(os.environ, {'TRAINING_STUDIO_HELPER': str(command)}):
+            self.assertEqual(sync_guidance.start(self.project)['helper'], str(command))
+        with mock.patch.dict(os.environ, {'TRAINING_STUDIO_HELPER': str(command) + '-gone'}):
+            self.assertEqual(Path(sync_guidance.start(self.project)['helper']),
+                             helpers.SCRIPTS / 'training.py')
+
     def test_start_writes_nothing_into_a_directory_that_has_no_training(self):
         sync_guidance.start(self.project)
         self.assertEqual(list(self.project.iterdir()), [])

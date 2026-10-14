@@ -5,7 +5,7 @@ A page in the user's browser: what needs them, where every training stands and, 
 ## Open it
 
 - **Approval in chat.** Run `training.py desk` as a long-running background command; it serves until stopped. It opens the page in the user's browser itself and prints one line of JSON. If `opened` is false, give the user the command instead. Stop it when they are done, and before the session ends.
-- **Approval on the page.** Never open it yourself. Give the user the command, `python3 <helper> desk`, to run in a terminal of their own. The link it prints carries the page's key and is theirs alone.
+- **Approval on the page.** Never open it yourself. Give the user the command, `<helper> desk`, to run in a terminal of their own. The link it prints carries the page's key and is theirs alone.
 
 ## A gate decided on the page
 

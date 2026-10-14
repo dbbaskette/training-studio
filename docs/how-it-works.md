@@ -107,7 +107,7 @@ See the [phase 2 design](superpowers/specs/2026-10-12-phase-2-packaging.md).
 
 ## The helper
 
-The skill drives a small command-line helper, `skills/training-studio/scripts/training.py`. You never need to run it, but you can:
+The skill drives a small command-line helper, `skills/training-studio/scripts/training.py`. The installer writes a command that runs it with a Python new enough, whatever `python3` is: `~/.local/share/training-studio/training`. Your assistant runs the helper through it. You never need to run it, but you can, as in `~/.local/share/training-studio/training status`:
 
 | Command | Does |
 | --- | --- |

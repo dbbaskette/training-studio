@@ -7,10 +7,12 @@ Training Studio has a page that runs in your browser, on your own computer. It s
 Run this in a terminal of your own:
 
 ```bash
-python3 ~/.local/share/training-studio/current/scripts/training.py desk
+~/.local/share/training-studio/training desk
 ```
 
-It prints one line with a link. Open the link exactly as it is printed: the part after `#` is a key, and the page does not work without it. The command runs until you press Ctrl-C, and the page stops working when it does. Each time you run it you get a new link. Add `--port 8765` to choose the port. In a checkout of this repository the helper is `skills/training-studio/scripts/training.py`.
+It prints one line with a link. Open the link exactly as it is printed: the part after `#` is a key, and the page does not work without it. The command runs until you press Ctrl-C, and the page stops working when it does. Each time you run it you get a new link. Add `--port 8765` to choose the port.
+
+The installer writes `training`, for a linked checkout too, and it finds a Python new enough itself. Without the installer, run `python3 skills/training-studio/scripts/training.py desk` in a checkout of this repository, with Python 3.11 or newer.
 
 You can also ask your assistant to open the page. It then opens in your browser by itself, and your assistant is never shown the key: when the command is not run in a terminal, it prints only the address and says so. For a training that is decided on the page, your assistant does not open it at all. It asks you to run the command yourself.
 

@@ -36,7 +36,7 @@ The page is newer. If you are not sure, start with a conversation: it needs the 
 You need:
 
 - **Claude Code or Codex**, installed and signed in.
-- **Python 3.11 or newer.** The installer looks for it and, if it is missing, says where to get it.
+- **Python 3.11 or newer.** The installer looks for it and, if it is missing, says where to get it. A Mac's own `python3` is older, and that is fine: once a newer Python is installed, Training Studio finds it.
 - **git**, to download Training Studio. The page also uses it to keep your trainings.
 - **Two companion skills**: [harness-research](https://github.com/dbbaskette/harness-research-skill), which does the research, and [harness-slides](https://github.com/dbbaskette/harness-slides-skill), which builds the deck. The installer offers to bring both. Without harness-slides you still get everything except the deck.
 
@@ -56,7 +56,7 @@ On a Mac you can instead double-click `Install Training Studio.command` in the `
 
 The installer says what it is about to do and asks before changing anything. It adds Training Studio to Claude Code and Codex, whichever you have, then offers each companion skill you are missing. Say yes or no to each.
 
-When it finishes, it tells you how to open the page and lists anything you still need, such as git set up with your name, or an assistant that is signed in.
+When it finishes, it tells you how to open the page and lists anything you still need, most important first, each with what to run. That might be a companion skill you said no to, git set up with your name, or an assistant that is signed in.
 
 See [installation](docs/installation.md) for what is checked and why, and for updating, going back a version and removing it.
 
@@ -188,8 +188,8 @@ For each scenario, Training Studio then writes a file under `yoodli/` laid out i
 
 | What you see | What it means |
 | --- | --- |
-| It stops at research and names harness-research | That skill is not installed. Run the installer again and say yes when it offers it |
-| The deck is "unavailable" | harness-slides is not installed. Everything else still works. The installer offers it |
+| It stops at research and names harness-research | That skill is not installed. In the Training Studio folder you downloaded, run `sh installer/install.sh --companions install` |
+| The deck is "unavailable" | harness-slides is not installed. Everything else still works. The same command installs it |
 | The page says the deck needs something | This computer is missing part of what a deck needs. The Status screen says what, and how to get it |
 | A Word copy is "unavailable" | You asked for Word copies and no converter was found. Installing [pandoc](https://pandoc.org) fixes it |
 | Something is "stale" | A file it was built from has changed. Ask to rebuild it, or say it is fine as it is |

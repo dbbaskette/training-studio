@@ -113,6 +113,7 @@ class InstallerCase(unittest.TestCase):
         self.base = Path(holder.name).resolve()
         self.home = self.base / 'home'
         self.root = self.home / '.local' / 'share' / 'training-studio'
+        self.addCleanup(os.chdir, os.getcwd())
         self.claude = self.home / '.claude' / 'skills'
         self.codex = self.home / '.agents' / 'skills'
         self.claude.mkdir(parents=True)
@@ -166,7 +167,8 @@ class InstallTests(InstallerCase):
         result = self.run_installer('install', '--yes')
         self.assertEqual(result['mode'], 'managed')
         staged = self.root / 'versions' / result['version']
-        self.assertIn('sync_guidance.py', (staged / 'SKILL.md').read_text())
+        self.assertIn('training-studio/training guidance start',
+                      (staged / 'SKILL.md').read_text())
         self.assertTrue((staged / 'guidance' / 'references' / 'gates.md').is_file())
         self.assertTrue((staged / 'guidance' / 'assets' / 'profiles' / 'yoodli.json').is_file())
         self.assertFalse((staged / 'references').exists())
@@ -464,7 +466,8 @@ class RunnerTests(InstallerCase):
             self.assertNotIn('token', launcher.read_text(), 'no key is ever written down')
             gone = self.run_installer('uninstall', '--yes')
         self.assertEqual(sorted(gone['launchers_removed']),
-                         sorted([str(launcher), str(self.root / 'studio')]))
+                         sorted([str(launcher), str(self.root / 'studio'),
+                                 str(self.root / 'training')]))
         self.assertFalse(launcher.exists())
         self.assertTrue(launcher.parent.is_dir())
 
@@ -523,11 +526,107 @@ class RunnerTests(InstallerCase):
 
     def test_a_dry_run_says_how_it_would_be_opened_and_what_would_be_offered(self):
         plan = self.run_installer('install', '--dry-run')
-        self.assertEqual(plan['launchers'], {'command': str(self.root / 'studio')})
+        self.assertEqual(plan['launchers'], {'command': str(self.root / 'studio'),
+                                             'helper': str(self.root / 'training')})
         self.assertEqual({name: (one['wanted'], one['would_offer'])
                           for name, one in plan['companions'].items()},
                          {'harness-research': ('0.8.0', True), 'harness-slides': ('0.13.1', True)})
         self.assertFalse(self.root.exists())
+
+
+class HelperTests(InstallerCase):
+    """The helper's command: the helper run with a Python new enough, whatever python3 is."""
+
+    def env(self, **more) -> dict:
+        """A home, a data folder and a guidance source of the test's own: nothing real is read
+        and nothing is fetched."""
+        return {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home),
+                'TRAINING_STUDIO_DATA': str(self.base / 'data'),
+                'TRAINING_STUDIO_SOURCE': str(self.base / 'nowhere'), **more}
+
+    def ask_helper_text(self, *args, expect=0) -> str:
+        folder = self.base / 'valkey-training'
+        folder.mkdir(exist_ok=True)
+        done = subprocess.run([str(self.root / 'training'), *args], cwd=folder,
+                              capture_output=True, text=True, env=self.env())
+        self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
+        return done.stdout
+
+    def ask_helper(self, *args, expect=0) -> dict:
+        return json.loads(self.ask_helper_text(*args, expect=expect))
+
+    def old_python(self) -> Path:
+        """A folder whose python3 is too old: it fails the version check, and says so if it is
+        ever asked to run anything."""
+        folder = self.base / 'old-bin'
+        folder.mkdir(exist_ok=True)
+        fake = folder / 'python3'
+        fake.write_text('#!/bin/sh\n[ "$1" = -c ] && exit 1\necho \'{"ran": "python3"}\'\n')
+        fake.chmod(0o755)
+        return folder
+
+    def test_the_helpers_command_is_written_beside_the_runners_and_runs_the_helper(self):
+        result = self.run_installer('install', '--yes')
+        command = self.root / 'training'
+        self.assertEqual(result['helper'], str(command))
+        self.assertTrue(os.access(command, os.X_OK))
+        self.assertIn(str(self.root / 'current' / 'scripts'), command.read_text())
+        self.assertIn('No training in this directory',
+                      self.ask_helper('status', expect=2)['error'])
+        self.assertIn('usage: training.py', self.ask_helper_text('--help'))
+
+    def test_it_runs_guidance_sync_and_names_itself_as_the_helper(self):
+        self.run_installer('install', '--yes')
+        found = self.ask_helper('guidance', 'start')
+        self.assertEqual(found['helper'], str(self.root / 'training'))
+        self.assertEqual(Path(found['entry']).resolve(),
+                         (self.root / 'current' / 'guidance' / 'SKILL.md').resolve())
+        self.assertIn('Could not get the newest guidance', found['notice'])
+
+    def test_a_python3_older_than_3_11_is_passed_over(self):
+        self.run_installer('install', '--yes')
+        newer = self.base / 'new-bin'
+        newer.mkdir()
+        (newer / 'python3.12').symlink_to(sys.executable)
+        command = self.base / 'training'
+        command.write_text(install.helper_text(self.root / 'current' / 'scripts', command,
+                                               pythons=('python3', 'python3.12')))
+        path = f'{self.old_python()}{os.pathsep}{newer}{os.pathsep}/usr/bin{os.pathsep}/bin'
+        done = subprocess.run(['sh', str(command), 'status'], cwd=self.base, capture_output=True,
+                              text=True, env=self.env(PATH=path))
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn('No training in this directory', json.loads(done.stdout)['error'])
+
+    def test_with_no_python_new_enough_it_says_so_as_json(self):
+        command = self.base / 'training'
+        command.write_text(install.helper_text(helpers.SCRIPTS, command, pythons=('python3',)))
+        done = subprocess.run(['sh', str(command), 'status'], capture_output=True, text=True,
+                              env=self.env(PATH=f'{self.old_python()}{os.pathsep}/usr/bin'
+                                                f'{os.pathsep}/bin'))
+        self.assertEqual(done.returncode, 2)
+        self.assertIn('needs Python 3.11 or newer', json.loads(done.stdout)['error'])
+
+    def test_a_linked_checkout_gets_the_same_command_for_its_own_helper(self):
+        self.run_installer('install', '--yes', '--link')
+        self.assertIn(str(helpers.SCRIPTS), (self.root / 'training').read_text())
+        self.assertIn('No training in this directory',
+                      self.ask_helper('status', expect=2)['error'])
+
+    def test_it_is_removed_with_the_others_and_never_written_over_a_file_of_ones_own(self):
+        self.run_installer('install', '--yes')
+        gone = self.run_installer('uninstall', '--yes')
+        self.assertIn(str(self.root / 'training'), gone['launchers_removed'])
+        self.assertFalse((self.root / 'training').exists())
+        (self.root / 'training').write_text('#!/bin/sh\necho mine\n')
+        self.assertIsNone(self.run_installer('install', '--yes')['helper'])
+        self.assertEqual((self.root / 'training').read_text(), '#!/bin/sh\necho mine\n')
+
+    def test_the_two_installers_look_for_python_in_the_same_places(self):
+        script = (helpers.REPO / 'installer' / 'install.sh').read_text()
+        listed = script.split('for candidate in', 1)[1].split('; do', 1)[0]
+        self.assertEqual(tuple(listed.replace('\\\n', ' ').split()), install.PYTHONS)
+        self.assertIn('/Library/Frameworks/Python.framework/Versions/Current/bin/python3',
+                      install.PYTHONS)
 
 
 class CompanionTests(InstallerCase):
@@ -536,7 +635,10 @@ class CompanionTests(InstallerCase):
         return sorted(folder.iterdir()) if folder.is_dir() else []
 
     def test_nobody_to_ask_means_nothing_is_fetched_and_the_report_says_how(self):
-        for extra in ([], ['--companions', 'skip']):
+        os.chdir(helpers.REPO)   # the installer's folder, as when it is run as the docs say
+        why = {(): 'because no one was there to answer',
+               ('--companions', 'skip'): 'because --companions skip was given'}
+        for extra, reason in why.items():
             result = self.run_installer('install', '--yes', *extra)
             for name in COMPANIONS:
                 self.assertEqual(result['companions'][name]['state'], 'waiting')
@@ -547,8 +649,29 @@ class CompanionTests(InstallerCase):
             notes = [note for note in result['notes'] if note.startswith('harness-slides')]
             self.assertEqual(len(notes), 1)
             self.assertIn('is not installed for Claude Code and Codex', notes[0])
-            self.assertIn('--companions install', notes[0])
+            self.assertIn(reason, notes[0])
+            self.assertIn('run: sh installer/install.sh --companions install', notes[0])
+            self.assertNotIn('say yes', notes[0])
             self.assertIn(str(_made['harness-slides'].bare.with_suffix('')), notes[0])
+
+    def test_the_command_in_a_note_works_from_wherever_it_is_read(self):
+        os.chdir(self.base)
+        (note,) = [note for note in self.run_installer('check')['notes']
+                   if note.startswith('harness-research')]
+        script = helpers.REPO / 'installer' / 'install.sh'
+        self.assertTrue(note.endswith(f'run: sh {script} --companions install'), note)
+        self.assertNotIn('because', note, 'check offered nothing, so it gives no reason')
+
+    def test_a_person_who_said_no_is_told_how_to_change_their_mind(self):
+        printed = io.StringIO()
+        with mock.patch.object(install.sys, 'stdin', mock.Mock(isatty=lambda: True)), \
+                mock.patch('builtins.input', lambda question: 'n'), \
+                contextlib.redirect_stdout(printed):
+            install.main(['install', '--yes', '--home', str(self.home)])
+        (note,) = [line for line in printed.getvalue().splitlines()
+                   if line.startswith('  - harness-research')]
+        self.assertIn('because you answered no', note)
+        self.assertIn('--companions install', note)
 
     def test_a_person_is_asked_about_each_companion_and_yes_to_the_rest_does_not_cover_it(self):
         asked, printed = [], io.StringIO()
@@ -764,6 +887,33 @@ class NeedsTests(InstallerCase):
                      'harness-slides 0.13.1 was not installed',
                      'No brand skill was found. A slide deck is always made in a brand'):
             self.assertEqual(len([note for note in notes if said in note]), 1, said)
+
+    def test_what_stops_the_most_comes_first(self):
+        self.answers = {('python3', '--version'): (0, 'Python 3.9.6'),
+                        ('git', '--version'): (0, 'git version 2.50.0')}
+        self.brand = False
+        with mock.patch.object(install.shutil, 'which', lambda name: None):
+            notes = self.run_installer('check')['notes']
+            self.assertEqual([note.split(' ', 1)[0] for note in notes],
+                             ['No', 'harness-research', 'Node', 'harness-slides', 'git',
+                              'python3', 'No', 'pandoc'])
+            self.assertTrue(notes[0].startswith('No assistant was found'))
+            self.assertTrue(notes[6].startswith('No brand skill was found'))
+            self.answers.pop(('git', '--version'))
+            notes = self.run_installer('check')['notes']
+        self.assertTrue(notes[1].startswith('git was not found'), notes)
+
+    def test_a_python3_too_old_is_named_and_needs_nothing_done(self):
+        self.answers[('python3', '--version')] = (0, 'Python 3.9.6')
+        result = self.run_installer('install', '--yes')
+        self.assertEqual(result['python3_on_path'], '3.9.6')
+        (note,) = [note for note in result['notes'] if note.startswith('python3')]
+        self.assertIn('python3 on your PATH is 3.9.6, older than the 3.11', note)
+        self.assertIn(str(self.root / 'training'), note)
+        for fine in ('Python 3.11.0', 'Python 3.13.2'):
+            self.answers[('python3', '--version')] = (0, fine)
+            self.assertFalse(any(note.startswith('python3')
+                                 for note in self.run_installer('check')['notes']))
 
     def test_git_that_does_not_know_who_you_are_is_named_with_the_commands(self):
         del self.answers[('git', 'config', '--get', 'user.email')]

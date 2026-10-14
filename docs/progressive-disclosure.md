@@ -10,12 +10,12 @@ python3 skills/training-studio/scripts/validate_package.py --measure
 
 Measured 2026-10-14. Per-file budgets: `SKILL.md` 1,000; any reference 1,000; any example 1,200.
 
-An installed copy reads a small entry first, which finds the guidance: 306 estimated tokens against a budget of 400. A development link reads `SKILL.md` directly.
+An installed copy reads a small entry first, which finds the guidance: 331 estimated tokens against a budget of 400. A development link reads `SKILL.md` directly.
 
 | File | Estimated tokens |
 | --- | ---: |
 | `SKILL.md` | 970 |
-| `references/desk.md` | 451 |
+| `references/desk.md` | 449 |
 | `references/gates.md` | 823 |
 | `references/google.md` | 982 |
 | `references/hub.md` | 927 |
@@ -44,14 +44,14 @@ An installed copy reads a small entry first, which finds the guidance: 306 estim
 | `assets/examples/product-brief.md` | 582 |
 | `assets/examples/scenario.md` | 382 |
 | `assets/examples/yoodli.md` | 1,119 |
-| Whole library | 21,252 |
+| Whole library | 21,250 |
 
 | Loading set | Estimated tokens | Budget |
 | --- | ---: | ---: |
 | `short-command` | 1,362 | 2,000 |
 | `start` | 1,769 | 2,000 |
 | `google` | 1,952 | 2,000 |
-| `desk` | 1,421 | 2,000 |
+| `desk` | 1,419 | 2,000 |
 | `hub` | 1,897 | 2,000 |
 | `stage:research-plan` | 2,659 | 3,500 |
 | `stage:research-handoff` | 2,692 | 3,500 |

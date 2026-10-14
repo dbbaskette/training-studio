@@ -36,10 +36,15 @@ NEEDS = {'harness-research': 'research cannot run without it',
 IGNORED = ('__pycache__', '.DS_Store')
 PLATFORM = sys.platform
 OPENER = 'studio'                              # the one-line command, in the data folder
+HELPER = 'training'                            # the helper's command, beside it
 LAUNCHER = 'Open Training Studio.command'      # the double-click launcher, on macOS
 OURS = '# Written by the Training Studio installer.'
+# Where a Python new enough is looked for, in order. install.sh holds the same list, since it
+# runs before any Python is found; a test keeps the two the same.
 PYTHONS = ('python3', 'python3.14', 'python3.13', 'python3.12', 'python3.11',
-           '/opt/homebrew/bin/python3', '/usr/local/bin/python3')
+           '/opt/homebrew/bin/python3', '/usr/local/bin/python3',
+           '/Library/Frameworks/Python.framework/Versions/Current/bin/python3')
+PYTHON_NEEDED = (3, 11)
 NODE_NEEDED = 20
 VERSION = re.compile(r'^\d+\.\d+\.\d+$')
 HEX = {'commit': re.compile(r'^[0-9a-f]{40}$'), 'sha256': re.compile(r'^[0-9a-f]{64}$')}
@@ -266,9 +271,19 @@ def not_while_serving(home: Path) -> None:
                            f'again. If it is not open, remove {found[1]}.')
 
 
+def python_search(run: str, pythons: tuple | None = None) -> str:
+    """The loop both commands use: `run` with the first Python new enough. The Python that
+    ran this installer is tried first, then the places install.sh tries."""
+    names = ' '.join(shlex.quote(name) for name in (pythons or (sys.executable, *PYTHONS)))
+    return f"""for candidate in {names}; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1; then
+    {run}
+  fi
+done"""
+
+
 def opener_text(studio: Path) -> str:
     """The one-line command: finds a Python new enough and starts the runner with it."""
-    pythons = ' '.join(shlex.quote(name) for name in (sys.executable, *PYTHONS))
     return f"""#!/bin/sh
 # Opens Training Studio: starts the runner, which shows its page in your browser.
 {OURS} Run the installer again to renew it.
@@ -278,14 +293,33 @@ if [ ! -f "$runner" ]; then
   exit 1
 fi
 [ "$#" -eq 0 ] && set -- serve --open
-for candidate in {pythons}; do
-  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1; then
-    exec "$candidate" "$runner" "$@"
-  fi
-done
+{python_search('exec "$candidate" "$runner" "$@"')}
 printf '%s\\n' 'Training Studio needs Python 3.11 or newer.' \\
   'Install it from https://www.python.org/downloads/ and open Training Studio again.' >&2
 exit 1
+"""
+
+
+def helper_text(scripts: Path, itself: Path, pythons: tuple | None = None) -> str:
+    """The helper's command: training.py, or guidance sync after `guidance`, run with a
+    Python new enough whatever python3 is. A failure is printed as JSON, as the helper prints
+    one, since an assistant reads it."""
+    return f"""#!/bin/sh
+# Runs the Training Studio helper with a Python new enough, whatever python3 is.
+# `training <command>` runs training.py; `training guidance start` runs guidance sync.
+{OURS} Run the installer again to renew it.
+scripts={shlex.quote(str(scripts))}
+script=training.py
+if [ "$1" = guidance ]; then script=sync_guidance.py; shift; fi
+if [ ! -f "$scripts/$script" ]; then
+  printf '%s\\n' '{{"error": "Training Studio is not installed here any more. Run its installer again."}}'
+  exit 2
+fi
+TRAINING_STUDIO_HELPER={shlex.quote(str(itself))}
+export TRAINING_STUDIO_HELPER
+{python_search('exec "$candidate" "$scripts/$script" "$@"', pythons)}
+printf '%s\\n' '{{"error": "Training Studio needs Python 3.11 or newer. Install it from https://www.python.org/downloads/ and try again."}}'
+exit 2
 """
 
 
@@ -311,6 +345,7 @@ def launcher_places(home: Path, root: Path) -> dict[str, Path]:
     places = {'command': root / OPENER}
     if PLATFORM == 'darwin':
         places['double_click'] = home / 'Applications' / LAUNCHER
+    places['helper'] = root / HELPER
     return places
 
 
@@ -323,14 +358,18 @@ def ours(path: Path) -> bool:
         return False
 
 
-def write_launchers(home: Path, root: Path, studio: Path) -> dict[str, str]:
-    """Write the ways to open the runner. A file of someone's own in the way is left alone."""
+def write_launchers(home: Path, root: Path, studio: Path, scripts: Path) -> dict[str, str]:
+    """Write the ways to open the runner, and the helper's command. A file of someone's own
+    in the way is left alone."""
     places = launcher_places(home, root)
+    texts = {'command': lambda: opener_text(studio),
+             'helper': lambda: helper_text(scripts, places['helper']),
+             'double_click': lambda: launcher_text(places['command'])}
     written = {}
     for kind, path in places.items():
         if (path.exists() or path.is_symlink()) and not ours(path):
             continue
-        text = opener_text(studio) if kind == 'command' else launcher_text(places['command'])
+        text = texts[kind]()
         path.parent.mkdir(parents=True, exist_ok=True)
         pending = path.with_name(f'.{path.name}.pending-{secrets.token_hex(4)}')
         try:
@@ -354,6 +393,12 @@ def runner_report(home: Path, root: Path, state: dict) -> dict:
             'double_click': kept.get('double_click') if ours(Path(kept.get('double_click', '')))
             else None,
             'serving': found[0] if found else None}
+
+
+def helper_command(state: dict) -> str | None:
+    """The helper's command, when this installer wrote it and it is still there."""
+    kept = state.get('launchers', {}).get('helper')
+    return kept if kept and ours(Path(kept)) else None
 
 
 # --- the companion skills ---------------------------------------------------------------
@@ -536,10 +581,10 @@ def run_companion(name: str, pin: dict, checkout: Path, home: Path,
 
 
 def bring_companions(home: Path, root: Path, harnesses: list[str], pins: dict, agree,
-                     state: dict) -> dict:
+                     state: dict, declined: str | None = None) -> dict:
     """Bring each companion that is missing or older than its pin, when the person agrees.
     One that is as new or newer is left alone. Nothing here undoes Training Studio's own
-    installation: what goes wrong is reported."""
+    installation: what goes wrong is reported. `declined` says why one was not agreed to."""
     outcomes = {}
     for name, pin in pins.items():
         found = companion_found(home, harnesses, name)
@@ -550,6 +595,8 @@ def bring_companions(home: Path, root: Path, harnesses: list[str], pins: dict, a
                                 f'{NODE_NEEDED} or newer.'})
             elif not agree(name, pin, found):
                 outcome['state'] = 'waiting'
+                if declined:
+                    outcome['why'] = declined
             else:
                 try:
                     checkout = fetch_companion(name, pin, root)
@@ -603,7 +650,7 @@ def pin(path: Path, name: str, revision: str) -> dict:
 
 def install(source: Path, home: Path, root: Path, harnesses: list[str], link_only: bool,
             replace: bool, bootstrap: Path = BOOTSTRAP, runner: Path = RUNNER,
-            pins: dict | None = None, agree=None) -> dict:
+            pins: dict | None = None, agree=None, declined: str | None = None) -> dict:
     """Install the skill and the runner, link the skill into each assistant's skill folder,
     write the ways to open the runner, and bring the companion skills the person agrees to."""
     verify(source)
@@ -656,17 +703,18 @@ def install(source: Path, home: Path, root: Path, harnesses: list[str], link_onl
         replace_link(link, destination)
         links[harness] = entry
     studio = (runner if link_only else root / 'current' / 'runner') / 'studio.py'
+    scripts = (source if link_only else root / 'current') / 'scripts'
     state.update({'mode': 'link' if link_only else 'managed', 'current': key,
                   'source': str(source), 'installed_at': now(), 'runner': str(studio),
-                  'launchers': write_launchers(home, root, studio),
+                  'launchers': write_launchers(home, root, studio, scripts),
                   'links': {**state.get('links', {}), **links}})
     write_state(root, state)
     outcomes = bring_companions(home, root, harnesses, pins or {},
-                                agree or (lambda *asked: False), state)
+                                agree or (lambda *asked: False), state, declined)
     write_state(root, state)
     return {'action': 'install', 'mode': state['mode'], 'version': key, 'links': links,
-            'runner': runner_report(home, root, state),
-            **prerequisites(home, harnesses, pins, outcomes)}
+            'runner': runner_report(home, root, state), 'helper': helper_command(state),
+            **prerequisites(home, root, harnesses, pins, outcomes)}
 
 
 def rollback(root: Path, home: Path) -> dict:
@@ -720,20 +768,45 @@ def uninstall(root: Path, home: Path) -> dict:
             'versions_kept_in': str(versions) if versions.is_dir() else None}
 
 
+def again(*args: str) -> str:
+    """The command that runs this installer again with these arguments, as it would be typed
+    in the folder the person is in."""
+    script = REPO / 'installer' / 'install.sh'
+    try:
+        script = script.relative_to(Path.cwd().resolve())
+    except (OSError, ValueError):
+        pass
+    return shlex.join(['sh', str(script), *args])
+
+
+# Why a companion that was wanted was not fetched, for the note that says so.
+WHY = {'skipped': 'It was not fetched, because --companions skip was given.',
+       'declined': 'It was not fetched, because you answered no.',
+       'nobody to ask': 'It was not fetched, because no one was there to answer.'}
+# What the notes are about, most important first: what stops everything, then what stops
+# research, and so on down to what matters only when it is asked for.
+IMPACT = ('assistant', 'git', 'harness-research', 'node', 'harness-slides', 'companion',
+          'identity', 'python3', 'brand', 'pandoc')
+
+
 def said_of(name: str, pin: dict, outcome: dict, harnesses: list[str]) -> str | None:
     """What is worth knowing about one companion, or None when it is as it should be."""
     found, wanted = outcome['found'], pin['version']
     need = NEEDS.get(name, 'part of a training cannot be made without it')
     source = pin['repository'].removesuffix('.git')
+    command = again('--companions', 'install')
     if outcome['state'] in ('refused', 'failed'):
-        return f"{name} {wanted} was not installed: {outcome['detail']} Until it is, {need}."
+        return (f"{name} {wanted} was not installed, and {need}: {outcome['detail']} When that "
+                f'is put right, run: {command}')
     short = wanting(found, wanted)
     if short:
         who = ' and '.join(HARNESS[harness] for harness in short)
         what = 'is not installed' if all(found[harness] is None for harness in short) \
             else f'is older than the {wanted} Training Studio was made with'
-        return (f'{name} {what} for {who}: {need}. This installer brings it from {source}: '
-                'run it in a terminal and say yes when it asks, or add --companions install.')
+        why = WHY.get(outcome.get('why'))
+        return ' '.join(filter(None, (f'{name} {what} for {who}: {need}.', why,
+                                      f'To fetch it from {source} and install it, run: '
+                                      f'{command}')))
     unread = [HARNESS[harness] for harness in harnesses if found[harness] == '']
     if unread:
         return (f"{name} is there for {' and '.join(unread)}, but not as its own installer "
@@ -742,10 +815,18 @@ def said_of(name: str, pin: dict, outcome: dict, harnesses: list[str]) -> str | 
     return outcome.get('next') and f"{name} says there is more to do: {outcome['next']}"
 
 
-def prerequisites(home: Path, harnesses: list[str], pins: dict | None = None,
+def path_python() -> str | None:
+    """The version of the python3 on PATH, which is what a bare `python3` runs."""
+    found = ask(('python3', '--version'))
+    named = re.search(r'Python (\d+\.\d+(?:\.\d+)?)', found[1]) \
+        if found and found[0] == 0 else None
+    return named.group(1) if named else None
+
+
+def prerequisites(home: Path, root: Path, harnesses: list[str], pins: dict | None = None,
                   outcomes: dict | None = None) -> dict:
     """What Training Studio and its runner need beside themselves, and what is missing, each
-    with how to get it."""
+    with how to get it, the most important first."""
     pins = pins or {}
     node = node_version()
     companions = {name: (outcomes or {}).get(name) or {
@@ -763,40 +844,51 @@ def prerequisites(home: Path, harnesses: list[str], pins: dict | None = None,
                                           and 'not logged in' not in signed[1].lower())
                         if codex else None}}
     brand = brand_skill(home)
-    notes = []
+    python3 = path_python()
+    notes = []   # (what it is about, the note)
     if not git_found:
-        notes.append('git was not found. The runner keeps every training in a git repository. '
-                     'Install it from https://git-scm.com, then tell it your name and email.')
+        notes.append(('git', 'git was not found. The runner keeps every training in a git '
+                      'repository. Install it from https://git-scm.com, then tell it your '
+                      'name and email.'))
     elif not all(known.values()):
-        notes.append('git does not know who you are, and the runner records who decided what. '
-                     'Run: git config --global user.name "Your Name"  and  '
-                     'git config --global user.email "you@example.com"')
+        notes.append(('identity', 'git does not know who you are, and the runner records who '
+                      'decided what. Run: git config --global user.name "Your Name"  and  '
+                      'git config --global user.email "you@example.com"'))
     if not agents['claude']['installed'] and not agents['codex']['installed']:
-        notes.append('No assistant was found. Install Claude Code or Codex and sign in: the '
-                     'runner works with your own sign-in and has no key of its own.')
+        notes.append(('assistant', 'No assistant was found. Install Claude Code or Codex and '
+                      'sign in: the runner works with your own sign-in and has no key of its '
+                      'own.'))
     elif not agents['claude']['installed'] and not agents['codex']['signed_in']:
-        notes.append('Codex is installed but not signed in. Run: codex login')
+        notes.append(('assistant', 'Codex is installed but not signed in. Run: codex login'))
     if not node_is_enough(node):
-        notes.append(f'Node {NODE_NEEDED} or newer is needed by the companion skills'
-                     + (f'; found {node}.' if node else '; none was found.')
-                     + ' Get it from https://nodejs.org')
+        notes.append(('node', f'Node {NODE_NEEDED} or newer is needed by the companion skills'
+                      + (f'; found {node}.' if node else '; none was found.')
+                      + ' Get it from https://nodejs.org'))
     for name, outcome in companions.items():
         note = said_of(name, pins[name], outcome, harnesses)
         if note:
-            notes.append(note)
+            notes.append((name if name in IMPACT else 'companion', note))
+    if python3 and as_tuple(python3)[:2] < PYTHON_NEEDED:
+        notes.append(('python3', f'python3 on your PATH is {python3}, older than the 3.11 '
+                      'Training Studio needs. Nothing needs changing: the commands this '
+                      f'installer wrote, {root / HELPER} and {root / OPENER}, find a newer '
+                      'Python themselves. Run the helper with the first of them, not with '
+                      'python3.'))
     if brand is False:
-        notes.append('No brand skill was found. A slide deck is always made in a brand, so '
-                     'without one everything is made except the deck. A brand skill is your '
-                     "organisation's own and is not installed from here: ask whoever keeps "
-                     'yours.')
+        notes.append(('brand', 'No brand skill was found. A slide deck is always made in a '
+                      'brand, so without one everything is made except the deck. A brand '
+                      "skill is your organisation's own and is not installed from here: ask "
+                      'whoever keeps yours.'))
     pandoc = bool(shutil.which('pandoc'))
     if not pandoc:
-        notes.append('pandoc was not found. It matters only if you ask for Word copies, which '
-                     'will then rely on your assistant or be reported as unavailable: '
-                     'https://pandoc.org')
-    return {'python': sys.version.split()[0], 'node': node, 'pandoc': pandoc,
-            'git': {'installed': git_found, **known}, 'agents': agents, 'brand_skill': brand,
-            'companions': companions, 'notes': notes}
+        notes.append(('pandoc', 'pandoc was not found. It matters only if you ask for Word '
+                      'copies, which will then rely on your assistant or be reported as '
+                      'unavailable: https://pandoc.org'))
+    notes.sort(key=lambda note: IMPACT.index(note[0]))   # stable: ties keep their order
+    return {'python': sys.version.split()[0], 'python3_on_path': python3, 'node': node,
+            'pandoc': pandoc, 'git': {'installed': git_found, **known}, 'agents': agents,
+            'brand_skill': brand, 'companions': companions,
+            'notes': [note for _, note in notes]}
 
 
 def check(home: Path, root: Path, harnesses: list[str], pins: dict | None = None) -> dict:
@@ -816,8 +908,8 @@ def check(home: Path, root: Path, harnesses: list[str], pins: dict | None = None
     return {'action': 'check', 'installed': bool(state), 'mode': state.get('mode'),
             'version': state.get('current'),
             'earlier_versions': state.get('history', [])[:-1], 'links': links,
-            'runner': runner_report(home, root, state),
-            **prerequisites(home, harnesses, pins)}
+            'runner': runner_report(home, root, state), 'helper': helper_command(state),
+            **prerequisites(home, root, harnesses, pins)}
 
 
 def plan(source: Path, home: Path, root: Path, harnesses: list[str], link_only: bool,
@@ -901,7 +993,8 @@ def describe(result: dict) -> str:
                      + ', '.join(HARNESS[harness] for harness in result['harnesses']))
         lines += [f'  {path}' for path in result['links']]
         lines += [f'  In the way, and not a link: {path}' for path in result['blocked']]
-        lines += [f'  A way to open it: {path}' for path in result['launchers'].values()]
+        lines += [f"  {'The helper' if kind == 'helper' else 'A way to open it'}: {path}"
+                  for kind, path in result['launchers'].items()]
         for name, companion in result['companions'].items():
             lines.append(f"  {name} {companion['wanted']}: " + (
                 f"would be offered, from {companion['from']} at revision "
@@ -1003,10 +1096,14 @@ def main(argv: list[str] | None = None) -> int:
                     print('Nothing was changed.')
                     return 0
             if args.action == 'install':
-                agree = {'install': lambda *asked: True, 'skip': lambda *asked: False,
-                         'ask': offer if sys.stdin.isatty() else lambda *asked: False}
+                # How each companion is agreed to, and why one is not.
+                agree, declined = {
+                    'install': (lambda *asked: True, None),
+                    'skip': (lambda *asked: False, 'skipped'),
+                    'ask': (offer, 'declined') if sys.stdin.isatty()
+                    else (lambda *asked: False, 'nobody to ask')}[args.companions]
                 result = install(source, home, root, harnesses, args.link, args.replace,
-                                 pins=pins, agree=agree[args.companions])
+                                 pins=pins, agree=agree, declined=declined)
             elif args.action == 'rollback':
                 result = rollback(root, home)
             elif args.action == 'pin':
