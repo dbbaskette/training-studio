@@ -218,6 +218,18 @@ const ASSET_WORDS = {
 const SEVERITIES = { critical: ['late', 'Critical'], major: ['late', 'Major'],
   minor: ['none', 'Minor'] };
 const SERIOUS = ['critical', 'major'];
+// What a finding is about, where drawing again would not put it right, and the categories a
+// review against the approved design files its findings in, as the slides tool orders them.
+const ABOUT_TAGS = {
+  content: 'About what it says', concept: 'About how it was approved to teach',
+};
+const CATEGORY_WORDS = {
+  'asset-failure': 'The pictures and icons it was approved with',
+  'design-deviation': 'How it departs from the approved design',
+  'visual-teaching': 'Whether the visual teaches',
+  'fit-defect': 'How it fits',
+  'direct-text': 'Direct text by decision',
+};
 // What a brand's own check answers when it has nothing to raise.
 const AUDIT_QUIET = ['ok', 'clear', 'clean', 'pass', 'passed', 'fine', 'success'];
 // What the page says once what a deck says is decided. A gate's decision is answered by the
@@ -2262,9 +2274,15 @@ function findingsNote(found) {
   // The reviewer drew none of the slides. How often it has looked says how far repair went.
   const looked = 'An independent reviewer, which drew none of the slides, has looked at each '
     + 'one' + (review.round > 0 ? ' ' + times(review.round) : '') + '.';
+  // Reviewed against the approved design: the slides drawn as text by decision, accepted so.
+  const accepted = list(review.direct).filter((entry) => entry.accepted);
+  const direct = accepted.length ? make('p', 'quiet', 'Drawn as text by decision, and '
+    + 'accepted so by the review: ' + slidesNamed(accepted.map((entry) => entry.number))
+    + '.') : null;
   if (!findings.length) {
     return add(node, make('p', '', 'The reviewer has nothing left to raise.'),
-      make('p', 'quiet', looked + ' Whether the deck is good is still yours to judge.'));
+      make('p', 'quiet', looked + ' Whether the deck is good is still yours to judge.'),
+      direct);
   }
   const counted = order.map((severity) => [findings.filter((finding) => finding.severity
     === severity).length, SEVERITIES[severity][1].toLowerCase()])
@@ -2275,24 +2293,50 @@ function findingsNote(found) {
     : ' findings remain.');
   add(node, serious(found).length ? state('late', says) : make('p', '', says),
     make('p', 'quiet', looked + ' The deck comes to you as it is.'));
-  const items = make('ol', 'look findings');
-  findings.forEach((finding, index) => {
+  const item = (finding, index) => {
     const [shape, words] = SEVERITIES[finding.severity]
       || ['none', spoken(finding.severity || 'finding')];
     const go = button('Slide ' + finding.number, 'link',
       () => view.viewer && view.viewer.go(finding.number, true), 'finding ' + index);
-    add(items, add(make('li', 'finding'),
+    return add(make('li', 'finding'),
       add(make('p', 'foot-line'), state(shape, words), go,
-        finding.about === 'content' ? make('span', 'tag', 'About what it says') : null),
+        ABOUT_TAGS[finding.about] ? make('span', 'tag', ABOUT_TAGS[finding.about]) : null),
       make('p', '', finding.note),
-      finding.fix ? make('p', 'quiet', 'Suggested: ' + finding.fix) : null));
-  });
-  add(node, items);
+      finding.fix ? make('p', 'quiet', 'Suggested: ' + finding.fix) : null);
+  };
+  // A review against the approved design files each finding in one of the slides tool's
+  // categories, and they are shown so, in its order. Any other review is one list.
+  const filed = findings.some((finding) => finding.category);
+  if (filed) {
+    const known = Object.keys(CATEGORY_WORDS);
+    const rank = (finding) => (known.includes(finding.category) ? known.indexOf(finding.category)
+      : known.length);
+    const groups = [...new Set(findings.map((finding) => finding.category))]
+      .sort((one, other) => rank({ category: one }) - rank({ category: other }));
+    groups.forEach((category) => {
+      const items = make('ol', 'look findings');
+      findings.forEach((finding, index) => {
+        if (finding.category === category) add(items, item(finding, index));
+      });
+      add(node, make('h3', 'row-title', CATEGORY_WORDS[category] || 'Found'), items);
+    });
+  } else {
+    const items = make('ol', 'look findings');
+    findings.forEach((finding, index) => add(items, item(finding, index)));
+    add(node, items);
+  }
+  add(node, direct);
   if (findings.some((finding) => finding.about === 'content')) {
     add(node, make('p', 'quiet', '“About what it says” is a finding about a slide’s words, '
       + 'not how it is drawn, so drawing the slide again would not put it right. Choose “Ask '
       + 'for changes” and say what should change: that leads back to what the deck says, and '
       + 'the slides are drawn from it again.'));
+  }
+  if (findings.some((finding) => finding.about === 'concept')) {
+    add(node, make('p', 'quiet', '“About how it was approved to teach” is a finding that only '
+      + 'another visual concept than the one you approved would put right. Choose “Ask for '
+      + 'changes” and say what should change: that leads back to what the deck says and how '
+      + 'each slide is drawn.'));
   }
   return node;
 }

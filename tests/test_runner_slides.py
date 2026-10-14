@@ -17,7 +17,7 @@ from unittest import mock
 
 import runner_support  # noqa: F401  puts the runner on the import path
 
-from runner import brand, slides
+from runner import brand, deck, slides
 from stand_ins import brand as brand_stand_in
 from stand_ins import slides as slides_stand_in
 from workspace import WorkspaceError
@@ -1954,6 +1954,202 @@ class AssetTests(Deck):
              brief, '--output', 'assets/generated/hero_art.png', '--design-project', project,
              '--slide', 'operator_architecture', '--json']])
         self.assertFalse(Path(brief).exists(), 'the brief is written for the call alone')
+
+
+
+class ReviewTests(unittest.TestCase):
+    """The design-bound review of a composition, through the wrapper, against Harness
+    Slides' contract fixture: the tool renders the build itself, its own report sorts what it
+    finds into five categories, and its receipts bind the deck, the pictures, the build and
+    the design. The stand-in plays the tool on `main`, which lists `compose-review`."""
+
+    def setUp(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.root = Path(holder.name).resolve()
+        self.slides = slides_stand_in.stand_in(assets=True)
+        self.tool = self.slides.run
+        self.skill = brand_stand_in.stand_in()   # kept: its library is the brand's source
+        self.brand = self.skill.export(self.root / 'brand', 'example', 'light')['contract']
+        self.project = self.root / 'project'
+        self.project.mkdir()
+        plan = json.loads((CONTRACT / 'proposal.json').read_text(encoding='utf-8'))
+        proposed = self.slides.design_propose(self.project, CONTRACT / 'proposal.json')
+        self.slides.design_respond(self.project, {
+            'questionId': proposed['question']['id'], 'planRevision': proposed['revision'],
+            'decision': 'approve', 'feedback': 'Approve the whole plan'})
+        self.ids = [slide['id'] for slide in plan['slides']]
+        self.made = 0
+
+    def built(self, composition: str = 'composition.json', **compiled) -> Path:
+        self.made += 1
+        folder = self.root / f'compiled-{self.made}'
+        self.slides.compile(CONTRACT / composition, self.brand, folder,
+                            **{'design': self.project, **compiled})
+        return folder
+
+    def prepared(self, composition: str = 'composition.json') -> tuple[dict, Path, list]:
+        output = self.root / f'review-{self.made + 1}'
+        made = self.slides.review_prepare(self.built(composition), output, self.project)
+        return made, output, [self.slides.review_slide(output, ident) for ident in self.ids]
+
+    def refused(self, call, *args) -> slides.Refused:
+        with self.assertRaises(slides.Refused) as refused:
+            call(*args)
+        return refused.exception
+
+    def answer(self, output: Path, made: dict, packets: list, issues=()) -> dict:
+        """Every slide marked as looked at, and every criterion answered as the runner's
+        reviewer answers it."""
+        kept, problems = deck.judged(runner_support.judgements(packets, issues), packets)
+        self.assertEqual(problems, [])
+        self.slides.review_mark(output, made['revision'], [1, 2, 3], deck.MARKED)
+        return self.slides.review_assess(output, made['revision'], deck.assessment(
+            kept, packets, made['assessmentBinding']))
+
+    def test_whether_a_tool_reviews_against_the_design_is_read_from_its_version(self):
+        self.assertTrue(self.slides.reviews())
+        for older in (slides_stand_in.stand_in(design=True), slides_stand_in.stand_in()):
+            self.assertFalse(older.reviews())
+            self.assertEqual([call for call in older.run.calls if call[:1] == ['review']], [],
+                             'nothing is asked by a refusal')
+
+    def test_a_prose_card_reconciliation_gets_a_specific_teaching_finding(self):
+        made, output, packets = self.prepared('composition-prose-cards.json')
+        categories = made['designReview']['categories']
+        [prose] = [entry for entry in categories['visual-teaching'] if entry['kind'] == 'prompt']
+        self.assertEqual((prose['slide'], prose['code'], prose['severity'], prose['objects']),
+                         ('reconcile_loop', 'prose-cards', 'warn',
+                          ['loop_desired', 'loop_observe', 'loop_act']))
+        for words in ('"cycle"', 'Desired state, Observe and Act', 'nothing drawn between them',
+                      'closes the loop'):
+            self.assertIn(words, prose['detail'])
+        self.assertEqual([(entry['slide'], entry['code']) for entry
+                          in categories['design-deviation']],
+                         [('reconcile_loop', 'approved-diagram-not-drawn')])
+        loop = packets[1]['slide']
+        self.assertEqual(loop['proseCards'], ['loop_desired', 'loop_observe', 'loop_act'])
+        self.assertIn('teaching-treatment', [criterion['id'] for criterion in loop['criteria']])
+        told = deck.judging({'O1': 'Explain reconciliation.'}, [
+            {'number': number, 'id': ident} for number, ident in enumerate(self.ids, 1)],
+            packets)
+        self.assertIn('- Prose cards, of which `teaching-treatment` cites at least one: '
+                      '`loop_desired`, `loop_observe`, `loop_act`', told)
+        self.assertIn('(visual-teaching, prose-cards, warn)', told)
+        # A pass that does not look at the cards is refused by the tool, as the worker hears.
+        kept, _ = deck.judged(runner_support.judgements(packets), packets)
+        for check in kept[1]['checks']:
+            check['objects'] = ['reconcile_loop_title']
+        self.slides.review_mark(output, made['revision'], [1, 2, 3], deck.MARKED)
+        refusal = self.refused(self.slides.review_assess, output, made['revision'],
+                               deck.assessment(kept, packets, made['assessmentBinding']))
+        self.assertEqual(refusal.codes, ['input-invalid'])
+        self.assertIn('Answer teaching-treatment on reconcile_loop about the cards it names',
+                      refusal.problems[0])
+        # The reviewer's specific finding is kept with its category.
+        reason = ('The three cards describe a loop in sentences; nothing shows that acting '
+                  'leads back to observing.')
+        result = self.answer(output, made, packets, [{
+            'slide': 'reconcile_loop', 'criterion': 'teaching-treatment', 'severity': 'major',
+            'about': 'drawing', 'reason': reason}])
+        self.assertEqual(result['creativeReviewComplete'], False)
+        found = deck.found(result['unresolved'], deck.judged(runner_support.judgements(
+            packets, [{'slide': 'reconcile_loop', 'criterion': 'teaching-treatment',
+                       'severity': 'major', 'about': 'drawing', 'reason': reason}]),
+            packets)[0], [{'number': 2, 'id': 'reconcile_loop'}])
+        self.assertEqual(found, [{'slide': 'reconcile_loop', 'number': 2,
+                                  'criterion': 'teaching-treatment',
+                                  'category': 'visual-teaching', 'severity': 'major',
+                                  'about': 'drawing', 'note': reason, 'fix': None}])
+
+    def test_a_clear_reconciliation_diagram_passes_and_direct_text_is_accepted(self):
+        made, output, packets = self.prepared()
+        self.assertEqual(made['designReview']['categories']['visual-teaching'], [])
+        self.assertFalse(any('teaching-treatment' in [criterion['id'] for criterion
+                                                      in packet['slide']['criteria']]
+                             for packet in packets))
+        self.assertEqual(packets[2]['slide']['treatment'], 'direct-text')
+        result = self.answer(output, made, packets)
+        self.assertEqual((result['creativeReviewComplete'], result['readyForUserReview'],
+                          result['unresolved']), (True, True, []))
+        self.assertEqual([(entry['slide'], entry['accepted']) for entry
+                          in result['designReview']['categories']['direct-text']],
+                         [('knowledge_check', True)])
+        deck_file = output / 'deck.pptx'
+        self.assertEqual(deck_file.read_bytes()[:4], b'PK\x03\x04')
+        # Prepared again from the same build, the deck and its receipts are kept.
+        again = self.slides.review_prepare(self.root / f'compiled-{self.made}', output,
+                                           self.project)
+        self.assertEqual((again['revision'], again['readyForUserReview']),
+                         (made['revision'], True))
+
+    def test_the_receipts_bind_the_deck_the_pictures_the_build_and_the_design(self):
+        made, output, packets = self.prepared()
+        deck_file = output / 'deck.pptx'
+        kept = deck_file.read_bytes()
+        deck_file.write_bytes(kept + b' ')
+        self.assertEqual(self.refused(self.slides.review_slide, output, self.ids[0]).codes,
+                         ['review-stale'])
+        deck_file.write_bytes(kept)
+        picture = next(output.glob('slide-002-*.png'))
+        shown = picture.read_bytes()
+        picture.write_bytes(shown + b'x')
+        self.assertEqual(self.refused(self.slides.review_slide, output, self.ids[0]).codes,
+                         ['review-stale'])
+        picture.write_bytes(shown)
+        scene = self.root / f'compiled-{self.made}' / 'scene.json'
+        built = scene.read_text()
+        scene.write_text(built.replace('"Cluster"', '"Kluster"'))
+        self.assertEqual(self.refused(self.slides.review_mark, output, made['revision'], [1],
+                                      'looked').codes, ['review-stale'])
+        scene.write_text(built)
+        self.assertEqual(self.slides.review_slide(output, self.ids[1])['revision'],
+                         made['revision'])
+        # The approved design moves on: the review, and a build of the older design, are stale.
+        plan = json.loads((CONTRACT / 'proposal.json').read_text(encoding='utf-8'))
+        plan['slides'][1]['copy']['caveat'] = 'Reconciliation repeats; it never stops.'
+        changed = self.root / 'changed.json'
+        changed.write_text(json.dumps(plan), encoding='utf-8')
+        status = self.slides.design_propose(self.project, changed,
+                                            self.slides.design_status(self.project)['revision'])
+        self.assertEqual(self.refused(self.slides.review_slide, output, self.ids[0]).codes,
+                         ['review-stale'])
+        self.slides.design_respond(self.project, {
+            'questionId': status['question']['id'], 'planRevision': status['revision'],
+            'decision': 'approve', 'feedback': 'Approve these designs'})
+        refusal = self.refused(self.slides.review_prepare, self.root / f'compiled-{self.made}',
+                               self.root / 'again', self.project)
+        self.assertEqual((refusal.codes, refusal.revision),
+                         (['review-stale'], status['revision']))
+
+    def test_what_cannot_be_reviewed_is_refused_as_json(self):
+        section = self.root / 'part.json'
+        part = json.loads((CONTRACT / 'composition.json').read_text(encoding='utf-8'))
+        part['slides'] = part['slides'][:2]
+        section.write_text(json.dumps(part), encoding='utf-8')
+        self.slides.compile(section, self.brand, self.root / 'section', design=self.project,
+                            section=True)
+        refusal = self.refused(self.slides.review_prepare, self.root / 'section',
+                               self.root / 'review-section', self.project)
+        self.assertEqual(refusal.codes, ['input-invalid'])
+        self.assertIn('This build is a section', refusal.problems[0])
+        unbound = self.root / 'unbound.json'
+        made = json.loads((CONTRACT / 'composition.json').read_text(encoding='utf-8'))
+        for slide in made['slides']:
+            slide.pop('intent', None)
+        unbound.write_text(json.dumps(made), encoding='utf-8')
+        self.slides.compile(unbound, self.brand, self.root / 'unbound')
+        self.assertEqual(self.refused(self.slides.review_prepare, self.root / 'unbound',
+                                      self.root / 'review-unbound', self.project).codes,
+                         ['design-missing'])
+        # Without LibreOffice the tool names it, once the deck it would render is written.
+        self.tool.local = False
+        refusal = self.refused(self.slides.review_prepare, self.built(),
+                               self.root / 'review-local', self.project)
+        self.assertEqual((refusal.codes, refusal.found[0]['provider']),
+                         (['renderer-unavailable'], 'libreoffice'))
+        self.assertTrue((self.root / 'review-local' / 'deck.pptx').is_file())
+        self.assertEqual(self.tool.calls[-1][-1], '--json')
 
 
 if __name__ == '__main__':

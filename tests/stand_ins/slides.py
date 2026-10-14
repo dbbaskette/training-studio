@@ -31,6 +31,7 @@ from runner import slides as tool
 from runner.slides import GALLERY, LEAD, MINIMUM, REFERENCES, RELATIONS
 from stand_ins import assets as manifest
 from stand_ins import design as designs
+from stand_ins import review as reviewing
 
 
 def stand_in(design: bool = False, assets: bool = False) -> tool.Slides:
@@ -123,9 +124,12 @@ ASSETS = {'assets add-supplied': ('project', 'alt', 'source', 'restrictions', 'i
                               'slide', 'alt', 'json'),
           'compose compile': ('asset-project',)}
 SUBJECT = ('assets add-supplied', 'assets icon')   # the two that name the file or the icon
+# What `review` takes on the version with the design-bound review of a composition.
+REVIEW = ('compiled', 'output', 'design-project', 'refresh', 'mark', 'revision', 'note',
+          'status', 'assessment', 'slide', 'json')
 CAPABILITIES = ['assets', 'canonical-digests', 'compose-review', 'compose-section',
                 'design-batch', 'design-schema-2', 'json-refusals', 'relative-records']
-FLAGS = ('json', 'section')     # options that take no value
+FLAGS = ('json', 'section', 'refresh')     # options that take no value
 NEWER = ('mode', 'section')     # options 0.13.1 does not parse, for any command
 UNKNOWN = ("Unknown option '--{}'. To specify a positional argument starting with a '-', "
            "place it at the end of the command after '--', as in '-- \"--{}\"")
@@ -1167,6 +1171,24 @@ def _sheet(pictures: list[tuple[int, int, bytearray]]) -> bytes:
     return _png(wide * columns, high * rows, sheet)
 
 
+def _screened(scene: dict, structure: dict) -> list[dict]:
+    """The screens a preview and a review make without looking at a render, each with its
+    slide: prompts to look, not approval."""
+    templated, found = {entry['slide'] for entry in structure.get('layouts') or []}, []
+    for slide in scene['slides']:
+        if slide['id'] in templated:
+            continue
+        words = _words(' '.join(e.get('text', '') for e in slide['elements']))
+        if words > 90:
+            found.append({'slide': slide['id'], 'severity': 'warn', 'code': 'density',
+                          'detail': f'{words} visible text words; inspect reading effort'})
+        if all(e['type'] == 'text' for e in slide['elements']):
+            found.append({'slide': slide['id'], 'severity': 'warn', 'code': 'text-only',
+                          'detail': 'Consider a visual relationship or evidence when it '
+                                    'serves the message'})
+    return found
+
+
 def sketch(slide: dict, prefix: str) -> dict:
     """One content slide of an outline, drawn plainly as a section's composer might: a box
     for each point, arranged so the slide's relation shows, every approved word kept. For
@@ -1255,7 +1277,9 @@ class StandIn:
     status|generate`, `--asset-project` and image nodes named by asset ID, as
     stand_ins/assets.py says. `env` is the environment it looks for an image provider's key
     in, and `made` gives a generated picture's bytes. Without `assets` it knows none of them,
-    and `version` lists nothing.
+    and `version` lists nothing. With `assets` it also plays the design-bound review of a
+    composition, `review --compiled|--slide|--mark|--assessment`, as stand_ins/review.py
+    says; `local` False refuses it as `renderer-unavailable`, as LibreOffice missing does.
     """
 
     def __init__(self):
@@ -1301,6 +1325,8 @@ class StandIn:
             return {'package': 'harness-slides', 'runtimeVersion': MINIMUM,
                     'runtime': '/stand-in/harness-slides',
                     **({'capabilities': list(CAPABILITIES)} if self.assets else {})}
+        if args[:1] == ['review']:
+            return self._review(args[1:])
         name = ' '.join(args[:2])
         known = {**OPTIONS, **{key: () for key in ASSETS if key not in OPTIONS}} \
             if self.assets else OPTIONS
@@ -1867,23 +1893,14 @@ class StandIn:
                 kept.update(uploads=kept['uploads'] + 1, deckSha256=digest)
             remote = {'fileId': file_id, 'url': self._url(file_id)}
         (output / 'deck.pdf').write_bytes(b'%PDF-1.4\n% a stand-in for the render\n')
-        templated = {entry['slide'] for entry in structure.get('layouts') or []}
+        screened = _screened(scene, structure)
         slides, pictures = [], []
         for number, slide in enumerate(scene['slides'], 1):
             pictures.append(_drawn(slide, scene))
             if wanted not in (None, slide['id']):
                 continue
-            # Screens that need no render: prompts to look, not approval.
-            findings, words = [], _words(' '.join(e.get('text', '')
-                                                  for e in slide['elements']))
-            if slide['id'] not in templated and words > 90:
-                findings.append({'severity': 'warn', 'code': 'density', 'detail':
-                                 f'{words} visible text words; inspect reading effort'})
-            if slide['id'] not in templated and all(e['type'] == 'text'
-                                                    for e in slide['elements']):
-                findings.append({'severity': 'warn', 'code': 'text-only', 'detail':
-                                 'Consider a visual relationship or evidence when it '
-                                 'serves the message'})
+            findings = [{key: found[key] for key in ('severity', 'code', 'detail')}
+                        for found in screened if found['slide'] == slide['id']]
             image = output / f'slide-{number:02d}.png'
             image.write_bytes(_png(*pictures[-1]))
             slides.append({'id': slide['id'], 'number': number, 'title': slide['title'],
@@ -2029,6 +2046,60 @@ class StandIn:
                              'slide': where if where in slides else owner.get(where),
                              'asset': icon.group(1) if icon else None})
         return designs.refusal(designs.Refusal(message, *problems), revision)
+
+    # --- the design-bound review of a composition ---
+
+    def _review(self, args: list[str]):
+        """review --compiled, --slide, --mark or --assessment, played by stand_ins/review.py.
+        With --json a refusal is a JSON object on standard output, with the design revision
+        of the design project, or for an operation on a review, of the review."""
+        options, rest = {}, list(args)
+        while rest:
+            key = rest.pop(0).removeprefix('--')
+            if key not in REVIEW or not self.assets:
+                raise _Said(f'--{key} is not valid for this command')
+            options[key] = True if key in FLAGS else rest.pop(0) if rest else None
+        if 'review' in self.fails:
+            raise _Said(self.fails['review'])
+        output = options.get('output')
+        review = reviewing.Review(output or '.', deck=self._deck,
+                                  picture=lambda slide, scene: _png(*_drawn(slide, scene)),
+                                  screens=_screened, local=self.local)
+        try:
+            later = [key for key in ('mark', 'assessment', 'slide') if options.get(key)]
+            if later and (len(later) > 1 or any(options.get(key) for key in (
+                    'compiled', 'refresh', 'design-project'))):
+                raise ValueError('Prepare and mark are separate operations')
+            if options.get('mark'):
+                numbers = [int(part) if part.strip().isdigit() else None
+                           for part in options['mark'].split(',')]
+                return review.mark(options.get('revision'), numbers, options.get('note'),
+                                   options.get('status') or 'reviewed')
+            if options.get('assessment'):
+                return review.assess(options.get('revision'), _load(options['assessment']))
+            if options.get('slide'):
+                return review.inspect(options['slide'])
+            if not output or not options.get('compiled'):
+                raise designs.Refusal('Provide --output and exactly one of --file, --previews or '
+                                      '--compiled', {'code': 'input-invalid'})
+            if not options.get('design-project'):
+                raise designs.Refusal('--compiled needs --design-project: a composition review '
+                                      'is checked against the approved design',
+                                      {'code': 'input-invalid'})
+            return review.prepare(options['compiled'], options['design-project'],
+                                  bool(options.get('refresh')))
+        except (designs.Refusal, ValueError, KeyError, TypeError) as refused:
+            if not options.get('json'):
+                raise _Said(str(refused))
+            if options.get('design-project'):
+                revision = designs.Session(options['design-project']).revision()
+            else:
+                try:
+                    revision = json.loads((Path(output) / 'review.json').read_text(
+                        encoding='utf-8')).get('designRevision')
+                except (OSError, ValueError, TypeError):
+                    revision = None
+            return _Blocked(designs.refusal(refused, revision))
 
     # --- the design session ---
 

@@ -17,6 +17,9 @@ What a caller needs to know
     briefs.guidance('deck-section', design=True)   drawing it from an approved design
     briefs.guidance('deck-section', design=True, assets=True)   with the deck's assets
     briefs.guidance('deck-review')              reviewing a deck someone else drew
+    briefs.guidance('deck-review', design=True)    against its approved design
+    briefs.guidance('deck-section', repair=True, design=True, beyond=True)
+                                                naming what drawing cannot put right
     briefs.guidance('document', naming=True)    for a training with a brand: with its names
     briefs.mode('roleplay')                     the core's own reference for one mode
 
@@ -35,7 +38,11 @@ What a caller needs to know
 - A section of a deck drawn from an approved design is told so where it is told what is
   its own: the parts of deck-section-design.md replace the parts of the same heading,
   and the rest is as for a deck without one. One whose slides tool keeps the deck's
-  assets is also told how to list and place them, before how to hand back.
+  assets is also told how to list and place them, before how to hand back. Drawn again
+  after a review against the design, it is told how to name a slide that only another
+  concept or other words would put right.
+- A deck reviewed against its approved design has its reviewer told so in the same way: the
+  parts of deck-review-design.md replace the parts of deck-review.md of the same heading.
 - A deck's briefs have no example. The format of an outline and of a section is the slides
   tool's own, and goes to the worker as an input, with the brand's limits in it.
 - The writers of a guide, a brief and a scenario are told, when the training has a brand,
@@ -57,7 +64,8 @@ JOBS = ('research-plan', 'research-question', 'blueprint', 'document', 'brief', 
         'yoodli', 'deck-outline', 'deck-section', 'deck-review')
 NAMED = ('document', 'brief', 'scenario')   # the writers a brand's naming rules are given to
 HAND_BACK = '\n## Hand back\n'
-DESIGNED = {'deck-outline': 'deck-design', 'deck-section': 'deck-section-design'}
+DESIGNED = {'deck-outline': 'deck-design', 'deck-section': 'deck-section-design',
+            'deck-review': 'deck-review-design'}
 EXAMPLES = Path('assets') / 'examples'
 EXAMPLE = {'blueprint': 'blueprint.md', 'document': 'document.md', 'brief': '{kind}-brief.md',
            'scenario': 'scenario.md', 'yoodli': 'yoodli.md'}
@@ -92,12 +100,14 @@ def mode(name: str) -> str:
 
 def guidance(job: str, level: str | None = None, kind: str | None = None,
              naming: bool = False, repair: bool = False, design: bool = False,
-             assets: bool = False) -> str:
+             assets: bool = False, beyond: bool = False) -> str:
     """The guidance for one kind of job, whole. `naming` says the job has the brand's
     naming rules among its inputs, `repair` that a section is drawn again, and `design`
     that the writer of what a deck says proposes how each slide is drawn too, or that a
     section is drawn from the design the person approved. `assets` says that section's
-    tool keeps the deck's assets, which it may list and ask for."""
+    tool keeps the deck's assets, which it may list and ask for, and `beyond` that it is
+    drawn again after a review against that design, and may name what drawing cannot put
+    right. A deck's review with `design` is a review against the approved design."""
     if job not in JOBS:
         raise WorkspaceError('There is a brief for: ' + ', '.join(JOBS) + '.')
     if level is not None and (job not in LEVELLED or level not in workspace.LEVELS):
@@ -108,17 +118,20 @@ def guidance(job: str, level: str | None = None, kind: str | None = None,
                              + ', '.join(workspace.BRIEF_KINDS) + '.')
     if (naming and job not in NAMED) or (repair and job != 'deck-section') \
             or (design and job not in DESIGNED) or (assets and not (design
-                                                                     and job == 'deck-section')):
+                                                                     and job == 'deck-section')) \
+            or (beyond and not (design and repair)):
         raise WorkspaceError('Naming rules are given to the writers of a guide, a brief and '
                              'a scenario, only a section of a deck is drawn again, and only '
                              "a deck's outline and its sections are told of its design, and "
-                             'only a section drawn from that design of its assets.')
+                             'only a section drawn from that design of its assets, and '
+                             'only one drawn again from it of what drawing cannot put right.')
     text = read(job)
     for added in ((['naming'] if naming else []) + (['deck-repair'] if repair else [])
                   + (['deck-design'] if design and job == 'deck-outline' else [])
-                  + (['deck-section-assets'] if assets else [])):
+                  + (['deck-section-assets'] if assets else [])
+                  + (['deck-repair-beyond'] if beyond else [])):
         text = text.replace(HAND_BACK, f'\n{read(added)}{HAND_BACK}', 1)
-    if design and job == 'deck-section':
+    if design and job in ('deck-section', 'deck-review'):
         text = _replaced(text, read(DESIGNED[job]))
     if level is not None:
         text += '\n' + read(LEVELLED[job]).replace('{level}', level)

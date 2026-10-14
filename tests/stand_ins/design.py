@@ -83,6 +83,10 @@ CODES = {
                                'add-supplied'),
     'provider-failed': (True, 'Check Google access with drive check, or preview with '
                               '--renderer local'),
+    'review-stale': (True, 'Prepare the review again from the current build and design, '
+                           'then inspect and assess it again'),
+    'renderer-unavailable': (True, 'Install the named tool, or preview with the other '
+                                   'renderer'),
     'output-exists': (True, 'Choose a new output directory'),
     'input-missing': (True, 'Check the path given on the command line'),
     'input-invalid': (True, 'Correct the input named in the detail and retry'),
@@ -100,6 +104,11 @@ KNOWN = ((re.compile(r'Question or design revision changed|Design revision chang
           'design-state-invalid'),
          (re.compile(r'Record the actual user response|Unknown design response|Autonomy is '
                      r'chosen|Only explicit whole-plan'), 'invalid-response'),
+         (re.compile(r'Review revision changed|Assess the current creative review revision'),
+          'review-stale'),
+         (re.compile(r'Critique needs a judgment|Critique must|Use slide-specific evidence|'
+                     r'Answer teaching-treatment|Provide revision, slide numbers'),
+          'input-invalid'),
          (re.compile(r"is not in the project's asset manifest|needs the project that records "
                      r"it|resolves through the project's asset manifest"), 'asset-unresolved'),
          (re.compile(r'is missing from the project'), 'asset-file-missing'),

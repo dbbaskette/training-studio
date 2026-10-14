@@ -19,7 +19,12 @@ What a caller needs to know
     deck.placed(section, recorded)              # the recorded assets a section draws
     deck.icon_for(ref, found)                   # an icon's library ID, from a search for it
     deck.checked(finding, slides)               # one finding of a review, or why it is wrong
+    deck.judging(objectives, slides, packets)   # a review against the design, as it is asked
+    kept, problems = deck.judged(given, packets)    # a reviewer's answer to every criterion
+    deck.assessment(kept, packets, binding)     # that answer, as the slides tool takes it
+    deck.found(unresolved, kept, slides)        # what it leaves unresolved, as findings
     deck.to_repair(findings, sections)          # the sections a review sends back
+    deck.to_outline(findings)                   # what only a change at the outline puts right
     deck.before(slides)                         # what a deck of this size has cost before
 
 - Nothing here starts anything, reads a training or knows about runs. Each function takes
@@ -61,6 +66,16 @@ What a caller needs to know
 - QUESTIONS are the eight the slides tool asks of every slide, numbered as it numbers
   them, in the runner's words. The tool's own are not handed to a caller, so a change to
   them there has to be made here too.
+- A deck drawn from its approved design, on a slides tool that reviews a build against it,
+  is reviewed by that tool's own assessment instead: `packets` are what it gives of each
+  slide (`review --slide`), its criteria, the objects a judgement may cite and what its own
+  screens point at. The reviewer answers every criterion of every slide, and says of each
+  that is not a pass how grave it is and whether it is about `drawing`, which keeps the
+  approved concept and wording, about `content`, or about the visual `concept`. Nothing
+  here judges a visual: `judged` checks only that the answer is whole, and the tool checks
+  the rest. What the tool leaves unresolved are the findings, each with its `criterion` and
+  its `category` as the tool files it. A grave one about content or concept is not drawn
+  again: it goes back to the person, at the outline.
 """
 from __future__ import annotations
 
@@ -86,6 +101,16 @@ NAMED = {'cover': ('title', 'cover'), 'section': ('section', 'divider'),
 SEVERITIES = ('critical', 'major', 'minor')
 GRAVE = SEVERITIES[:2]
 ABOUT = ('drawing', 'content')
+JUDGED = (*ABOUT, 'concept')    # what a finding is about, in a review against the design
+STATUSES = ('pass', 'issue', 'uncertain')
+# The slides tool's five categories of a review against the design, as a person reads them.
+CATEGORIES = {'asset-failure': 'The pictures and icons it was approved with',
+              'design-deviation': 'How it departs from the approved design',
+              'visual-teaching': 'Whether the visual teaches',
+              'fit-defect': 'How it fits', 'direct-text': 'Direct text by decision'}
+ABOUT_WORDS = {'drawing': 'how it is drawn', 'content': 'what it says',
+               'concept': 'the visual concept it was approved with'}
+MARKED = 'Looked at at full size, slide by slide, by a reviewer that drew none of the deck.'
 NOTE = 12               # the shortest note the slides tool takes for a finding
 HOUSE = (
     'Equals share one size and weight. Never set one of several peers larger, bolder or in '
@@ -891,9 +916,14 @@ def told(findings, slides: list[dict]) -> str:
         lines += [f"## Slide {slide['number']}: `{slide['id']}`, \"{slide['title']}\"", '']
         for finding in mine:
             what = ('This is about what the slide says, which is not yours to change: '
-                    'leave the words as they are. ' if finding['about'] == ABOUT[1] else '')
-            lines.append(f"- **{finding['severity']}**, \"{QUESTIONS[finding['question'] - 1]}"
-                         f"\" {what}{finding['note']}"
+                    'leave the words as they are. ' if finding['about'] == ABOUT[1] else
+                    'This would need another visual concept than the one approved, which is '
+                    'not yours to change: draw within the approved design. '
+                    if finding['about'] == JUDGED[2] else '')
+            asked_as = (f"{CATEGORIES.get(finding.get('category'), 'Found')}, "
+                        f"`{finding['criterion']}`:" if 'criterion' in finding else
+                        f"\"{QUESTIONS[finding['question'] - 1]}\"")
+            lines.append(f"- **{finding['severity']}**, {asked_as} {what}{finding['note']}"
                          + (f" Suggested: {finding['fix']}" if finding['fix'] else ''))
         lines.append('')
     return '\n'.join(lines)
@@ -916,9 +946,161 @@ def asked(objectives: dict, slides: list[dict], earlier=None) -> str:
         lines += ['', '## What an earlier review found', '',
                   'These slides were drawn again since. Look for each of these, and where '
                   'one is not put right, record it again.', '']
-        lines += [f"- Slide `{finding['slide']}`, {finding['severity']}, question "
-                  f"{finding['question']}: {finding['note']}" for finding in ordered(earlier)]
+        lines += [f"- Slide `{finding['slide']}`, {finding['severity']}, {_named(finding)}: "
+                  f"{finding['note']}" for finding in ordered(earlier)]
     return '\n'.join(lines) + '\n'
+
+
+def _named(finding: dict) -> str:
+    """Which question or criterion a finding answered, as an earlier review is listed."""
+    return f"`{finding['criterion']}`" if 'criterion' in finding \
+        else f"question {finding['question']}"
+
+
+def to_outline(findings) -> list[dict]:
+    """The grave findings of a review against the design that drawing again cannot put
+    right: those about what a slide says, or about the visual concept it was approved with."""
+    return [finding for finding in grave(findings) if finding['about'] in JUDGED[1:]]
+
+
+# --- a review against the approved design ------------------------------------------------
+
+def judging(objectives: dict, slides: list[dict], packets: list[dict], earlier=None) -> str:
+    """What a reviewer is asked of a deck reviewed against its approved design: the slides
+    tool's criteria, how grave a "no" is and what it can be about, each slide with what the
+    tool gives of it, the objectives, and on a later round what was found before. `packets`
+    are what `review --slide` gave, in slide order."""
+    asked = {criterion['id']: criterion['question'] for packet in packets
+             for criterion in packet['slide']['criteria']}
+    lines = ['# The review', '', 'The slides tool rendered this deck and prepared its review '
+             'against the design the person approved. Answer every criterion it lists for a '
+             'slide, from what you see on that slide.', '', '## The criteria', '']
+    lines += [f'- `{ident}`: {question}' for ident, question in asked.items()]
+    lines += ['', '## How grave a "no" is', '',
+              '- `critical`: the slide misleads, cannot be read, or its point cannot be found.',
+              '- `major`: the slide works but is clearly weaker than it should be.',
+              '- `minor`: a small flaw.', '', '## What a "no" is about', '',
+              '- `drawing`: drawing the slide again puts it right, keeping the visual concept '
+              'and the words that were approved.',
+              '- `content`: only a change to what the slide says, its words or its facts, puts '
+              'it right.',
+              '- `concept`: the approved visual concept itself does not teach the claim, and '
+              'only another one would.', '', '## The slides']
+    numbers = {slide['id']: slide['number'] for slide in slides}
+    for packet in packets:
+        prompt = packet['slide']
+        intent = prompt.get('intent') or {}
+        lines += ['', f"### Slide {numbers.get(prompt['slide'], '?')}, `{prompt['slide']}`: "
+                      f"\"{prompt.get('title')}\"", '',
+                  f"- Treatment: {prompt.get('treatment')}"
+                  + (', direct text by decision: no picture is wanted'
+                     if prompt.get('treatment') == 'direct-text' else ''),
+                  f"- Claim: {intent.get('takeaway')}",
+                  f"- Relationship: {intent.get('relationship')}",
+                  f"- Approved composition: {prompt.get('approvedComposition')}",
+                  '- Criteria: ' + ', '.join(f"`{criterion['id']}`"
+                                             for criterion in prompt['criteria'])]
+        texts = {entry['object']: entry['text'] for entry in prompt.get('expectedText') or ()}
+        lines.append('- Objects you may cite: ' + '; '.join(
+            f'`{ident}`' + (f' {_json(texts[ident])}' if ident in texts else '')
+            for ident in prompt['objects']))
+        if prompt.get('proseCards'):
+            lines.append('- Prose cards, of which `teaching-treatment` cites at least one: '
+                         + ', '.join(f'`{ident}`' for ident in prompt['proseCards']))
+        lines += [f"- The slides tool points at this ({found.get('category')}, "
+                  f"{found['code']}, {found['severity']}): {found['detail']}"
+                  for found in packet.get('findings') or ()]
+    lines += ['', '## The objectives', '']
+    lines += [f'- {ident}: {text}' for ident, text in objectives.items()]
+    if earlier:
+        lines += ['', '## What an earlier review found', '',
+                  'These slides were drawn again since. Look for each of these, and where '
+                  'one is not put right, answer its criterion so again.', '']
+        lines += [f"- Slide `{finding['slide']}`, {finding['severity']}, {_named(finding)}: "
+                  f"{finding['note']}" for finding in ordered(earlier)]
+    return '\n'.join(lines) + '\n'
+
+
+def judged(given, packets: list[dict]) -> tuple[list[dict], list[str]]:
+    """A reviewer's answer to a review against the design, as it is kept, and what is wrong
+    with it: one entry for every slide, by its ID, answering each of its criteria once, with
+    a judgement, a reason and the objects it cites; and for each that is not a pass, how
+    grave it is and what it is about. Whether the answer is right is the slides tool's to
+    check, and the person's to judge."""
+    if not isinstance(given, list) or not all(isinstance(entry, dict) for entry in given):
+        return [], ['`slides` is a list: one entry for each slide, `{"slide", "checks"}`.']
+    wanted = [packet['slide']['slide'] for packet in packets]
+    if [entry.get('slide') for entry in given] != wanted:
+        return [], ['Answer every slide once, in order, by its ID: ' + ', '.join(wanted) + '.']
+    kept, problems = [], []
+    for entry, packet in zip(given, packets):
+        prompt, ident = packet['slide'], entry['slide']
+        criteria = [criterion['id'] for criterion in prompt['criteria']]
+        checks = entry.get('checks')
+        if not isinstance(checks, list) or sorted(
+                str(check.get('criterion')) if isinstance(check, dict) else ''
+                for check in checks) != sorted(criteria):
+            problems.append(f'{ident}: answer each of these criteria once: '
+                            + ', '.join(criteria) + '.')
+            continue
+        mine = []
+        for check in sorted(checks, key=lambda check: criteria.index(check['criterion'])):
+            where, status = f"{ident}, `{check['criterion']}`", check.get('status')
+            objects, reason = check.get('objects'), check.get('reason')
+            if status not in STATUSES:
+                problems.append(f'{where}: `status` is one of: ' + ', '.join(STATUSES) + '.')
+            if not isinstance(reason, str) or len(reason.strip()) < NOTE:
+                problems.append(f'{where}: `reason` says, for this slide, why.')
+            if not isinstance(objects, list) or not objects \
+                    or any(name not in prompt['objects'] for name in objects):
+                problems.append(f"{where}: `objects` names what you judged, from this slide's "
+                                'objects: ' + ', '.join(prompt['objects']) + '.')
+            made = {'criterion': check['criterion'], 'status': status,
+                    'reason': reason.strip() if isinstance(reason, str) else reason,
+                    'objects': objects}
+            if status in STATUSES[1:]:
+                fix = check.get('fix')
+                if check.get('severity') not in SEVERITIES:
+                    problems.append(f'{where}: `severity` is one of: '
+                                    + ', '.join(SEVERITIES) + '.')
+                if check.get('about') not in JUDGED:
+                    problems.append(f'{where}: `about` is one of: ' + ', '.join(JUDGED) + '.')
+                made.update(severity=check.get('severity'), about=check.get('about'),
+                            fix=fix.strip() if isinstance(fix, str) and fix.strip() else None)
+            mine.append(made)
+        kept.append({'slide': ident, 'checks': mine})
+    return kept, problems
+
+
+def assessment(kept: list[dict], packets: list[dict], binding: dict) -> dict:
+    """A reviewer's answer as the slides tool takes an assessment: bound to the review it
+    answers, each judgement with the sources the slide keeps."""
+    sources = {packet['slide']['slide']: packet['slide']['sources'] for packet in packets}
+    return {**binding, 'slides': [
+        {'id': entry['slide'], 'checks': [
+            {**{key: check[key] for key in ('criterion', 'status', 'reason', 'objects')},
+             'sources': list(sources[entry['slide']])} for check in entry['checks']]}
+        for entry in kept]}
+
+
+def found(unresolved, kept: list[dict], slides: list[dict]) -> list[dict]:
+    """What the slides tool left unresolved, as findings: each judgement that was not a
+    pass, with how grave the reviewer said it is and what it is about, and each failure the
+    build itself showed, such as an approved asset that is not there, which is critical and
+    about drawing."""
+    numbers = {slide['id']: slide['number'] for slide in slides}
+    judged_as = {(entry['slide'], check['criterion'], check['reason']): check
+                 for entry in kept for check in entry['checks'] if check['status'] != 'pass'}
+    made = []
+    for entry in unresolved or ():
+        mine = judged_as.get((entry.get('slide'), entry.get('criterion'), entry.get('detail')))
+        made.append({'slide': entry.get('slide'), 'number': numbers.get(entry.get('slide')),
+                     'criterion': entry.get('criterion'), 'category': entry.get('category'),
+                     'severity': mine['severity'] if mine else SEVERITIES[0],
+                     'about': mine['about'] if mine else ABOUT[0],
+                     'note': str(entry.get('detail') or '').strip(),
+                     'fix': mine['fix'] if mine else None})
+    return [finding for finding in made if finding['number'] is not None]
 
 
 def link(made: dict, title: str, rendered: str) -> str:

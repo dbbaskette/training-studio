@@ -2303,6 +2303,8 @@ DECK_FIELDS = {'level', 'sections', 'pictures', 'before'}   # and `assets`, wher
 ASSET_FIELDS = {'asset', 'slide', 'kind', 'ref', 'concept', 'state', 'alt', 'supply'}
 SECTION_FIELDS = {'id', 'state', 'previews', 'slides', 'titles'}
 FINDING_FIELDS = {'slide', 'number', 'severity', 'about', 'note', 'fix'}
+# A finding of a review against the approved design adds where the slides tool files it.
+JUDGED_FIELDS = FINDING_FIELDS | {'category', 'criterion'}
 STEP_FIELDS = {'id', 'label', 'kind', 'status', 'attempts', 'seconds', 'dollars', 'error'}
 DOCUMENT_FIELDS = {'name', 'bytes', 'readable', 'problem'}
 COPY_FIELDS = {'artifact', 'label', 'kind', 'state', 'link', 'problem'}
@@ -4860,6 +4862,36 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         # Leaving the gate lets go of every picture it held.
         self.assertEqual((shots['left']['held'], shots['left']['pictures']), ([], []))
         self.assertEqual(sorted(result['released']), sorted(set(fetched)))
+
+    def test_a_review_against_the_design_shows_its_findings_by_category(self):
+        def judged(number, severity, about, category, criterion, note) -> dict:
+            finding = {**a_finding(number, severity, about, note, ''), 'fix': None,
+                       'category': category, 'criterion': criterion}
+            assert set(finding) == JUDGED_FIELDS, finding
+            return finding
+
+        cards = 'The three cards describe a loop; nothing shows acting leads back to observing.'
+        wraps = 'The second label wraps onto three lines.'
+        boxes = 'Boxes cannot show why one instance loses capacity.'
+        self.at_the_decks_gate()
+        answers = self.a_decks_gate(review={'round': 1, 'findings': [
+            judged(3, 'minor', 'drawing', 'fit-defect', 'technical-fit', wraps),
+            judged(2, 'major', 'drawing', 'visual-teaching', 'teaching-treatment', cards),
+            judged(3, 'major', 'concept', 'visual-teaching', 'explanatory-value', boxes)],
+            'direct': [{'slide': 's1', 'number': 1, 'accepted': True},
+                       {'slide': 's4', 'number': 4, 'accepted': True}]})
+        result = self.run_page(answers, [{'click': 'Review the slide deck'},
+                                         {'snapshot': 'gate'}], unwatched=True)
+        text = result['snapshots']['gate']['text']
+        # Filed as the slides tool files them, its own order, the gravest first in each.
+        order = ['Whether the visual teaches', cards, boxes, 'How it fits', wraps]
+        self.assertEqual(sorted(order, key=text.index), order)
+        self.assertIn('MajorSlide 3About how it was approved to teach', text)
+        for shown in ('“About how it was approved to teach” is a finding that only another '
+                      'visual concept', 'Drawn as text by decision, and accepted so by the '
+                      'review: slides 1 and 4.'):
+            self.assertIn(shown, text)
+        self.assertNotIn('About what it says', text)
 
     def test_a_deck_with_nothing_left_to_raise_says_so_and_no_more(self):
         self.at_the_decks_gate()
