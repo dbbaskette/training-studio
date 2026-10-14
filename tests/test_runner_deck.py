@@ -1912,6 +1912,9 @@ class JudgedTests(DeckCase):
         root = self.begin()
         self.drawn(root)
         self.slides.judges = False
+        # The sections are drawn side by side, so the other one may not have used all its
+        # failures before the training stopped. Whatever is left must not fail the retry.
+        self.workers.queued.pop('section', None)
         view = self.engine.act(root, 'retry')
         self.assertEqual(view['problem']['what'], self.engines.REVIEW_GONE)
         self.assertEqual(self.called('review_prepare'), [])
@@ -2403,6 +2406,9 @@ class CompatibleTests(DeckCase):
         self.slides.have['local'] = True
         self.slides.listed = set(slides_stand_in.CURRENT)
         self.slides.calls.clear()
+        # The sections are drawn side by side, so the other one may not have used all its
+        # failures before the training stopped. Whatever is left must not fail the retry.
+        self.workers.queued.pop('section', None)
         self.engine.look_again()
         self.assertEqual(self.record(root)['deck'][''], kept, 'nothing changes by itself')
         view = self.engine.act(root, 'retry')
