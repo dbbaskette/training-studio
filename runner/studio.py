@@ -93,7 +93,7 @@ def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show) -> int:
                   flush=True)
             if out.isatty() and getattr(args, 'open', False):
                 opener(server.url)   # the person's own terminal, and their own browser
-            engine.resume()
+            engine.resume(wait=False)   # the page answers while the workspace is fetched
             server.serve()
         except KeyboardInterrupt:
             pass

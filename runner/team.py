@@ -240,14 +240,28 @@ def published(space: gitstate.Workspace) -> list[dict]:
     for entry in _tags(space):
         if entry['revision'] > latest.get(entry['id'], {'revision': 0})['revision']:
             latest[entry['id']] = entry
+    same = _unchanged(space, list(latest.values()))
     return sorted(({'path': str(space.training(entry['id'])),
                     **{key: entry[key] for key in ('id', 'title', 'revision', 'at', 'by',
                                                    'ready')},
-                    'current': hub.passes(space.repo, 'diff', '--quiet',
-                                          f"refs/tags/{entry['tag']}", 'HEAD', '--',
-                                          f"{space.folder}/{entry['id']}")}
+                    'current': entry['tag'] in same}
                    for entry in latest.values()),
                   key=lambda entry: str(entry['at']), reverse=True)
+
+
+def _unchanged(space: gitstate.Workspace, entries: list[dict]) -> set[str]:
+    """The tags whose training's folder is the same at the tag and at HEAD. One git
+    command for them all: a folder is the same where git names the same tree for it."""
+    if not entries:
+        return set()
+    asked = ''.join(f"refs/tags/{entry['tag']}:{space.folder}/{entry['id']}\n"
+                    f"HEAD:{space.folder}/{entry['id']}\n" for entry in entries)
+    done = hub.run(space.repo, 'cat-file', '--batch-check', input=asked)
+    found = done.stdout.splitlines() if done.returncode == 0 else []
+    if len(found) != 2 * len(entries):
+        return set()
+    return {entry['tag'] for entry, tagged, now in zip(entries, found[::2], found[1::2])
+            if tagged == now}   # a missing one is named as it was asked, so never matches
 
 
 def fetch_tags(space: gitstate.Workspace) -> bool:
@@ -256,7 +270,9 @@ def fetch_tags(space: gitstate.Workspace) -> bool:
     if space.address is None:
         return False
     spec = f'refs/tags/{_prefix(space)}/*'
-    return hub.passes(space.repo, 'fetch', '--quiet', '--no-tags', 'origin', f'{spec}:{spec}')
+    with gitstate.ASKING:
+        return hub.passes(space.repo, 'fetch', '--quiet', '--no-tags', 'origin',
+                          f'{spec}:{spec}')
 
 
 def send_tags(space: gitstate.Workspace, only: str | None = None) -> str | None:
@@ -265,7 +281,8 @@ def send_tags(space: gitstate.Workspace, only: str | None = None) -> str | None:
     if space.address is None:
         return 'this workspace has no shared repository'
     spec = f'refs/tags/{only}' if only else f'refs/tags/{_prefix(space)}/*'
-    sent = hub.run(space.repo, 'push', '--quiet', 'origin', f'{spec}:{spec}')
+    with gitstate.ASKING:
+        sent = hub.run(space.repo, 'push', '--quiet', 'origin', f'{spec}:{spec}')
     return None if sent.returncode == 0 else hub.reason(sent)
 
 

@@ -2,6 +2,7 @@
 
 Bare repositories in temporary folders stand in for a team's remote. No network.
 """
+import contextlib
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ from unittest import mock
 import helpers
 import runner_support  # noqa: F401
 
+import hub
 from runner import gitstate
 from workspace import WorkspaceError
 
@@ -30,6 +32,32 @@ def git(repo: Path, *args: str) -> str:
                            'user.email=tool@example.com', *args], cwd=repo,
                           capture_output=True, text=True, check=True)
     return done.stdout.strip()
+
+
+class Held:
+    """A lock that says whether it is held, for a test to look at."""
+
+    def __init__(self):
+        self.depth = 0
+
+    def __enter__(self):
+        self.depth += 1
+
+    def __exit__(self, *failure):
+        self.depth -= 1
+
+
+@contextlib.contextmanager
+def asked(held: Held | None = None):
+    """Every git command the runner runs inside, by name, with whether `held` was held."""
+    ran, real = [], hub.run
+
+    def spy(repo, *args, **named):
+        ran.append((hub.subcommand(args), bool(held and held.depth)))
+        return real(repo, *args, **named)
+
+    with mock.patch.object(hub, 'run', spy):
+        yield ran
 
 
 class WorkspaceCase(unittest.TestCase):
@@ -447,6 +475,16 @@ class CommitTests(WorkspaceCase):
         self.assertEqual(git(workspace.repo, 'rev-list', '--count', 'HEAD'), '2')
         self.assertEqual(git(self.remote, 'for-each-ref'), '')
 
+    def test_a_commit_is_two_git_commands_and_asks_more_only_when_nothing_changed(self):
+        workspace = self.join()
+        self.write(workspace, 'rolling-restarts/intake.md')
+        with asked() as ran:
+            self.assertTrue(gitstate.commit(workspace, 'Keep the intake'))
+        self.assertEqual([name for name, _ in ran], ['add', 'commit'])
+        with asked() as ran:
+            self.assertFalse(gitstate.commit(workspace, 'Nothing new'))
+        self.assertEqual([name for name, _ in ran], ['add', 'commit', 'diff'])
+
     def test_a_change_outside_the_folder_is_never_part_of_a_commit(self):
         self.other_tool({'hub.json': THEIR_HUB, 'README.md': THEIR_README,
                          'decks/outline.md': b'One.\n'})
@@ -687,6 +725,23 @@ class SyncTests(WorkspaceCase):
         (self.base / 'unplugged.git').rename(self.remote)
         self.assertTrue(gitstate.sync(workspace)['shared'])
 
+    @unittest.skipIf(os.name == 'nt', 'an ssh on PATH is POSIX here')
+    def test_a_host_ssh_does_not_know_yet_says_how_to_trust_it(self):
+        workspace = self.join()
+        tools = self.base / 'bin'
+        tools.mkdir()
+        ssh = tools / 'ssh'
+        ssh.write_text('#!/bin/sh\necho "Host key verification failed." >&2\nexit 255\n')
+        ssh.chmod(0o755)
+        os.environ['PATH'] = f"{tools}{os.pathsep}{os.environ['PATH']}"
+        for name in ('GIT_SSH_COMMAND', 'GIT_SSH'):
+            os.environ.pop(name, None)
+        git(workspace.repo, 'remote', 'set-url', 'origin', 'ssh://example.invalid/team.git')
+        report = gitstate.sync(workspace)
+        self.assertEqual((report['shared'], report['reached']), (False, False))
+        self.assertIn('could not be reached', report['notice'])
+        self.assertTrue(report['notice'].endswith(gitstate.TRUST), report['notice'])
+
     def test_a_remote_that_refuses_keeps_the_work_here_and_says_so(self):
         workspace = self.join()
         hook = self.remote / 'hooks' / 'pre-receive'
@@ -718,6 +773,93 @@ class SyncTests(WorkspaceCase):
         self.assertEqual(gitstate.changed(blake), ['trainings/blue-green/blueprint.md',
                                                    'trainings/blue-green/intake.md'])
         self.assertEqual(git(blake.repo, 'stash', 'list'), '')
+
+    def test_the_lock_is_held_for_this_copy_and_never_while_the_remote_is_asked(self):
+        alex, blake = self.two_people()
+        self.be('blake')
+        self.write(blake, 'blue-green/intake.md')
+        gitstate.commit(blake, 'Blake: keep the intake')
+        gitstate.sync(blake)
+        self.be('alex')
+        self.write(alex, 'rolling-restarts/intake.md')
+        gitstate.commit(alex, 'Alex: keep the intake')
+        held, learned = Held(), []
+        with asked(held) as ran:
+            report = gitstate.sync(alex, before=lambda at: learned.append(held.depth), held=held)
+        self.assertEqual((report['shared'], report['received']), (True, 1))
+        self.assertEqual(learned, [1], 'what came in is learned while the lock is held')
+        holding = {}
+        for name, was in ran:
+            holding.setdefault(name, set()).add(was)
+        self.assertEqual({name: holding[name] for name in ('fetch', 'push', 'rebase')},
+                         {'fetch': {False}, 'push': {False}, 'rebase': {True}})
+        self.assertEqual(holding['rev-list'], {True})
+        self.assertEqual(held.depth, 0)
+
+    def test_what_is_replayed_on_is_what_was_learned_from_whatever_fetch_comes_between(self):
+        """Another share's fetch can move the remote's ref while this one holds the lock.
+        The replay stays on the commit `before` was shown, so nothing comes in unlearned."""
+        workspace = self.join()
+        gitstate.sync(workspace)
+        self.other_tool({'first.md': b'First.\n'}, 'First')
+        first = self.remote_head()
+        self.write(workspace, 'rolling-restarts/intake.md')
+        gitstate.commit(workspace, 'Keep the intake')
+        shown, second = [], []
+
+        def before(*at):
+            shown.append(at[0] if at else None)
+            if len(shown) == 1:   # meanwhile a teammate pushes, and another share fetches it
+                self.other_tool({'second.md': b'Second.\n'}, 'Second')
+                second.append(self.remote_head())
+                git(workspace.repo, 'fetch', '--quiet', 'origin')
+
+        report = gitstate.sync(workspace, before=before)
+        self.assertEqual((report['shared'], report['received']), (True, 2))
+        self.assertEqual(shown, [first, *second],
+                         'the second commit was learned from before it was replayed on')
+        self.assertEqual(git(workspace.repo, 'log', '-1', '--format=%s'), 'Keep the intake')
+
+    def test_a_share_counts_the_commits_once_and_learns_only_when_something_came_in(self):
+        workspace = self.join()
+        gitstate.sync(workspace)
+        self.write(workspace, 'rolling-restarts/intake.md')
+        gitstate.commit(workspace, 'Keep the intake')
+        learned = []
+        with asked() as ran:
+            report = gitstate.sync(workspace, before=lambda at: learned.append(True))
+        self.assertEqual((report['shared'], report['unshared']), (True, 0))
+        names = [name for name, _ in ran]
+        self.assertEqual((names.count('rev-list'), names.count('push')), (1, 1))
+        self.assertEqual(learned, [], 'nothing came in, so there was nothing to learn')
+        with asked() as ran:
+            self.assertTrue(gitstate.sync(workspace)['shared'])
+        names = [name for name, _ in ran]
+        self.assertEqual((names.count('rev-list'), names.count('push')), (1, 0))
+        self.other_tool({'notes.md': b'Theirs.\n'})
+        self.assertEqual(gitstate.sync(workspace, before=lambda at: learned.append(True))
+                         ['received'], 1)
+        self.assertEqual(learned, [True])
+
+    def test_what_the_remote_changed_since_parting_is_found_in_two_commands(self):
+        alex, blake = self.two_people()
+        self.be('blake')
+        self.write(blake, 'blue-green/intake.md')
+        self.write(blake, 'blue-green/blueprint.md')
+        gitstate.commit(blake, 'Blake: keep the intake')
+        gitstate.sync(blake)
+        self.be('alex')
+        self.write(alex, 'rolling-restarts/intake.md')
+        gitstate.commit(alex, 'Alex: keep the intake')
+        self.assertEqual(gitstate.arrived(alex), set(), 'nothing is fetched to find it')
+        git(alex.repo, 'fetch', '--quiet', 'origin')
+        with asked() as ran:
+            arrived = gitstate.arrived(alex)
+        self.assertEqual(arrived, {'trainings/blue-green/blueprint.md',
+                                   'trainings/blue-green/intake.md'})
+        self.assertEqual([name for name, _ in ran], ['merge-base', 'diff'])
+        self.assertTrue(gitstate.moved(alex, 'blue-green/intake.md'))
+        self.assertFalse(gitstate.moved(alex, 'rolling-restarts/intake.md'))
 
     def test_sharing_from_the_wrong_branch_is_refused(self):
         workspace = self.join()
