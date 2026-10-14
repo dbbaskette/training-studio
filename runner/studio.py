@@ -38,17 +38,6 @@ from runner import engine as engines  # noqa: E402
 from runner import gitstate, page, setup  # noqa: E402
 
 
-def alive(pid: int) -> bool:
-    """True while a process with this number exists."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 @contextmanager
 def only_runner():
     """Be the one runner serving on this computer, or refuse. A runner that ended without
@@ -60,7 +49,7 @@ def only_runner():
             handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             kept = path.read_text(encoding='utf-8').strip() if path.is_file() else ''
-            if kept.isdigit() and int(kept) != os.getpid() and alive(int(kept)):
+            if kept.isdigit() and int(kept) != os.getpid() and home.alive(int(kept)):
                 raise WorkspaceError(
                     f'A runner is already serving on this computer (process {kept}). Use '
                     'its page, or stop it before starting another. If none is running, '

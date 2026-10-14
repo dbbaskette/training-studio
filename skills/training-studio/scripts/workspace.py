@@ -11,8 +11,9 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
+
+from home import alive, now
 
 SCHEMA = 1
 STATE_DIR = '.training-studio'
@@ -81,10 +82,6 @@ class WorkspaceError(Exception):
 
 
 # --- files and the session record -------------------------------------------
-
-def now() -> str:
-    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-
 
 def sha256_file(path: Path) -> str | None:
     if not path.is_file():
@@ -159,16 +156,6 @@ def log(session: dict, event: str, **details) -> None:
     session['events'].append({'at': now(), 'event': event, **details})
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 @contextmanager
 def locked(root: Path):
     """Hold the workspace lock so two commands cannot overwrite each other's changes."""
@@ -179,7 +166,7 @@ def locked(root: Path):
             handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             text = path.read_text(encoding='utf-8').strip() if path.is_file() else ''
-            if text.isdigit() and _alive(int(text)):
+            if text.isdigit() and alive(int(text)):
                 raise WorkspaceError('Another Training Studio command is running in this '
                                      f'directory (process {text}). Try again when it finishes.')
             path.unlink(missing_ok=True)
