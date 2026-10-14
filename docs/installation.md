@@ -121,6 +121,8 @@ The skill has two parts. The **scripts** and the **runner** change files on your
 
 Each training stays on the guidance it started with, so a training does not change under you halfway through. To move one to the newest guidance, ask your assistant to update the guidance for that training.
 
+Guidance only ever comes from this repository's `main` branch, fetched by the skill itself. A training copied from someone else keeps the guidance version it names, but the files come from `main`, never from the training. If it names a version that was never on `main`, the skill says so and stops until you update it.
+
 If the newest guidance cannot be fetched, for example with no network, the assistant uses the guidance that was installed with the scripts and tells you it may be older.
 
 ## See what is installed

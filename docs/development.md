@@ -100,7 +100,7 @@ Drop `--dry-run` to run it. The clone is deleted afterwards; its logs are kept.
 | `tests/test_package.py` | The validator, on a small synthetic package and on the real one |
 | `tests/test_disclosure.py` | Every loading set against its budget |
 | `tests/test_installer.py` | The installer, against a temporary home directory and a stand-in repository for each companion |
-| `tests/test_sync.py` | Guidance sync, against a local git repository |
+| `tests/test_sync.py` | Guidance sync, against a local git repository: pins, fallbacks, and planted pins, caches and git settings that must be refused or ignored without running anything |
 | `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
 | `tests/test_desk.py` | The page: what it reads and records, everything it refuses, the command, the check of this computer with its commands stubbed, and the page's scripts and colours |
 | `tests/test_hub.py` | The team hub, against bare git repositories in temporary directories |
@@ -123,6 +123,8 @@ Bump `skills/training-studio/VERSION` when you release a change. The installed v
 ## The main branch is live
 
 New trainings fetch their guidance from `main`. Keep it usable at every commit. If guidance needs a script change, raise `minimum_runtime` in `guidance/manifest.json` and `skills/training-studio/VERSION` in the same change; older installs then keep their installed guidance and tell the user to update.
+
+Guidance is trusted only as `sync_guidance.py` fetched it from `main`. Never read a guidance folder from a training or its pin, and never fetch a commit by ID. Run git for guidance through `sync_guidance.git`, which leaves out the user's config, environment and hooks.
 
 ## Adding a command
 
