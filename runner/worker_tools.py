@@ -80,6 +80,17 @@ checked here before anything is kept. Each job has a folder that only the runner
   folder and hash, its slides as {'number', 'id', 'title', 'image'}, the blueprint's
   objective IDs, and where an accepted assessment is also kept. The slides tool takes one
   assessment for one render, so one that is already there stands.
+- A review of a deck against its approved design adds 'judged' to `review`: {'output',
+  'revision', 'binding', 'packets'}, the slides tool's review folder, the revision of it the
+  reviewer answers, what an assessment of it is bound to, and each slide's packet as `review
+  --slide` gave it. Such a reviewer hands in with `submit_judgements` instead of
+  `submit_assessment`: every criterion of every slide, checked whole by `deck.judged`. The
+  tool is then told the slides were looked at, and given the assessment; what it refuses goes
+  back to the reviewer, and what it leaves unresolved is kept as the findings, with the
+  direct-text slides it accepted.
+- A section drawn again after such a review adds 'beyond': its composer may name, with
+  `submit_section`, the slides it cannot put right without another concept or other words.
+  They are kept for the runner, which takes them back to the person.
 - `runtimes` is {'slides', 'brand'}: the folders of the slides tool and of the brand skill
   the engine itself uses, from each wrapper's `runtime`. The server runs apart from the
   runner, and makes its own wrappers of those same two. A job with no deck is given none.
@@ -845,7 +856,8 @@ def collect(folder: Path) -> dict:
     where a finding says it is in the training. `problems` holds why the last hand-back of
     anything not accepted was refused. For a deck's jobs, `shown` is the last preview a
     composer took, as {'previews', 'slides'} with each slide's picture at `path`;
-    `assessment` and `coverage` are what a reviewer handed in.
+    `assessment` and `coverage` are what a reviewer handed in, and `beyond` the slides a
+    composer drawing again named as needing more than drawing, as {'slide', 'why'}.
     """
     folder = Path(folder)
     _job(folder)
@@ -868,6 +880,7 @@ def collect(folder: Path) -> dict:
     return {'artifacts': artifacts, 'shown': shown,
             'assessment': home.read_json(kept / 'assessment.json', None),
             'coverage': home.read_json(kept / 'coverage.json', None),
+            'beyond': home.read_json(kept / 'beyond.json', []),
             'review': review.read_text(encoding='utf-8') if review.is_file() else None,
             'finding': home.read_json(kept / 'finding.json', None),
             'question': asked.get('question') if isinstance(asked, dict) else None,
@@ -995,7 +1008,8 @@ class WorkerTools:
         if job.get('look'):
             names.append('look_at_slide')
         if job.get('review'):
-            names += ['submit_assessment', 'submit_coverage']
+            names += ['submit_judgements' if job['review'].get('judged')
+                      else 'submit_assessment', 'submit_coverage']
         if job['fetch']:
             names.append('save_source')
         if job['fetch'] or self._index():
@@ -1368,10 +1382,11 @@ class WorkerTools:
                 'and say what is missing when you hand in. The person is told too.')
 
     @tool
-    def submit_section(self, section, changed='', bothers=''):
+    def submit_section(self, section, changed='', bothers='', beyond=None):
         """Hand the section in. It must be the version last previewed."""
         name, spec = self._spec('section')
         drawn, text = as_json(section, 'section')
+        named = self._beyond(spec, beyond)
         state = self._state()
         left = (spec.get('previews') or deck.PREVIEWS) - state.get('previews', 0)
         if state.get('previewed') != self._digest(drawn):
@@ -1391,7 +1406,30 @@ class WorkerTools:
             if notes:
                 _write(self.folder / 'accepted' / 'review.md',
                        '\n'.join(notes)[:NOTES] + '\n')
+            if named:
+                home.write_json(self.folder / 'accepted' / 'beyond.json', named)
         return accepted
+
+    @staticmethod
+    def _beyond(spec: dict, beyond) -> list[dict]:
+        """The slides a composer drawing again after a review against the design says it
+        cannot put right by drawing, each with why. Only such a composer may name any."""
+        if beyond in (None, '', []):
+            return []
+        if not spec.get('beyond'):
+            raise Refusal('`beyond` is for a section drawn again after a review against its '
+                          'design. Leave it out.')
+        given = as_json(beyond, 'list of slides')[0]
+        ids = [slide['id'] for slide in spec['slides']]
+        if not isinstance(given, list) or not all(
+                isinstance(entry, dict) and entry.get('slide') in ids
+                and isinstance(entry.get('why'), str) and len(entry['why'].strip()) >= deck.NOTE
+                for entry in given):
+            raise Refusal('`beyond` lists the slides of your section that only another visual '
+                          'concept or other words would put right, each as {"slide", "why"}, '
+                          'the slide one of: ' + ', '.join(ids) + '. Nothing was handed in.')
+        return [{'slide': entry['slide'], 'why': entry['why'].strip()[:NOTES]}
+                for entry in given]
 
     # --- a deck: what a reviewer sees ---
 
@@ -1423,12 +1461,10 @@ class WorkerTools:
     def submit_assessment(self, findings, weakest=None):
         """Hand in every "no" of the review. It is recorded against this exact render."""
         review = self._review()
-        self._allowed('assessment', 'The assessment')
-        unseen = [str(slide['number']) for slide in review['slides']
-                  if slide['number'] not in self._state().get('looked', [])]
-        if unseen:
-            raise Refusal('Look at every slide first. Not looked at yet: '
-                          + ', '.join(unseen) + '.')
+        if review.get('judged'):
+            raise Refusal('This deck is reviewed against its design: hand in with '
+                          'submit_judgements.')
+        self._looked(review)
         given = as_json(findings if findings not in (None, '') else [], 'list of findings')[0]
         named = as_json(weakest if weakest not in (None, '') else [], 'list of slides')[0]
         if not isinstance(given, list) or not isinstance(named, list):
@@ -1457,6 +1493,67 @@ class WorkerTools:
                         {'findings': kept, 'weakest': named})
         return True, (f'Recorded: {len(kept)} finding{"" if len(kept) == 1 else "s"}.{said} '
                       'Now say which slides address each objective, with submit_coverage.')
+
+    def _looked(self, review: dict) -> None:
+        """An assessment is handed in only once every slide was looked at."""
+        self._allowed('assessment', 'The assessment')
+        unseen = [str(slide['number']) for slide in review['slides']
+                  if slide['number'] not in self._state().get('looked', [])]
+        if unseen:
+            raise Refusal('Look at every slide first. Not looked at yet: '
+                          + ', '.join(unseen) + '.')
+
+    @tool
+    def submit_judgements(self, slides, weakest=None):
+        """Hand in the review against the design: every criterion of every slide."""
+        review = self._review()
+        judged = review.get('judged')
+        if not judged:
+            raise Refusal('This review is handed in with submit_assessment.')
+        self._looked(review)
+        given = as_json(slides if slides not in (None, '') else [], 'list of slides')[0]
+        named = as_json(weakest if weakest not in (None, '') else [], 'list of slides')[0]
+        kept, problems = deck.judged(given, judged['packets'])
+        ids = [slide['id'] for slide in review['slides']]
+        if not isinstance(named, list) or len(named) > 3 or any(ident not in ids
+                                                                for ident in named):
+            problems.append('weakest names up to three slides of this deck by ID, the '
+                            'weakest first.')
+        recorded = Path(review['recorded'])
+        if not problems:
+            problems = self._judged(review, kept, named, recorded)
+        left = self._count('assessment', problems)
+        if problems:
+            return self._refused(problems, left)
+        made = home.read_json(recorded, {})
+        home.write_json(self.folder / 'accepted' / 'assessment.json', made)
+        count = len(made['findings'])
+        return True, (f'Recorded: {count} judgement{"" if count == 1 else "s"} left unresolved. '
+                      'Now say which slides address each objective, with submit_coverage.')
+
+    def _judged(self, review: dict, kept: list, named: list, recorded: Path) -> list[str]:
+        """Tell the slides tool every slide was looked at, and give it the assessment, against
+        the review it answers. Returns what the tool refused."""
+        judged = review['judged']
+        output, revision = Path(judged['output']), judged['revision']
+        try:
+            self.slides().review_mark(output, revision,
+                                      [slide['number'] for slide in review['slides']],
+                                      deck.MARKED)
+            made = self.slides().review_assess(output, revision, deck.assessment(
+                kept, judged['packets'], judged['binding']))
+        except WorkspaceError as refusal:
+            return [self._plainly(line) for line in said_no(refusal)]
+        numbers = {slide['id']: slide['number'] for slide in review['slides']}
+        direct = [{'slide': entry['slide'], 'number': numbers.get(entry['slide']),
+                   'accepted': entry.get('accepted'), 'reason': entry.get('reason')}
+                  for entry in ((made.get('designReview') or {}).get('categories') or {})
+                  .get('direct-text') or () if entry.get('kind') == 'treatment']
+        home.write_json(recorded, {
+            'findings': deck.found(made.get('unresolved'), kept, review['slides']),
+            'weakest': named, 'direct': direct,
+            'complete': bool(made.get('creativeReviewComplete'))})
+        return []
 
     def _record(self, review: dict, kept: list, named: list, recorded: Path) -> list[str]:
         """Record an assessment with the slides tool, against the render it is of. Returns
@@ -1801,8 +1898,13 @@ TOOLS = [
                ['asset']),
     _described('submit_section', 'Hand your section in. It must be exactly the version you '
                'last previewed. Say what you changed after looking at the pictures, and '
-               'what still bothers you.',
-               {'section': TEXT, 'changed': TEXT, 'bothers': TEXT}, ['section']),
+               'what still bothers you. Drawn again after a review against the design, name '
+               'in beyond any slide that only another visual concept or other words would '
+               'put right.',
+               {'section': TEXT, 'changed': TEXT, 'bothers': TEXT,
+                'beyond': {'type': 'array', 'items': {
+                    'type': 'object', 'properties': {'slide': TEXT, 'why': TEXT},
+                    'required': ['slide', 'why']}}}, ['section']),
     _described('look_at_slide', 'Look at one rendered slide at full size, by its number.',
                {'number': NUMBER}, ['number']),
     _described('submit_assessment', 'Hand in your review: one finding for each question '
@@ -1815,6 +1917,23 @@ TOOLS = [
                        'note': TEXT, 'fix': TEXT},
                    'required': ['slide', 'question', 'severity', 'note']}},
                 'weakest': {'type': 'array', 'items': TEXT}}, ['findings']),
+    _described('submit_judgements', 'Hand in your review against the design: for every '
+               'slide, an answer to each of its criteria. A judgement that is not a pass says '
+               'how grave it is and what it is about. It is checked by the slides tool against '
+               'this exact render.',
+               {'slides': {'type': 'array', 'items': {
+                   'type': 'object', 'properties': {
+                       'slide': TEXT, 'checks': {'type': 'array', 'items': {
+                           'type': 'object', 'properties': {
+                               'criterion': TEXT,
+                               'status': {'type': 'string', 'enum': list(deck.STATUSES)},
+                               'reason': TEXT, 'objects': {'type': 'array', 'items': TEXT},
+                               'severity': {'type': 'string', 'enum': list(deck.SEVERITIES)},
+                               'about': {'type': 'string', 'enum': list(deck.JUDGED)},
+                               'fix': TEXT},
+                           'required': ['criterion', 'status', 'reason', 'objects']}}},
+                   'required': ['slide', 'checks']}},
+                'weakest': {'type': 'array', 'items': TEXT}}, ['slides']),
     _described('submit_coverage', 'Say which slides address each objective, from what the '
                'slides show: slide numbers for each objective, and an empty list where no '
                'slide addresses it.',

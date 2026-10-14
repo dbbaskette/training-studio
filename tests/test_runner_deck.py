@@ -875,6 +875,111 @@ class ReviewToolTests(ToolCase):
                                   self.base / 'whole' / 'preview', self.base / 'kept')
 
 
+class JudgingToolTests(ToolCase):
+    """A reviewer of a deck reviewed against its approved design: it answers the slides
+    tool's own criteria, and the tool checks the answer against the review it prepared."""
+
+    def reviewer(self) -> worker_tools.WorkerTools:
+        self.slides.design = self.slides.judges = True
+        self.slides.have['local'] = True
+        project, build = self.base / 'deck', self.base / 'whole'
+        project.mkdir()
+        build.mkdir()
+        plan = deck.proposal(OUTLINE, runner_support.designed(OUTLINE))
+        (build / 'proposal.json').write_text(json.dumps(plan))
+        asked = self.slides.design_propose(project, build / 'proposal.json')
+        self.slides.design_respond(project, {
+            'questionId': asked['question']['id'], 'planRevision': asked['revision'],
+            'decision': 'approve', 'feedback': 'Approve the whole plan'})
+        (build / 'composition.json').write_text(json.dumps({'title': OUTLINE['title'], 'slides': [
+            {'id': slide['id'], 'title': slide['title'], 'sources': slide['sources'],
+             'intent': slide['intent'], 'canvas': {'type': 'stack', 'children': [
+                 {'type': 'text', 'id': f"x{number}_words", 'text': slide['title']}]}}
+            for number, slide in enumerate(plan['slides'], 1)]}))
+        self.slides.compile(build / 'composition.json', self.contract, build / 'compiled',
+                            design=project)
+        output = build / 'review'
+        made = self.slides.review_prepare(build / 'compiled', output, project)
+        record = json.loads((output / 'review.json').read_text())
+        self.packets = [self.slides.review_slide(output, slide['id'])
+                        for slide in plan['slides']]
+        slides = [{'number': page['number'], 'id': slide['id'], 'title': slide['title'],
+                   'image': str(output / page['image'])}
+                  for page, slide in zip(record['slides'], plan['slides'])]
+        self.output, self.made = output, made
+        return self.tools(inputs={'the review': 'The criteria.'}, ask=False, review={
+            'preview': str(output), 'deck': record['source']['sha256'], 'slides': slides,
+            'objectives': ['O1', 'O2', 'O3'], 'recorded': str(build / 'assessment.json'),
+            'judged': {'output': str(output), 'revision': made['revision'],
+                       'binding': made['assessmentBinding'], 'packets': self.packets}})
+
+    def looked(self) -> worker_tools.WorkerTools:
+        tools = self.reviewer()
+        for number in range(1, 7):
+            self.ok(tools.look_at_slide(number))
+        return tools
+
+    def test_a_reviewer_answers_the_tools_criteria_and_has_no_other_way_to_hand_in(self):
+        tools = self.reviewer()
+        self.assertEqual(self.offered(tools), ['list_inputs', 'read_input', 'look_at_slide',
+                                               'submit_judgements', 'submit_coverage'])
+        self.assertIn('submit_judgements', self.refused(tools.submit_assessment([])))
+        self.assertEqual(self.refused(tools.submit_judgements([])), 'Look at every slide '
+                         'first. Not looked at yet: 1, 2, 3, 4, 5, 6.')
+
+    def test_an_answer_that_is_not_whole_goes_back_to_the_reviewer(self):
+        tools = self.looked()
+        given = runner_support.judgements(self.packets)
+        given[1]['checks'] = given[1]['checks'][1:]
+        given[2]['checks'][0]['objects'] = ['nowhere']
+        given[3]['checks'][0].update(status='issue')
+        said = self.refused(tools.submit_judgements(given, ['nowhere']))
+        for told in ('what-it-does: answer each of these criteria once: title-support, ',
+                     "when-capacity-holds, `title-support`: `objects` names what you judged, "
+                     "from this slide's objects:",
+                     'the-objection, `title-support`: `severity` is one of: critical, major, '
+                     'minor.', 'the-objection, `title-support`: `about` is one of: drawing, '
+                     'content, concept.', 'weakest names up to three slides'):
+            self.assertIn(told, said)
+        self.assertEqual(self.slides.assessed, [], 'nothing reached the slides tool')
+
+    def test_what_the_slides_tool_refuses_in_an_answer_goes_back_to_the_reviewer(self):
+        tools = self.looked()
+        given = runner_support.judgements(self.packets)
+        for entry in given[1:3]:
+            next(check for check in entry['checks']
+                 if check['criterion'] == 'explanatory-value')['reason'] = 'Fine as drawn here.'
+        self.assertIn('- Use slide-specific evidence for explanatory-value; a duplicated bulk '
+                      'approval is insufficient', self.refused(tools.submit_judgements(given)))
+        self.assertIsNone(worker_tools.collect(self.job)['assessment'])
+
+    def test_an_answer_is_recorded_against_the_review_with_what_is_unresolved(self):
+        tools = self.looked()
+        issue = {'slide': 'what-it-does', 'criterion': 'visual-relationship',
+                 'severity': 'major', 'about': 'drawing',
+                 'reason': 'The steps are stacked with nothing joining them.'}
+        said = self.ok(tools.submit_judgements(json.dumps(runner_support.judgements(
+            self.packets, [issue])), ['what-it-does']))
+        self.assertEqual(said, 'Recorded: 1 judgement left unresolved. Now say which slides '
+                               'address each objective, with submit_coverage.')
+        record = json.loads((self.output / 'review.json').read_text())
+        self.assertEqual((record['pending'], record['slides'][0]['finalReview']['note']),
+                         ([], deck.MARKED))
+        assessed = self.slides.assessed[-1]
+        self.assertEqual({key: assessed[key] for key in ('schema', 'sceneDigest',
+                                                         'qualityRevision', 'artifactDigest')},
+                         self.made['assessmentBinding'])
+        self.assertEqual(assessed['slides'][1]['checks'][0]['sources'], ['O1'])
+        kept = worker_tools.collect(self.job)['assessment']
+        self.assertEqual(kept['findings'], [{
+            'slide': 'what-it-does', 'number': 2, 'criterion': 'visual-relationship',
+            'category': 'visual-teaching', 'severity': 'major', 'about': 'drawing',
+            'note': issue['reason'], 'fix': None}])
+        self.assertEqual((kept['weakest'], kept['complete']), (['what-it-does'], False))
+        self.assertEqual([(entry['slide'], entry['accepted']) for entry in kept['direct']],
+                         [('cover-restarts', True), ('closing-practice', True)])
+
+
 class DeckCase(StudioCase):
     """A computer that can make a deck: the two stand-ins, and previews through Drive."""
 
@@ -1563,6 +1668,260 @@ def with_assets(design: dict, generated: bool = False) -> dict:
             'assetId': 'capacity_art', 'kind': 'generated', 'ref': 'Two instances sharing load',
             'concept': 'Capacity held by the others', 'status': 'pending'}]
     return design
+
+
+DRAWING = {'slide': 'what-it-does', 'criterion': 'visual-relationship', 'severity': 'major',
+           'about': 'drawing', 'reason': 'The steps sit in a column with nothing joining them.',
+           'fix': 'Join each step to the next with an edge.'}
+CONCEPT = {'slide': 'when-capacity-holds', 'criterion': 'explanatory-value',
+           'severity': 'major', 'about': 'concept',
+           'reason': 'A diagram of boxes cannot show why one instance loses capacity.'}
+
+
+class JudgedTests(DeckCase):
+    """A slides tool that reviews a whole deck against its approved design: the reviewer
+    answers the tool's own assessment, a drawing finding is drawn again within its limits,
+    and one that needs other words or another concept takes what the deck says back to the
+    person. Rows V04, V08 and V09 of the state-transition matrix in
+    docs/superpowers/plans/2026-10-14-visual-teaching-in-decks.md."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides.design, self.slides.judges = True, True
+        self.slides.have['local'] = True    # the tool renders what it reviews with LibreOffice
+
+    def called(self, name: str) -> list[tuple]:
+        return [call for call in self.slides.calls if call[0] == name]
+
+    def review_folder(self, root: Path, made: dict | None = None) -> Path:
+        made = made or self.built(root)['rounds'][-1]
+        return root / pipeline.WORK / made['preview']
+
+    def test_a_deck_drawn_from_its_design_is_reviewed_against_it_and_that_deck_is_kept(self):
+        root = self.begin()
+        self.drawn(root)
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        start = self.built(root)['start']
+        self.assertEqual(start['review'], pipeline.JUDGED)
+        [made] = self.built(root)['rounds']
+        # The whole deck was rendered and reviewed by the slides tool, not previewed apart.
+        self.assertEqual([call[-1] for call in self.called('preview_design')],
+                         ['section=True', 'section=True'])
+        self.assertEqual(len(self.called('review_prepare')), 1)
+        self.assertEqual(len(self.called('review_slide')), len(OUTLINE['slides']) + 1,
+                         'each slide for its packet, and the receipts before it is kept')
+        self.assertEqual(self.called('critique'), [], 'no second scorer')
+        review = self.review_folder(root, made)
+        record = json.loads((review / 'review.json').read_text())
+        self.assertEqual((record['visualReviewComplete'], record['creativeReviewComplete'],
+                          record['readyForUserReview']), (True, True, True))
+        # The reviewer answered the tool's own criteria, and passed every one.
+        job, spec = [(job, spec) for kind, job, spec in self.workers.jobs if kind == 'review'][0]
+        self.assertEqual(job.guidance, briefs.guidance('deck-review', design=True))
+        self.assertIn('submit_judgements', job.task)
+        self.assertTrue(spec['review']['judged']['packets'])
+        assessed = self.slides.assessed[-1]
+        self.assertEqual([slide['id'] for slide in assessed['slides']],
+                         [slide['id'] for slide in OUTLINE['slides']])
+        self.assertEqual({check['status'] for slide in assessed['slides']
+                          for check in slide['checks']}, {'pass'})
+        # The deck kept is the one the tool rendered, whose pictures the page shows.
+        kept = root / workspace.artifact(root, workspace.load(root), 'deck')['file']
+        self.assertEqual(kept.read_bytes(), (review / 'deck.pptx').read_bytes())
+        self.assertEqual(made['deck'], workspace.sha256_file(review / 'deck.pptx'))
+        shown = self.gate(root)
+        self.assertEqual(shown['review']['findings'], [])
+        self.assertEqual([entry['slide'] for entry in shown['review']['direct']],
+                         ['cover-restarts', 'closing-practice'])
+        self.assertEqual({entry['accepted'] for entry in shown['review']['direct']}, {True})
+        self.assertEqual([slide['number'] for slide in shown['slides']],
+                         list(range(1, len(OUTLINE['slides']) + 1)))
+        self.assertEqual(self.engine.picture(root, 2, 'deck'), png(2))
+        note = (root / 'reviews' / 'deck.md').read_text().replace('> ', '')
+        self.assertIn('Drawn as text by decision, and accepted so by the review: slide 1, '
+                      'slide 6.', note)
+
+    def test_visual_04_fit_repair_preserves_design(self):
+        self.workers.found = [[{**DRAWING, 'criterion': 'technical-fit',
+                                'reason': 'The second label wraps onto three lines.'}]]
+        root = self.begin()
+        self.drawn(root)
+        approved = self.record(root)['deck']['']['approved']
+        self.assertEqual(self.kinds()[-6:], ['outline', 'section', 'section', 'review',
+                                             'section', 'review'])
+        self.assertEqual(self.record(root)['deck']['']['approved'], approved)
+        self.assertEqual(len(self.slides.replies), 1, 'nothing asked of the person again')
+        # The render and the assessment are made again for the deck drawn again.
+        rounds = self.built(root)['rounds']
+        self.assertEqual(len(self.called('review_prepare')), 2)
+        self.assertNotEqual(rounds[0]['judged']['revision'], rounds[1]['judged']['revision'])
+        self.assertEqual(rounds[0]['review']['findings'][0]['category'], 'fit-defect')
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+
+    def test_visual_08_drawing_finding_repairs_section(self):
+        self.workers.found = [[DRAWING], [DRAWING], [DRAWING]]
+        root = self.begin()
+        view = self.drawn(root)
+        approved = self.record(root)['deck']['']['approved']
+        # Drawn again within its limits: twice, then the deck comes as it is.
+        self.assertEqual((self.kinds().count('review'), self.kinds().count('section')), (3, 4))
+        job, spec = [(job, spec) for kind, job, spec in self.workers.jobs
+                     if kind == 'section'][-1]
+        self.assertEqual(spec['artifacts']['section']['prefix'], 's1_')
+        self.assertEqual(job.guidance, briefs.guidance('deck-section', repair=True,
+                                                       design=True, beyond=True))
+        self.assertTrue(spec['artifacts']['section']['beyond'])
+        told = deck.told(self.built(root)['rounds'][0]['review']['findings'],
+                         [{'number': 2, 'id': 'what-it-does', 'title': 'Steps'}])
+        self.assertIn('- **major**, Whether the visual teaches, `visual-relationship`: The steps '
+                      'sit in a column with nothing joining them. Suggested: Join each step', told)
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'))
+        self.assertEqual(self.record(root)['deck']['']['approved'], approved)
+        self.assertEqual(self.record(root)['deck'][''].get('returns'), None)
+        shown = self.gate(root)
+        self.assertEqual(shown['review']['round'], 3)
+        self.assertEqual(shown['review']['findings'], [{
+            'slide': 'what-it-does', 'number': 2, 'severity': 'major', 'about': 'drawing',
+            'note': DRAWING['reason'], 'fix': DRAWING['fix'], 'category': 'visual-teaching',
+            'criterion': 'visual-relationship'}])
+        note = (root / 'reviews' / 'deck.md').read_text().replace('> ', '')
+        self.assertIn('- Slide 2, major, whether the visual teaches, about how it is drawn: The '
+                      'steps sit in a column', note)
+
+    def test_visual_09_content_change_returns_to_outline(self):
+        self.workers.found = [[DRAWING, CONCEPT]]
+        root = self.begin()
+        first = self.drawn(root)
+        # Nothing is drawn again: what the deck says comes back to the person, with why.
+        self.assertEqual((first['outline']['waiting'], workspace.status(root)['gate']),
+                         (True, None))
+        self.assertEqual((self.kinds().count('review'), self.kinds().count('section')), (1, 2))
+        kept = self.record(root)['deck']['']
+        self.assertIsNone(kept['approved'])
+        [back] = kept['returns']
+        self.assertEqual((back['approved']['by'], back['start'], [finding['slide'] for finding
+                                                                  in back['findings']]),
+                         ('page', self.built(root)['start']['folder'],
+                          ['when-capacity-holds']))
+        self.assertEqual(back['findings'][0]['about'], 'concept')
+        worth = first['outline']['worth']
+        self.assertEqual(worth[0], pipeline.RETURNED)
+        self.assertIn('Slide 3, major, about the visual concept it was approved with: A '
+                      'diagram of boxes cannot show why', worth[1])
+        self.assertEqual(len(self.slides.replies), 1, 'nothing is sent to the slides tool')
+        self.assertIn('keep the review of the slide deck, and take what the slide deck says '
+                      'back to you', self.log()[-2])
+        # Asked for changes: the writer is told why, and the new words and design are put to
+        # the person before anything is drawn again.
+        self.workers.outline_said = with_slide(2, title='Capacity holds with two instances')
+        shown = self.engine.outline(root, None, 'revise', 'Show the load moving across.',
+                                    seen=first['outline']['sha256'],
+                                    design=first['outline']['design']['revision'])
+        task = self.workers.of('outline')[-1].task
+        for said in ('Show the load moving across.', 'or how they were approved to teach',
+                     '- when-capacity-holds: A diagram of boxes cannot show why'):
+            self.assertIn(said, task)
+        self.assertEqual(shown['outline']['waiting'], True)
+        self.engine.outline(root, None, 'approve', seen=shown['outline']['sha256'],
+                            design=shown['outline']['design']['revision'])
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        self.assertEqual(len(self.called('outline_start')), 2, 'drawn from the new approval')
+        self.assertEqual(self.record(root)['deck']['']['returns'][0]['findings'],
+                         back['findings'], 'the history is kept')
+
+    def test_approved_as_it_stands_the_deck_is_drawn_on_with_what_was_found(self):
+        self.workers.found = [[DRAWING, CONCEPT]]
+        root = self.begin()
+        first = self.drawn(root)
+        self.engine.outline(root, None, 'approve', seen=first['outline']['sha256'],
+                            design=first['outline']['design']['revision'])
+        # The same start: its drawing finding is drawn again, and it is not sent back twice.
+        self.assertEqual(len(self.called('outline_start')), 1)
+        self.assertEqual((self.kinds().count('section'), self.kinds().count('review')), (3, 2))
+        self.assertEqual(len(self.record(root)['deck']['']['returns']), 1)
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        self.assertEqual(len(self.slides.replies), 1)
+
+    def test_a_composer_drawing_again_says_what_only_the_outline_can_put_right(self):
+        self.workers.found = [[DRAWING]]
+
+        def beyond(tools, job):
+            made = json.dumps(drawn(tools.job['artifacts']['section']))
+            assert tools.preview_section(made)[0]
+            accepted = tools.submit_section(made, 'Nothing.', 'The first slide.', [
+                {'slide': 'what-it-does', 'why': 'Only a sequence of three boxes is approved, '
+                 'and the steps need a loop.'}])
+            assert accepted[0], accepted[1]
+        root = self.begin()
+        self.to_outline(root)
+        self.workers.queued['section'] = [self.workers.section, self.workers.section, beyond]
+        view = self.engine.outline(root, None, 'approve')
+        self.assertTrue(view['outline']['waiting'])
+        [back] = self.record(root)['deck']['']['returns']
+        self.assertEqual(back['findings'], [{
+            'slide': 'what-it-does', 'number': 2, 'severity': 'major', 'about': 'concept',
+            'note': 'Only a sequence of three boxes is approved, and the steps need a loop.',
+            'by': 'composer'}])
+        self.assertIn('said by whoever drew it again', view['outline']['worth'][1])
+
+    def test_a_review_that_no_longer_holds_is_built_and_reviewed_again(self):
+        def tampered(tools, job):
+            self.workers.review(tools, job)
+            picture = next(Path(tools.job['review']['judged']['output']).glob('slide-002-*'))
+            picture.write_bytes(png(99))
+        self.workers.then('review', tampered)
+        root = self.begin()
+        self.drawn(root)
+        rounds = self.built(root)['rounds']
+        self.assertEqual((len(rounds), self.kinds().count('review'),
+                          len(self.called('review_prepare'))), (1, 2, 2))
+        self.assertNotIn('stale', self.built(root)['rounds'][0], 'built again in its place')
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        review = self.review_folder(root)
+        kept = root / workspace.artifact(root, workspace.load(root), 'deck')['file']
+        self.assertEqual(kept.read_bytes(), (review / 'deck.pptx').read_bytes())
+
+    def test_a_changed_reviewed_deck_is_rendered_and_reviewed_again(self):
+        def tampered(tools, job):
+            self.workers.review(tools, job)
+            deck_file = Path(tools.job['review']['judged']['output']) / 'deck.pptx'
+            deck_file.write_bytes(deck_file.read_bytes() + b' ')
+        self.workers.then('review', tampered)
+        root = self.begin()
+        self.drawn(root)
+        self.assertEqual((len(self.built(root)['rounds']), self.kinds().count('review')),
+                         (1, 2))
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+
+    def test_without_libreoffice_the_review_stops_and_says_what_to_install(self):
+        self.slides.have['local'] = False
+        root = self.begin()
+        view = self.drawn(root)
+        self.assertEqual(view['state'], 'stopped')
+        self.assertIn('The slides tool reviews a deck against its approved design by rendering '
+                      'it on this computer, and it cannot: soffice is not installed.',
+                      view['problem']['what'])
+        self.assertEqual(self.kinds().count('review'), 0)
+
+    def test_a_deck_started_for_this_review_stops_where_the_tool_can_no_longer_review(self):
+        self.workers.then('section', *[fails()] * 6)
+        root = self.begin()
+        self.drawn(root)
+        self.slides.judges = False
+        view = self.engine.act(root, 'retry')
+        self.assertEqual(view['problem']['what'], self.engines.REVIEW_GONE)
+        self.assertEqual(self.called('review_prepare'), [])
+
+    def test_a_tool_that_cannot_review_against_the_design_reviews_as_before(self):
+        self.slides.judges = False
+        root = self.begin()
+        self.drawn(root)
+        self.assertNotIn('review', self.built(root)['start'])
+        self.assertEqual(self.called('review_prepare'), [])
+        self.assertEqual(len(self.called('critique')), 1)
+        job = [job for kind, job, _ in self.workers.jobs if kind == 'review'][0]
+        self.assertEqual(job.guidance, briefs.guidance('deck-review'))
+        self.assertNotIn('direct', self.gate(root)['review'])
 
 
 class AssetTests(DeckCase):
@@ -2361,6 +2720,8 @@ class BriefTests(JobCase):
                                   'submit_assessment', 'submit_coverage'}}
         expect['deck-outline+design'] = expect['deck-outline']
         expect['deck-section+design'] = expect['deck-section']
+        expect['deck-review+design'] = {'list_inputs', 'read_input', 'look_at_slide',
+                                        'submit_judgements', 'submit_coverage'}
         for job, tools in expect.items():
             with self.subTest(job):
                 text = briefs.guidance(job.partition('+')[0], design=job.endswith('+design'))
@@ -2384,6 +2745,21 @@ class BriefTests(JobCase):
                      'has a focal that is not one of them'):
             self.assertIn(told, briefs.guidance('deck-outline'))
         self.assertIn('`about`: `drawing`', briefs.guidance('deck-review'))
+        judging = briefs.guidance('deck-review', design=True)
+        for told in ('`about`: `drawing` when drawing the slide again would put it right and '
+                     'keep its approved visual concept and its words', '`concept`',
+                     'cite at least one card', 'passes without any picture',
+                     'Boxes are not a fault in themselves'):
+            self.assertIn(told, judging)
+        self.assertNotIn('Ask every question of every slide', judging)
+        beyond = briefs.guidance('deck-section', repair=True, design=True, beyond=True)
+        self.assertLess(beyond.index('## What drawing cannot put right'),
+                        beyond.index('## Hand back'))
+        self.assertIn('name the slide in `beyond` when you hand in', beyond)
+        self.assertEqual(briefs.guidance('deck-section', repair=True, design=True),
+                         beyond.replace('\n' + briefs.read('deck-repair-beyond'), '', 1))
+        with self.assertRaises(WorkspaceError):
+            briefs.guidance('deck-section', repair=True, beyond=True)
 
     def test_the_outline_writer_proposes_the_design_only_when_asked_and_before_handing_back(self):
         plain, designed = briefs.guidance('deck-outline'), briefs.guidance('deck-outline',
@@ -2398,7 +2774,7 @@ class BriefTests(JobCase):
             self.assertIn(told, designed)
         self.assertNotIn('nothing about how it is drawn', plain)
         with self.assertRaisesRegex(WorkspaceError, 'are told of its design'):
-            briefs.guidance('deck-review', design=True)
+            briefs.guidance('document', design=True)
 
     def test_a_composer_draws_the_approved_design_and_keeps_the_freedom_of_direct_text(self):
         plain, designed = briefs.guidance('deck-section'), briefs.guidance('deck-section',

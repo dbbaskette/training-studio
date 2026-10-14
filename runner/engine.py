@@ -257,6 +257,12 @@ DESIGN_GONE = ('What this deck says is written with its design, which the slides
 SECTIONS_GONE = ('This deck is drawn from the design you approved, and the slides tool on '
                  'this computer cannot check a section against it. Update harness-slides, '
                  'then try again.')
+REVIEW_GONE = ('This deck is reviewed against the design you approved, and the slides tool '
+               'on this computer cannot review it so. Update harness-slides, then try again.')
+NO_REVIEWER = ('The slides tool reviews a deck against its approved design by rendering it on '
+               'this computer, and it cannot: {said} Install it, then try again.')
+# What a slides tool says when a review against the design no longer binds what it reviewed.
+STALE = {'review-stale', 'asset-hash-changed', 'asset-file-missing', 'input-missing'}
 ASSETS_WAIT = ('The deck is not drawn until what its approved design uses is to hand. {said}')
 ASSETS_KEPT = ('What you approved the deck should say, and how it is drawn, is kept, and so is '
                'everything made before. Nothing needs approving again.')
@@ -1497,6 +1503,21 @@ class Engine:
             self._problem(root, it.id, 'stopped', SECTIONS_GONE, DECK_KEPT)
         return can
 
+    def _judges(self) -> bool:
+        """Whether the slides tool here reviews a whole deck against its approved design."""
+        try:
+            return self.slides().reviews()
+        except WorkspaceError:
+            return False
+
+    def _judged_here(self, root: Path, it: pipeline.Step, mine: pipeline.Deck) -> bool:
+        """Whether a deck can be reviewed here: one started to be reviewed against its design
+        needs a slides tool that can. Stops the training and says so when it cannot."""
+        if mine.start.get('review') != pipeline.JUDGED or self._judges():
+            return True
+        self._problem(root, it.id, 'stopped', REVIEW_GONE, DECK_KEPT)
+        return False
+
     def _with_assets(self) -> bool:
         """Whether the slides tool here keeps a deck's assets."""
         try:
@@ -1718,6 +1739,7 @@ class Engine:
             self._note(root, level, sections={}, rounds=[], start={
                 'outline': approved['sha256'], 'brand': mine.built['brand']['sha256'],
                 'design': design, **({'assets': held} if held is not None else {}),
+                **({'review': pipeline.JUDGED} if plan is not None and self._judges() else {}),
                 'folder': folder.name, 'sections': sections, 'at': home.now()})
             self._done(root, it, clock, f'split {workspace.label(it.artifact)} into '
                        f"{len(sections)} section{'' if len(sections) == 1 else 's'}")
@@ -1794,9 +1816,23 @@ class Engine:
             record = self._load(root)
             self._tried(record, it.id, started_at, outcome.seconds, 'kept',
                         **self._cost(outcome))
+            # Drawn again after a review against the design, a composer may say that only
+            # another concept or other words would put a slide right: that is the person's.
+            numbers = {slide['id']: slide['number'] for slide in (mine.last or {}).get('slides')
+                       or ()}
+            back = [{'slide': named['slide'], 'number': numbers.get(named['slide']),
+                     'severity': deck.GRAVE[1], 'about': deck.JUDGED[2], 'note': named['why'],
+                     'by': 'composer'} for named in handed.get('beyond') or ()] \
+                if again and mine.start.get('review') == pipeline.JUDGED else []
+            sent = bool(back) and self._send_back(record, mine, back,
+                                                  (mine.last or {}).get('deck'))
             self._store(root, record)
-            self._commit(root, f'keep section {number} of {workspace.label(whole.artifact)}'
-                         + (', drawn again' if again else ''))
+            done = (f'keep section {number} of {workspace.label(whole.artifact)}'
+                    + (', drawn again' if again else ''))
+            if sent:
+                self._back_said(root, whole, done)
+            else:
+                self._commit(root, done)
         shutil.rmtree(folder, ignore_errors=True)
 
     def _whole(self, root: Path, run: _Run, found: pipeline.Survey,
@@ -1812,7 +1848,8 @@ class Engine:
         folder, shots = start / f'whole-{secrets.token_hex(3)}', pipeline.place(
             root, level, pipeline.SHOTS)
         drawn = mine.built.get('sections') or {}
-        if not self._sections_bound(root, it, mine.start.get('design')):
+        if not self._sections_bound(root, it, mine.start.get('design')) \
+                or not self._judged_here(root, it, mine):
             return
         if mine.start.get('assets') is not None and self._assets_hold(
                 root, it, level, self._approved(root, level, mine),
@@ -1821,6 +1858,8 @@ class Engine:
         # A deck drawn from its approved design is checked whole against it.
         bound = {'design': pipeline.place(root, level, pipeline.DESIGNS)} \
             if mine.start.get('design') else {}
+        judged = mine.start.get('review') == pipeline.JUDGED
+        seen = 'review' if judged else 'preview'
         try:
             folder.mkdir()
             shutil.copyfile(start / 'parts.json', folder / 'parts.json')
@@ -1832,49 +1871,82 @@ class Engine:
             tool.merge(folder / 'parts.json', folder / 'composition.json')
             tool.compile(folder / 'composition.json', pipeline.contract(root, mine),
                          folder=folder / 'compiled', **bound)
-            shown = worker_tools.render(tool, folder / 'compiled', folder / 'preview',
-                                        {**self._how(root, found, level), **bound})
+            if judged:   # the slides tool renders the deck it reviews, and that is the deck
+                shown = self._rendered(folder, bound['design'], self._how(root, found, level))
+            else:
+                shown = worker_tools.render(tool, folder / 'compiled', folder / 'preview',
+                                            {**self._how(root, found, level), **bound})
             file = Path(str(shown['deck'])).resolve()
-            if (folder / 'preview').resolve() not in file.parents \
+            if (folder / seen).resolve() not in file.parents \
                     or file.read_bytes()[:4] != workspace.PPTX_SIGNATURE:
                 raise WorkspaceError('The renderer did not leave a deck that can be opened.')
-            slides = worker_tools.pictures(shown, folder / 'preview', shots)
+            slides = worker_tools.pictures(shown, folder / seen, shots)
             home.write_json(shots / pipeline.ABOUT, {'deck': shown['deckSha256'], 'slides': [
                 {key: slide[key] for key in ('number', 'id', 'title')} for slide in slides]})
         except (WorkspaceError, OSError, KeyError, ValueError, TypeError) as refusal:
             shutil.rmtree(folder, ignore_errors=True)
             shutil.rmtree(shots, ignore_errors=True)
+            if 'renderer-unavailable' in getattr(refusal, 'codes', ()):
+                return self._problem(root, it.id, 'stopped', NO_REVIEWER.format(
+                    said=' '.join(refusal.problems)), DECK_KEPT)
             return self._problem(root, it.id, 'failed', (
                 f'The slides could not be put together and rendered. {refusal} Nothing of '
                 'that try was kept.'), DECK_KEPT)
         with self.files:
+            rounds = [made for made in pipeline.read_built(root, level).get('rounds') or ()
+                      if made.get('start') == mine.start['folder']]
+            # A round whose review no longer holds is built and reviewed again in its place.
+            if rounds and not pipeline.intact(base, rounds[-1]):
+                rounds.pop()
             for old in start.glob('whole-*'):
                 if old != folder:
                     shutil.rmtree(old, ignore_errors=True)
-            rounds = [made for made in pipeline.read_built(root, level).get('rounds') or ()
-                      if made.get('start') == mine.start['folder']]
             rounds.append({
                 'start': mine.start['folder'], 'at': home.now(), 'review': None,
                 'folder': folder.relative_to(base).as_posix(),
-                'preview': (folder / 'preview').relative_to(base).as_posix(),
+                'preview': (folder / seen).relative_to(base).as_posix(),
                 'compiled': (folder / 'compiled').relative_to(base).as_posix(),
                 'file': file.relative_to(base.resolve()).as_posix(),
                 'made_from': {ident: made['sha256'] for ident, made in drawn.items()},
                 **({'assets': {ident: fingerprint for made in drawn.values()
                                for ident, fingerprint in (made.get('assets') or {}).items()}}
                    if mine.start.get('assets') is not None else {}),
+                **({'judged': shown['judged']} if judged else {}),
                 'deck': shown['deckSha256'], 'slides': slides})
             self._note(root, level, rounds=rounds)
             self._done(root, it, clock, f'put {workspace.label(it.artifact)} together: '
                        f"{len(slides)} slide{'' if len(slides) == 1 else 's'}")
 
+    def _rendered(self, folder: Path, design: Path, how: dict) -> dict:
+        """Have the slides tool render a whole deck compiled against its approved design and
+        prepare its review against that design, in `folder/review`, when it is this
+        computer's turn at the renderer. Returns it as a preview is returned, with `judged`:
+        the review's revision and what an assessment of it is bound to. What the tool gives
+        of each slide is kept beside it, in `folder/packets.json`."""
+        tool, review = self.slides(), folder / 'review'
+        with worker_tools.one_at_a_time(Path(how['lock'])):
+            made = tool.review_prepare(folder / 'compiled', review, design)
+        record = home.read_json(review / 'review.json', {})
+        ids = [entry['planId'] for entry in record['designBinding']]
+        packets = [tool.review_slide(review, ident) for ident in ids]
+        home.write_json(folder / 'packets.json', packets)
+        return {'deck': str(review / record['source']['file']),
+                'deckSha256': record['source']['sha256'],
+                'slides': [{'number': page['number'], 'id': ident,
+                            'title': packet['slide'].get('title') or page.get('title'),
+                            'image': str(review / page['image']), 'findings': []}
+                           for page, ident, packet in zip(record['slides'], ids, packets)],
+                'judged': {'revision': made['revision'], 'binding': made['assessmentBinding'],
+                           'quality': made['qualityRevision']}}
+
     def _review(self, root: Path, run: _Run, found: pipeline.Survey,
                 step: pipeline.Next) -> None:
         """One try at the review of a whole deck, by a worker that drew none of it."""
         it = step.step
-        if not self._may_go(root):
-            return
         level = self._level(it)
+        mine = found.decks[level]
+        if not self._judged_here(root, it, mine) or not self._may_go(root):
+            return
         work = pipeline.work(root, found, it, None, last_error(self._load(root), it.id), [])
         outcome, handed, started_at, folder = self._job(root, run, it, work)
         if outcome.reason == 'stopped':
@@ -1882,19 +1954,56 @@ class Engine:
         if handed['assessment'] is None or handed['coverage'] is None:
             return self._failed(root, it, outcome, started_at,
                                 pipeline.why_not(handed, outcome.detail))
+        assessed = handed['assessment']
         with self.files:
             rounds = list(pipeline.read_built(root, level).get('rounds') or ())
             rounds[-1] = {**rounds[-1], 'review': {
-                'findings': handed['assessment']['findings'],
-                'weakest': handed['assessment']['weakest'],
+                'findings': assessed['findings'], 'weakest': assessed['weakest'],
+                **({key: assessed.get(key) for key in ('direct', 'complete')}
+                   if rounds[-1].get('judged') else {}),
                 'coverage': handed['coverage']['objectives'], 'at': home.now()}}
             self._note(root, level, rounds=rounds)
             record = self._load(root)
             self._tried(record, it.id, started_at, outcome.seconds, 'kept',
                         **self._cost(outcome))
+            # What drawing cannot put right goes back to the person, once for each start.
+            back = deck.to_outline(assessed['findings']) if rounds[-1].get('judged') else []
+            sent = bool(back) and self._send_back(record, mine, back, rounds[-1]['deck'])
             self._store(root, record)
-            self._commit(root, f'keep the review of {workspace.label(it.artifact)}')
+            if sent:
+                self._back_said(root, it, f'keep the review of {workspace.label(it.artifact)}')
+            else:
+                self._commit(root, f'keep the review of {workspace.label(it.artifact)}')
         shutil.rmtree(folder, ignore_errors=True)
+
+    def _send_back(self, record: dict, mine: pipeline.Deck, findings: list[dict],
+                   rendered: str | None) -> bool:
+        """Take what a deck says back to its gate, because a review against its design found
+        what only the person can settle: the approval is kept in the deck's history with why,
+        and nothing more is drawn until they decide again. Once for each start: approved again
+        as it stands, the deck is drawn on, with these listed at its own gate."""
+        kept = self._decided(record, mine.level)
+        if not kept.get('approved') or any(
+                entry.get('start') == mine.start.get('folder')
+                for entry in kept.get('returns') or ()):
+            return False
+        kept.setdefault('returns', []).append({
+            'at': home.now(), 'start': mine.start.get('folder'), 'deck': rendered,
+            'findings': [{key: finding.get(key) for key in (
+                'slide', 'number', 'severity', 'about', 'category', 'criterion', 'note', 'by')
+                if finding.get(key) is not None} for finding in findings],
+            'approved': kept['approved']})
+        kept['approved'] = None
+        return True
+
+    def _back_said(self, root: Path, it: pipeline.Step, done: str) -> None:
+        """Say that what a deck says was taken back to the person, with what was `done`, in
+        one commit. Call it holding `files`."""
+        says = f'what {workspace.label(it.artifact)} says'
+        workspace.checkpoint(root, stage='deck', level=self._level(it),
+                             next_step=f'Waiting for your review of {says}')
+        self._commit(root, f'{done}, and take {says} back to you: the review found what only '
+                     'a change to it can put right')
 
     def _keep(self, root: Path, run: _Run, found: pipeline.Survey, step: pipeline.Next) -> None:
         """Keep the previewed deck as the deck: run the brand's audit on it, put it into
@@ -1908,6 +2017,8 @@ class Engine:
         mine, base = found.decks[level], pipeline.place(root, level, pipeline.WORK)
         last, title = mine.last, session['title'] + (f', level {level}' if level else '')
         file, link = base / last['file'], None
+        if last.get('judged') and not self._receipts_hold(root, it, base, last):
+            return
         try:
             audit = pipeline.audited(self._skill().audit(file, *pipeline.brand_of(session)))
         except WorkspaceError as refusal:
@@ -1928,6 +2039,31 @@ class Engine:
                 'deck': last['deck'], 'sha256': entry['sha256'], 'at': home.now()}
             self._store(root, record)
             self._done(root, it, clock, f'keep {workspace.label(it.artifact)}')
+
+    def _receipts_hold(self, root: Path, it: pipeline.Step, base: Path, last: dict) -> bool:
+        """Before a deck reviewed against its design is kept, the slides tool checks that its
+        review still binds the deck, its pictures, the build, the approved design and the
+        asset copies. One that no longer does is marked so, and the deck is built and reviewed
+        again in its place."""
+        try:
+            self.slides().review_slide(base / last['preview'], last['slides'][0]['id'])
+            return True
+        except WorkspaceError as refusal:
+            if not set(getattr(refusal, 'codes', ())) & STALE:
+                self._problem(root, it.id, 'failed', (
+                    f'The deck was drawn and reviewed, but its review could not be checked. '
+                    f'{refusal}'), 'The slides as they were drawn and reviewed are kept on '
+                    'this computer.')
+                return False
+            stale = ' '.join(refusal.problems)
+        level = self._level(it)
+        with self.files:
+            rounds = list(pipeline.read_built(root, level).get('rounds') or ())
+            rounds[-1] = {**rounds[-1], 'stale': stale}
+            self._note(root, level, rounds=rounds)
+            self._commit(root, f'build {workspace.label(it.artifact)} again: its review no '
+                         f'longer holds. {stale}')
+        return False
 
     def outline(self, path, level: str | None, decision: str, note: str | None = None,
                 seen: str | None = None, design: str | None = None) -> dict:
