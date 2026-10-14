@@ -1266,13 +1266,20 @@ class DesignTests(DeckCase):
                          list(deck.DESIGNED_HOUSE))
         sections = [(job, spec) for kind, job, spec in self.workers.jobs if kind == 'section']
         self.assertEqual(len(sections), 2)
-        job, spec = sections[0]
-        made = spec['artifacts']['section']
-        self.assertEqual(job.guidance, briefs.guidance('deck-section', design=True))
-        self.assertEqual((made['design'], made['section']),
-                         (str(root / pipeline.DESIGNS), True))
-        self.assertEqual([json.loads(slide['intent']) for slide in made['slides']],
-                         [slide['intent'] for slide in plan['slides'][1:3]])
+        # The sections are drawn side by side, so they are told apart by what they hold.
+        approved = {slide['id']: slide['intent'] for slide in plan['slides']}
+        for job, spec in sections:
+            made = spec['artifacts']['section']
+            self.assertEqual(job.guidance, briefs.guidance('deck-section', design=True))
+            self.assertEqual((made['design'], made['section']),
+                             (str(root / pipeline.DESIGNS), True))
+            self.assertEqual({slide['id']: json.loads(slide['intent'])
+                              for slide in made['slides']},
+                             {slide['id']: approved[slide['id']] for slide in made['slides']})
+        self.assertEqual(sorted(slide['id'] for _, spec in sections
+                                for slide in spec['artifacts']['section']['slides']),
+                         sorted(slide['id'] for slide in OUTLINE['slides']
+                                if slide['kind'] == 'content'))
         brief = (start / 'given' / 'section-1.md').read_text()
         for told in ('## The approved design', '### `what-it-does`', '## Icons across the deck',
                      '- An instance: "server", on `what-it-does`', deck.DESIGNED_HOUSE[-1]):
