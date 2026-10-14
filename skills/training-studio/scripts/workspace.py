@@ -13,6 +13,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+import sync_guidance
 from home import alive, now
 
 SCHEMA = 1
@@ -432,13 +433,12 @@ def research_fingerprint(root: Path) -> str | None:
 
 
 def profile_for(root: Path) -> Path:
-    """The Yoodli profile a training uses: its pinned guidance's, else the installed one."""
-    try:
-        pin = json.loads((root / STATE_DIR / 'guidance.json').read_text(encoding='utf-8'))
-        pinned = Path(pin['path']) / 'assets' / 'profiles' / 'yoodli.json'
-    except (OSError, ValueError, KeyError, TypeError):
-        return PROFILE
-    return pinned if pin.get('commit') and pinned.is_file() else PROFILE
+    """The Yoodli profile a training uses: its pinned guidance's, else the installed one.
+    The pinned guidance is the one in the data folder for the pin's commit, never a path the
+    pin names."""
+    folder = sync_guidance.pinned(root)
+    pinned = folder / 'assets' / 'profiles' / 'yoodli.json' if folder else None
+    return pinned if pinned and pinned.is_file() else PROFILE
 
 
 def inputs(root: Path, session: dict, name: str) -> dict:
