@@ -1268,7 +1268,12 @@ class WireTests(WireCase):
                 ('a form', 415, {'Content_Type': 'application/x-www-form-urlencoded'}),
                 ('another host', 403, {'Host': 'example.com'})):
             with self.subTest(label):
-                status, _, body = self.ask('/api/documents', sent, **options)
+                # Refused unread too, so the line may be reset before the refusal is read.
+                try:
+                    status, _, body = self.ask('/api/documents', sent, **options)
+                except urllib.error.URLError as reset:
+                    self.assertIsInstance(reset.reason, (ConnectionResetError, BrokenPipeError))
+                    continue
                 self.assertEqual(status, expect, body)
         self.assertEqual(self.documents.listed(Path(path)), [])
         status, _, body = self.ask('/api/documents', sent)
