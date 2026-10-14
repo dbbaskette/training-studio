@@ -16,6 +16,7 @@ What a caller needs to know
     engine.picture(path, number, artifact=)  # one slide's picture, as PNG bytes
     engine.deck_gate(path, 'deck')           # what gate 6 adds for a deck the runner made
     engine.deck_needs()                      # what this computer has for making a deck
+    engine.models('codex')                   # the models an agent offers, and their levels
     engine.decided(path, outcome)            # commit a decision the page just recorded
     engine.carry_on(path)                    # then share if that is wanted, and wake the run
     engine.share()                           # fetch, replay and push the workspace
@@ -33,7 +34,8 @@ What a caller needs to know
 - The next step is never remembered. Each time, `pipeline.survey` works it out from the
   training's files, so starting the runner again resumes every training where it was.
 - The run record, `.training-studio/run.json` in the training's folder, holds only what the
-  files cannot say: the agent and model chosen when the training started, the limits, each
+  files cannot say: the agent, model and reasoning level chosen when the training started,
+  the limits, each
   try at each step with its times, cost, outcome and error, which research run the plan
   was handed to, a worker's question and the person's answers, why the run is halted,
   where its research may look and whether the person's documents are all added, which
@@ -176,6 +178,8 @@ IN_HAND = f'{workspace.STATE_DIR}/step.lock'
 AT_ONCE = 3             # research questions worked on at the same time
 LINES = 6               # the last things a worker did that the page is shown
 READY_FOR = 60          # seconds a look at an agent is reused
+MODELS_FOR = 3600       # seconds a list of an agent's models is reused
+MODELS_MISSED = 60      # seconds before a list that could not be made is asked for again
 LOOKED_FOR = 300        # seconds a look at what this computer has for a deck is reused
 BUSY_TRIES = 20         # times a finding is offered while another save holds the lock
 ACTIONS = ('pause', 'resume', 'stop', 'retry')
@@ -259,11 +263,13 @@ def read_record(root: Path) -> dict | None:
 
 
 def new_record(agent: str, model: str | None, chosen: settings.Settings,
-               scope: str = pipeline.SCOPE) -> dict:
+               scope: str = pipeline.SCOPE, effort: str | None = None) -> dict:
     """A run record for a training that is starting. `scope` is where its research may
-    look: anything but the public web alone waits for the person's documents first."""
+    look: anything but the public web alone waits for the person's documents first.
+    `effort` is the reasoning level every worker is given; None for the agent's own."""
     supplied = None if scope == pipeline.SCOPE else {'scope': scope, 'done': None, 'count': 0}
-    return {'schema': SCHEMA, 'agent': agent, 'model': model, 'started_at': home.now(),
+    return {'schema': SCHEMA, 'agent': agent, 'model': model, 'effort': effort,
+            'started_at': home.now(),
             'limits': {'step_seconds': chosen.step_seconds,
                        'training_dollars': chosen.training_dollars},
             'steps': {}, 'research': None, 'question': None, 'answers': {}, 'halt': None,
@@ -430,6 +436,8 @@ class Engine:
         self._sharing: threading.Thread | None = None
         self._share_again = False
         self._ready: dict[str, tuple[float, agents.Readiness]] = {}
+        self._models: dict[str, tuple[float, dict]] = {}  # each agent's list, and when
+        self._listing: dict[str, threading.Lock] = {}     # one listing per agent at a time
 
     # --- what is driven ------------------------------------------------------------------
 
@@ -470,6 +478,28 @@ class Engine:
         if fresh or seen is None or time.monotonic() - seen[0] >= READY_FOR:
             seen = self._ready[name] = (time.monotonic(), self.adapter(name).ready())
         return seen[1]
+
+    def models(self, name: str) -> dict:
+        """What an agent offers to choose from: {'agent', 'models', 'levels', 'problem'},
+        as `agents` describes. A list is kept for MODELS_FOR seconds, and one that could not
+        be made, with the sentence that says why, for MODELS_MISSED. Each agent is asked by
+        one caller at a time, and nothing else waits for it."""
+        adapter = self.adapter(name)
+        with self._lock:
+            listing = self._listing.setdefault(name, threading.Lock())
+        with listing:
+            seen = self._models.get(name)
+            if seen is not None and time.monotonic() - seen[0] < (
+                    MODELS_FOR if seen[1]['problem'] is None else MODELS_MISSED):
+                return seen[1]
+            try:
+                if not hasattr(adapter, 'models'):
+                    raise WorkspaceError(f'{adapter.title} cannot list its models.')
+                found = {'agent': name, **adapter.models(), 'problem': None}
+            except WorkspaceError as failure:
+                found = {'agent': name, 'models': [], 'levels': [], 'problem': str(failure)}
+            self._models[name] = (time.monotonic(), found)
+            return found
 
     def _run(self, root: Path) -> _Run:
         with self._lock:
@@ -730,15 +760,20 @@ class Engine:
         """Make a training from the form's answers and start its run."""
         space, chosen = self.space(), settings.load()
         gitstate.identity(space.repo)
+        # A form that names its agent says its model and level too, None being the
+        # agent's own choice. One that names none takes this computer's settings.
+        named = form['agent'] is not None
         agent = form['agent'] or chosen.agent
-        model = form['model'] or (chosen.model if agent == chosen.agent else None)
+        model = form['model'] if named else form['model'] or chosen.model
+        effort = settings.check_effort(form['effort'] if named
+                                       else form['effort'] or chosen.effort, agent)
         ready = self.ready(agent)
         if not ready.ready:
             raise WorkspaceError(ready.problem)
         with self.files:
             root = pipeline.create(space, form)
             try:
-                record = new_record(agent, model, chosen, form['source_scope'])
+                record = new_record(agent, model, chosen, form['source_scope'], effort)
                 record['driver'] = team.claim(space)
                 self._tried(record, 'intake', home.now(), 0.0, 'kept')
                 self._store(root, record)
@@ -1756,7 +1791,8 @@ class Engine:
         limits = agents.Limits(record['limits']['step_seconds'],
                                max(0.01, self._left(record)))
         job = agents.Job(work.guidance, work.task, folder, work.profile,
-                         tuple(worker_tools.command(folder)), limits, record.get('model'))
+                         tuple(worker_tools.command(folder)), limits, record.get('model'),
+                         record.get('effort'))
         lines, started_at, clock = deque(maxlen=LINES), home.now(), time.monotonic()
         with self._lock:
             run.workers[step.id] = {'label': step.doing, 'started_at': started_at,
@@ -2561,7 +2597,8 @@ class Engine:
             'notice': self._notice(root), 'taken': None if mine else team.taken(root),
             'last_shared': last, 'kept': self._set_aside(root),
             'clash': root.name in self._clash,
-            'model': record.get('model'), 'steps': self._steps(record, found, state),
+            'model': record.get('model'), 'effort': record.get('effort'),
+            'steps': self._steps(record, found, state),
             'workers': self._workers(run),
             'spent': {'dollars': dollars, 'tokens': tokens},
             'question': ({'id': asked['id'], 'text': asked['text'], 'from': asked['from']}
@@ -2813,7 +2850,7 @@ class Engine:
         said = pipeline.answers(root).get('source scope')
         scope = next((name for name, label in pipeline.SOURCES.items() if label == said),
                      pipeline.SCOPE)
-        record = new_record(chosen.agent, chosen.model, chosen, scope)
+        record = new_record(chosen.agent, chosen.model, chosen, scope, chosen.effort)
         if record['documents'] and planned != 'not-started':
             record['documents'].update(done=home.now(), count=0)
         research = workspace.research_record(root)

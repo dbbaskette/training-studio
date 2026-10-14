@@ -29,6 +29,12 @@ What a caller needs to know
   nobody does, answers 409 with who has it: a decision, a move of its decisions, a run's
   actions, an answer, its documents, its copies, and what its deck says. A training
   driven elsewhere never counts as needing the person here.
+- `GET /api/models?agent=codex` answers what an agent offers to choose from: {"agent",
+  "models": [{"name", "label", "levels", "default_level"}], "levels", "problem"}. `levels`
+  beside the models are those a model that is not listed may be given. A list that could
+  not be made is still answered, with no models and `problem` saying why, so the page can
+  say so and still take a name typed in. It is kept a while, and listing holds up nothing
+  else the page asks.
 - `POST /api/drive` with {"path", "action"} takes a training (`take`), which also takes
   one over, or hands it over (`hand-over`), and answers the run. `POST /api/fetch` brings
   in what teammates shared and sends nothing: {"reached", "received", "notice"}.
@@ -98,8 +104,8 @@ from workspace import WorkspaceError
 from runner import engine as engines
 from runner import gitstate, pipeline, setup
 
-READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run', '/api/slide',
-         '/api/status', '/api/published')
+READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/run',
+         '/api/slide', '/api/status', '/api/published')
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
           '/api/publish', '/api/adopt', '/api/fetch')
@@ -145,6 +151,8 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, setup.describe(self.engine))
         if path == '/api/agents':
             return desk.as_json(HTTPStatus.OK, {'agents': self.agents()})
+        if path == '/api/models':
+            return desk.as_json(HTTPStatus.OK, shaped(self.engine.models, one('agent')))
         if path == '/api/run':
             return desk.as_json(HTTPStatus.OK, self.run(one('path')))
         if path == '/api/gate':

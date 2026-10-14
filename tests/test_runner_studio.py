@@ -238,7 +238,8 @@ class StatusTests(StudioCase):
         self.assertEqual(sorted(found), ['agent', 'brand', 'configured', 'limits', 'notify',
                                          'previews', 'trainings', 'version', 'workspace'])
         self.assertEqual((found['version'], found['configured'], found['agent']),
-                         (VERSION, True, {'default': 'claude', 'model': None}))
+                         (VERSION, True,
+                          {'default': 'claude', 'model': None, 'effort': None}))
         self.assertEqual((found['workspace']['path'], found['workspace']['folder']),
                          (str(self.space.repo), 'trainings'))
         self.assertEqual(found['trainings'], [
@@ -258,10 +259,12 @@ class StatusTests(StudioCase):
 class ProcessTests(StudioCase):
     """`studio serve` as a person starts it: a process of its own, on a local port."""
 
-    def launch(self, opened: Path):
+    def launch(self, opened: Path, programs: Path | None = None):
         recorder = self.base / 'recorder.py'
         recorder.write_text('import sys\nopen(sys.argv[1], "w").write(sys.argv[2])\n')
         environment = {**os.environ, 'BROWSER': f'{sys.executable} {recorder} {opened} %s'}
+        if programs:
+            environment['PATH'] = f'{programs}{os.pathsep}{environment["PATH"]}'
         process = subprocess.Popen(
             [sys.executable, str(STUDIO), 'serve'], cwd=self.base, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, env=environment)
@@ -300,6 +303,40 @@ class ProcessTests(StudioCase):
         process.send_signal(signal.SIGTERM)
         rest, errors = process.communicate(timeout=30)
         self.assertEqual((process.returncode, rest, errors), (0, '', ''))
+
+    @unittest.skipIf(os.name == 'nt', 'the stand-in for Codex is a shell script')
+    def test_each_agents_models_are_listed_by_the_running_server(self):
+        programs = self.base / 'programs'
+        programs.mkdir()
+        catalog = {'models': [
+            {'slug': 'gpt-6-sol', 'display_name': 'GPT-6-Sol', 'visibility': 'list',
+             'default_reasoning_level': 'medium',
+             'supported_reasoning_levels': [{'effort': 'low'}, 'medium']},
+            {'slug': 'gpt-hidden', 'visibility': 'hide'}]}
+        codex = programs / 'codex'
+        codex.write_text(f"#!/bin/sh\necho '{json.dumps(catalog)}'\n")
+        codex.chmod(0o755)
+        opened = self.base / 'opened.txt'
+        process = self.launch(opened, programs)
+        printed = json.loads(process.stdout.readline())
+        if 'error' in printed:
+            self.skipTest(f"This environment does not allow listening on a local port: "
+                          f"{printed['error']}")
+        address, _, fragment = opened.read_text().partition('#')
+        key = {'X-Training-Studio-Token': fragment.removeprefix('token=')}
+
+        def models(agent: str) -> dict:
+            request = urllib.request.Request(f'{address}api/models?agent={agent}', headers=key)
+            with DIRECT.open(request, timeout=30) as response:
+                return json.loads(response.read())
+
+        self.assertEqual(models('codex'), {'agent': 'codex', 'problem': None, 'levels': [
+            'low', 'medium'], 'models': [{'name': 'gpt-6-sol', 'label': 'GPT-6-Sol',
+                                        'default_level': 'medium', 'levels': ['low', 'medium']}]})
+        self.assertEqual([model['name'] for model in models('claude')['models']],
+                         ['fable', 'opus', 'sonnet', 'haiku'])
+        process.send_signal(signal.SIGTERM)
+        process.communicate(timeout=30)
 
 
 if __name__ == '__main__':

@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import subprocess
+import threading
 import time
 import unittest
 import urllib.error
@@ -32,13 +33,17 @@ from runner import agents, gitstate, page, pipeline, settings
 from workspace import WorkspaceError
 
 VERSION = (helpers.SKILL / 'VERSION').read_text().strip()
-GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
+LISTED = [{'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
+           'levels': ['low', 'medium', 'high', 'xhigh']},
+          {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna', 'default_level': None,
+           'levels': ['low', 'medium', 'high']}]
+GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
          '/api/documents', '/api/copies', '/api/share')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
-RUN_KEYS = ['agent', 'clash', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'finished',
-            'kept', 'last_shared', 'mine', 'model', 'notice', 'outline', 'problem', 'question',
-            'queue', 'sentence', 'spent', 'state', 'steps', 'taken', 'workers']
+RUN_KEYS = ['agent', 'clash', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'effort',
+            'finished', 'kept', 'last_shared', 'mine', 'model', 'notice', 'outline', 'problem',
+            'question', 'queue', 'sentence', 'spent', 'state', 'steps', 'taken', 'workers']
 STEP_KEYS = ['attempts', 'dollars', 'error', 'id', 'kind', 'label', 'seconds', 'status']
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -246,7 +251,7 @@ class SetUpTests(FirstTimeCase):
     def test_nothing_is_set_up_at_first(self):
         self.assertEqual(self.get('setup'), {
             'configured': False, 'workspace': None,
-            'agent': {'default': 'claude', 'model': None},
+            'agent': {'default': 'claude', 'model': None, 'effort': None},
             'limits': {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 2},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
             'notify': {'on': False, 'can': True, 'problem': None},
@@ -262,13 +267,14 @@ class SetUpTests(FirstTimeCase):
         made = self.post('setup', {
             'path': str(folder), 'folder': 'courses', 'branch': 'main', 'name': 'my-work',
             'share_when': 'when-asked', 'agent': 'codex', 'model': 'a-model',
+            'effort': 'ultra',
             'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3}})
         self.assertEqual(made, {
             'configured': True,
             'workspace': {'name': 'my-work', 'repository': None, 'path': str(folder),
                           'folder': 'courses', 'branch': 'main', 'share_when': 'when-asked',
                           'shared': False, 'notice': None},
-            'agent': {'default': 'codex', 'model': 'a-model'},
+            'agent': {'default': 'codex', 'model': 'a-model', 'effort': 'ultra'},
             'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
             'notify': {'on': False, 'can': True, 'problem': None},
@@ -278,7 +284,9 @@ class SetUpTests(FirstTimeCase):
         marker = json.loads((folder / 'courses' / 'hub.json').read_text())
         self.assertEqual((marker['tool'], marker['name'], marker['folder'], marker['branch']),
                          ('training-studio', 'my-work', 'courses', 'main'))
-        self.assertEqual(settings.load(), settings.Settings('codex', 'a-model', 600, 7.5, 3))
+        self.assertEqual(settings.load(), settings.Settings(
+            agent='codex', model='a-model', effort='ultra', step_seconds=600,
+            training_dollars=7.5, parallel=3))
         path = self.started()
         self.assertEqual(Path(path), folder / 'courses' / 'rolling-restarts')
         self.assertEqual(self.get('run', path=path)['agent'], 'codex')
@@ -333,13 +341,18 @@ class SetUpTests(FirstTimeCase):
         folder = self.base / 'my-trainings'
         self.post('setup', {'path': str(folder)})
         changed = self.post('setup', {'share_when': 'when-asked', 'model': 'a-model',
-                                      'limits': {'parallel': 4}})
+                                      'effort': 'max', 'limits': {'parallel': 4}})
         self.assertEqual((changed['workspace']['path'], changed['workspace']['share_when'],
                           changed['agent'], changed['limits']),
-                         (str(folder), 'when-asked', {'default': 'claude', 'model': 'a-model'},
+                         (str(folder), 'when-asked',
+                          {'default': 'claude', 'model': 'a-model', 'effort': 'max'},
                           {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 4}))
+        # The model and the level are kept while the agent is, and are the new agent's own
+        # once it changes.
+        self.assertEqual(self.post('setup', {'limits': {'parallel': 3}})['agent'],
+                         {'default': 'claude', 'model': 'a-model', 'effort': 'max'})
         self.assertEqual(self.post('setup', {'agent': 'codex'})['agent'],
-                         {'default': 'codex', 'model': None})
+                         {'default': 'codex', 'model': None, 'effort': None})
 
     def test_set_up_that_makes_no_sense_changes_nothing(self):
         folder = str(self.base / 'my-trainings')
@@ -355,6 +368,10 @@ class SetUpTests(FirstTimeCase):
                  'when-asked.'),
                 ({'path': folder, 'agent': 'another'}, 'The agent is one of: claude, codex.'),
                 ({'path': folder, 'model': 'two words'}, 'The model is the short name'),
+                ({'path': folder, 'effort': 'warp'}, 'The reasoning level is one of: low, '
+                 'medium, high, xhigh, max, or nothing for the agent\'s own choice.'),
+                ({'path': folder, 'agent': 'codex', 'effort': ['high']}, 'The reasoning level '
+                 'is one of: none, minimal, low, medium, high, xhigh, max, ultra,'),
                 ({'path': folder, 'limits': [900]}, 'Give the limits as'),
                 ({'path': folder, 'limits': {'step_seconds': 5}},
                  'The time for one step, in seconds, is a whole number from 60 to 7200.'),
@@ -591,6 +608,69 @@ class AgentTests(PageCase):
              'version': '0.162', 'problem': away.problem}]})
         self.assertEqual(self.workers.jobs, [], 'looking starts no agent')
 
+    def models(self, **given):
+        """Codex's models, listed as `given` says, and counted."""
+        return mock.patch.object(self.engine.adapters['codex'], 'models', create=True,
+                                 **given)
+
+    def test_each_agents_models_are_listed_when_asked_and_kept(self):
+        with self.models(return_value=agents.offered(LISTED)) as listed:
+            first = self.get('models', agent='codex')
+            self.assertEqual(self.get('models', agent='codex'), first, 'a list is kept')
+            listed.assert_called_once_with()
+            with mock.patch.object(self.engines, 'MODELS_FOR', 0):
+                self.assertEqual(self.get('models', agent='codex'), first)
+            self.assertEqual(listed.call_count, 2, 'and asked for again once it is old')
+        self.assertEqual(first, {'agent': 'codex', 'models': LISTED,
+                                 'levels': ['low', 'medium', 'high'], 'problem': None})
+        self.assertEqual(self.workers.jobs, [], 'listing starts no agent')
+
+    def test_a_list_that_cannot_be_made_says_why_and_is_asked_for_again_soon(self):
+        late = WorkspaceError('Codex did not answer in 30 seconds.')
+        with self.models(side_effect=late) as listed:
+            said = self.get('models', agent='codex')
+            self.assertEqual(self.get('models', agent='codex'), said)
+            listed.assert_called_once_with()
+        self.assertEqual(said, {'agent': 'codex', 'models': [], 'levels': [],
+                                'problem': 'Codex did not answer in 30 seconds.'})
+        with self.models(return_value=agents.offered(LISTED)), \
+                mock.patch.object(self.engines, 'MODELS_MISSED', 0):
+            self.assertEqual(self.get('models', agent='codex')['models'], LISTED)
+        # An agent with no way to list them says so, as a list that could not be made.
+        self.assertEqual(self.get('models', agent='claude')['problem'],
+                         'scripted cannot list its models.')
+
+    def test_listing_never_holds_up_the_rest_of_the_page(self):
+        asked, release = [], threading.Event()
+
+        def slow():
+            asked.append(1)
+            self.assertTrue(release.wait(20))
+            return agents.offered(LISTED)
+
+        found = []
+        with self.models(side_effect=slow):
+            waiting = [threading.Thread(target=lambda: found.append(
+                self.get('models', agent='codex'))) for _ in range(2)]
+            for thread in waiting:
+                thread.start()
+            while not asked:
+                time.sleep(0.01)
+            # While Codex is still listing, everything the page reads is answered.
+            self.assertEqual(self.get('trainings'), {'trainings': [], 'needs': 0})
+            self.assertTrue(self.get('setup')['configured'])
+            self.assertEqual(self.get('models', agent='claude')['agent'], 'claude')
+            release.set()
+            for thread in waiting:
+                thread.join(20)
+        self.assertEqual((len(asked), len(found)), (1, 2), 'one listing, for both who asked')
+        self.assertEqual(found[0], found[1])
+
+    def test_models_are_asked_for_one_agent_this_runner_has(self):
+        self.assertEqual(self.get('models', 400, agent='another')['error'],
+                         'This runner has no agent called another.')
+        self.assertEqual(self.get('models', 400)['error'], 'Give one agent.')
+
     def test_a_training_is_not_started_on_an_agent_that_cannot_be_used(self):
         away = agents.Readiness('claude', False, problem='Claude Code is not installed. '
                                 'Install it and sign in, then try again.')
@@ -603,14 +683,15 @@ class AgentTests(PageCase):
 class StartTests(PageCase):
     def test_the_form_starts_a_training_and_its_run_at_once(self):
         made = self.post('trainings', {**FORM, 'levels': ['101', '201'], 'agent': 'codex',
-                                       'model': 'a-model', 'brief_kind': 'competitive',
+                                       'model': 'a-model', 'effort': 'xhigh',
+                                       'brief_kind': 'competitive',
                                        'deck_target': 'google', 'brand': CHOSEN,
                                        'copies': ['google'], 'yoodli': True})
         root = self.space.training('rolling-restarts')
         self.assertEqual(made, {'path': str(root), 'id': 'rolling-restarts', 'gates': 8})
         run = self.get('run', path=made['path'])
-        self.assertEqual((run['state'], run['agent'], run['model']),
-                         ('waiting', 'codex', 'a-model'))
+        self.assertEqual((run['state'], run['agent'], run['model'], run['effort']),
+                         ('waiting', 'codex', 'a-model', 'xhigh'))
         status = workspace.status(root)
         self.assertEqual((status['levels'], status['approval'], status['gate']),
                          (['101', '201'], 'page', 'research-plan'))
@@ -657,7 +738,10 @@ class StartTests(PageCase):
                 ({'source_scope': 'everything'}, 'The source scope is one of: public-web, '
                  'supplied-only, both'),
                 ({'agent': 'another'}, 'The agent is one of: claude, codex.'),
-                ({'model': '--flag'}, 'The model is the short name')):
+                ({'model': '--flag'}, 'The model is the short name'),
+                ({'agent': 'claude', 'effort': 'ultra'}, 'The reasoning level is one of: low, '
+                 'medium, high, xhigh, max,'),
+                ({'effort': 'warp'}, 'The reasoning level is one of: none, minimal,')):
             with self.subTest(changes=changes):
                 self.assertIn(said, self.post('trainings', {**FORM, **changes}, 400)['error'])
         self.assertEqual((self.get('trainings')['trainings'], self.workers.jobs), ([], []))
@@ -692,9 +776,9 @@ class RunTests(PageCase):
         self.workers.cost = 0.5
         run = self.get('run', path=self.started())
         self.assertEqual(sorted(run), RUN_KEYS)
-        self.assertEqual((run['state'], run['agent'], run['model'], run['workers'],
-                          run['question'], run['problem']),
-                         ('waiting', 'claude', None, [], None, None))
+        self.assertEqual((run['state'], run['agent'], run['model'], run['effort'],
+                          run['workers'], run['question'], run['problem']),
+                         ('waiting', 'claude', None, None, [], None, None))
         self.assertEqual(run['spent'], {'dollars': 0.5, 'tokens': 1200})
         self.assertIsInstance(run['sentence'], str)
         for step in run['steps']:
@@ -1371,7 +1455,8 @@ class SettingsTests(StudioCase):
     """What this computer remembers for the runner."""
 
     def test_the_defaults_are_used_until_something_is_saved(self):
-        self.assertEqual(settings.load(), settings.Settings('claude', None, 900, 20.0, 2))
+        self.assertEqual(settings.load(), settings.Settings(
+            agent='claude', step_seconds=900, training_dollars=20.0, parallel=2))
         kept = settings.save(replace(settings.load(), agent='codex', parallel=4))
         self.assertEqual((settings.load(), kept.limits), (kept, {
             'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 4}))

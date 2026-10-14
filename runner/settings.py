@@ -9,6 +9,9 @@ What a caller needs to know
 - Kept in the per-user data folder as `runner.json`, beside the workspace `gitstate`
   remembers there. Nothing here is written into the repository: two people who share a
   workspace can use different agents and different limits.
+- `model` is the model the agent is asked for and `effort` how hard it reasons, its
+  reasoning level; None for each is the agent's own choice. A level is one of the words an
+  agent takes (EFFORTS): which of them a model takes is what the agent lists.
 - `step_seconds` is how long one worker may run. `training_dollars` is what one training
   may spend, where the agent reports spending, before it stops and asks. `parallel` is how
   many trainings work at once.
@@ -35,6 +38,10 @@ SECONDS = (60, 7200)        # the shortest and longest time one worker may be gi
 DOLLARS = 1000              # the most one training may be allowed to spend
 PARALLEL = (1, 8)           # the fewest and most trainings that work at once
 MODEL = 100                 # characters in a model's name
+# The reasoning levels each agent takes: Claude Code's `--effort`, and the words Codex's
+# catalog and its service use.
+LEVELS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+EFFORTS = {'claude': ('low', 'medium', 'high', 'xhigh', 'max'), 'codex': LEVELS}
 PREVIEWS = ('drive', 'local')   # how a deck's previews are rendered
 
 
@@ -43,6 +50,7 @@ class Settings:
     """This computer's choices for the runner."""
     agent: str = 'claude'
     model: str | None = None
+    effort: str | None = None
     step_seconds: int = 900
     training_dollars: float = 20.0
     parallel: int = 2
@@ -77,6 +85,18 @@ def check_model(model) -> str | None:
     return model
 
 
+def check_effort(effort, agent: str | None = None) -> str | None:
+    """A reasoning level the agent takes, or None for the agent's own. With no agent, any
+    level one of them takes."""
+    if effort is None or effort == '':
+        return None
+    known = EFFORTS.get(agent, LEVELS)
+    if not isinstance(effort, str) or effort not in known:
+        raise WorkspaceError('The reasoning level is one of: ' + ', '.join(known)
+                             + ', or nothing for the agent\'s own choice.')
+    return effort
+
+
 def check_previews(how) -> str | None:
     if how is not None and how not in PREVIEWS:
         raise WorkspaceError('Previews are rendered one of these ways: '
@@ -108,14 +128,17 @@ def number(value, label: str, least: float, most: float, whole: bool):
 
 def check(chosen: Settings) -> Settings:
     """The same settings, once every one of them makes sense."""
+    agent = check_agent(chosen.agent)
     return Settings(
-        check_agent(chosen.agent), check_model(chosen.model),
-        number(chosen.step_seconds, 'The time for one step, in seconds,', *SECONDS, True),
-        number(chosen.training_dollars, 'What a training may spend, in dollars,', 0.01,
-               DOLLARS, False),
-        number(chosen.parallel, 'How many trainings run at once', *PARALLEL, True),
-        check_previews(chosen.previews), check_place(chosen.brand_skill),
-        check_notify(chosen.notify))
+        agent=agent, model=check_model(chosen.model),
+        effort=check_effort(chosen.effort, agent),
+        step_seconds=number(chosen.step_seconds, 'The time for one step, in seconds,',
+                            *SECONDS, True),
+        training_dollars=number(chosen.training_dollars,
+                                'What a training may spend, in dollars,', 0.01, DOLLARS, False),
+        parallel=number(chosen.parallel, 'How many trainings run at once', *PARALLEL, True),
+        previews=check_previews(chosen.previews), brand_skill=check_place(chosen.brand_skill),
+        notify=check_notify(chosen.notify))
 
 
 def load() -> Settings:
