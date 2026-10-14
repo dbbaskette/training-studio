@@ -65,7 +65,8 @@ class HubCase(Flow):
         folder = self.base / person
         if not folder.is_dir():
             folder.mkdir()
-            (folder / 'gitconfig').write_text(
+            helpers.gitconfig(
+                folder / 'gitconfig',
                 f'[user]\n\tname = {person.title()}\n\temail = {person}@example.com\n'
                 f"[init]\n\tdefaultBranch = main\n\ttemplateDir = {self.base / 'no-templates'}\n")
         os.environ.update({'TRAINING_STUDIO_DATA': str(folder / 'data'),
@@ -497,8 +498,8 @@ class PublishTests(HubCase):
     def test_publishing_needs_a_git_identity(self):
         self.founded()
         self.small()
-        nobody = self.base / 'nobody.gitconfig'
-        nobody.write_text('[user]\n\tuseConfigOnly = true\n')
+        nobody = helpers.gitconfig(self.base / 'nobody.gitconfig',
+                                   '[user]\n\tuseConfigOnly = true\n')
         os.environ['GIT_CONFIG_GLOBAL'] = str(nobody)
         self.assertIn('git does not know who you are', self.hub('publish', expect=2)['error'])
         self.assertEqual(git(self.clone(), 'status', '--porcelain'), '')
@@ -1279,6 +1280,28 @@ class BackgroundWorkTests(HubCase):
                                 capture_output=True, env={**os.environ, 'GIT_TRACE': '1'})
         self.assertEqual(traced.returncode, 0, traced.stderr)
         self.assertNotIn('maintenance run', traced.stderr)
+
+    def test_a_push_starts_no_maintenance_in_the_repository_it_reaches(self):
+        """For a push to a local path, git drops GIT_CONFIG_COUNT before it starts
+        receive-pack, so the receiving repository reads only the gitconfig."""
+        self.founded()
+        receiving = {name: value for name, value in os.environ.items()
+                     if not name.startswith(('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_',
+                                             'GIT_CONFIG_VALUE_'))}
+        for key, value in helpers.QUIET_GIT.items():
+            seen = subprocess.run(['git', 'config', '--get', key], cwd=self.remote, text=True,
+                                  capture_output=True, env=receiving)
+            self.assertEqual(seen.stdout.strip(), value, key)
+        clone = self.clone()
+        (clone / 'pushed.md').write_text('Pushed.\n')
+        git(clone, 'add', 'pushed.md')
+        git(clone, 'commit', '--quiet', '-m', 'Pushed')
+        traced = subprocess.run(['git', 'push', 'origin', 'HEAD:main'], cwd=clone, text=True,
+                                capture_output=True, env={**os.environ, 'GIT_TRACE': '1'})
+        self.assertEqual(traced.returncode, 0, traced.stderr)
+        self.assertIn('receive-pack', traced.stderr)
+        self.assertNotIn('maintenance run', traced.stderr)
+        self.assertNotIn('gc --auto', traced.stderr)
 
 
 class GuidanceTests(unittest.TestCase):

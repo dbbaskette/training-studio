@@ -345,7 +345,7 @@ class SetUpTests(FirstTimeCase):
                          (False, False))
 
     def test_set_up_needs_a_git_identity_and_says_how_to_give_one(self):
-        (self.base / 'nobody.gitconfig').write_text('[user]\n\tuseConfigOnly = true\n')
+        helpers.gitconfig(self.base / 'nobody.gitconfig', '[user]\n\tuseConfigOnly = true\n')
         with mock.patch.dict(os.environ, {'GIT_CONFIG_GLOBAL':
                                           str(self.base / 'nobody.gitconfig')}):
             said = self.post('setup', {'path': str(self.base / 'my-trainings')}, 409)
@@ -415,7 +415,8 @@ class CheckTests(FirstTimeCase):
                          ('courses', 'trainings'))
 
     def test_an_unchosen_branch_is_the_one_git_would_give_the_repository(self):
-        (self.base / 'trunk.gitconfig').write_text(
+        helpers.gitconfig(
+            self.base / 'trunk.gitconfig',
             '[user]\n\tname = Alex\n\temail = alex@example.com\n[init]\n\tdefaultBranch = '
             'trunk\n')
         with mock.patch.dict(os.environ, {'GIT_CONFIG_GLOBAL':

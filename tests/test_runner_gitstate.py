@@ -54,7 +54,8 @@ class WorkspaceCase(unittest.TestCase):
         folder = self.base / person
         if not folder.is_dir():
             folder.mkdir()
-            (folder / 'gitconfig').write_text(
+            helpers.gitconfig(
+                folder / 'gitconfig',
                 f'[user]\n\tname = {person.title()}\n\temail = {person}@example.com\n'
                 f"[init]\n\tdefaultBranch = main\n\ttemplateDir = {self.base / 'no-templates'}\n")
         os.environ.update({'TRAINING_STUDIO_DATA': str(folder / 'data'),
@@ -101,8 +102,8 @@ class WorkspaceCase(unittest.TestCase):
 
     def nobody(self) -> None:
         """Become someone git has no name for."""
-        (self.base / 'nobody.gitconfig').write_text('[user]\n\tuseConfigOnly = true\n')
-        os.environ['GIT_CONFIG_GLOBAL'] = str(self.base / 'nobody.gitconfig')
+        os.environ['GIT_CONFIG_GLOBAL'] = str(helpers.gitconfig(
+            self.base / 'nobody.gitconfig', '[user]\n\tuseConfigOnly = true\n'))
 
     def nothing_kept(self) -> None:
         """No clone and no remembered workspace were left behind."""

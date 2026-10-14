@@ -38,10 +38,27 @@ docs/                       this documentation, the spec, the plan and reviews
 ## Run the tests
 
 ```bash
+python3 scripts/ci/run_tests.py
+```
+
+That runs the whole suite in parallel, each test class in a process of its own, as many at a time as the computer has processors, the slowest classes first. It shows a class's output only when that class fails, ends with a count like unittest's, and exits non-zero on any failure. On a Mac it puts the real git first on `PATH`, because `/usr/bin/git` there asks `xcrun` for it on every call and the suite starts about twenty thousand. On a 12-core Mac it takes about two minutes, where plain unittest takes about nineteen.
+
+Give it modules, classes or tests to run only those, `--jobs N` to change how many run at once, and `--times` to list every class with the time it took. When a class becomes one of the slowest, add it to `SLOW` at the top of the script so it is started early.
+
+```bash
+python3 scripts/ci/run_tests.py test_hub test_cli.CheckTests --times
+```
+
+Plain unittest still works, one test at a time, for the whole suite or any one module:
+
+```bash
 python3 -m unittest discover -s tests -v
+cd tests && python3 -m unittest test_cli
 ```
 
 The suite needs only Python 3.11 or newer. It uses no network, no harness skill and no outside account.
+
+Every test that uses git keeps it from working in the background, which could still be writing when a test's temporary folder is removed. `GIT_CONFIG_COUNT` does not reach the receiving end of a push to a local path, so a test that writes a gitconfig writes it through `helpers.gitconfig`, which adds the settings that do.
 
 Tests that open a local port are skipped where that is not allowed. Tests that run the page's own scripts, through `tests/page_harness.js`, need Node and are skipped without it; nothing else does.
 
@@ -58,7 +75,7 @@ Two workflows run on a pull request.
 - **`ci.yml`** runs on GitHub's own runners: Ubuntu and macOS, Python 3.11 and 3.13.
 - **`verify-tart.yml`** runs on disposable virtual machines on the owner's Mac, through an on-demand runner service kept outside this repository. It runs only for the owner's own pull requests from a branch of this repository, and only once that service has been told about this repository. Its filter is read from the base branch, never from the pull request.
 
-Both run the same thing, `scripts/ci/check.sh`: the whole suite, then the package check.
+Both run the same thing, `scripts/ci/check.sh`: the whole suite through `scripts/ci/run_tests.py`, then the package check.
 
 That service pins the exact contents of every workflow here. **A change to either workflow file takes effect only after its new hash is recorded in the service's own configuration,** so say so in the pull request that makes one.
 
