@@ -37,6 +37,11 @@ What a caller needs to know
                           restrictions=None)       # a person's picture, recorded
     slides.images_status()                         # whether an image provider is set up
     slides.generate_image(project, ident, prompt, output, slide, alt=None)
+    slides.reviews()                               # whether it reviews a build against the design
+    made = slides.review_prepare(compiled, output, design)   # renders output/deck.pptx
+    slides.review_slide(output, slide)             # one slide's packet: criteria, prompts
+    slides.review_mark(output, revision, numbers, note)       # its pictures were looked at
+    slides.review_assess(output, revision, assessment)        # with what is unresolved
 
 - `brand` is the path of an exported brand-contract.json. `outline`, `composition`, `parts`
   and `assessment` are paths of JSON files; `folder`, `compiled`, `preview_folder` and
@@ -120,6 +125,20 @@ Added to the above
   credential. `asset_supplied` is the person's alone: no worker is given it.
 - `generate_image` asks the tool's own image provider, set up as the tool says, for the
   approved artwork of one slide drawn as generated art. The tool refuses any other slide.
+- The design-bound review of a composition is `review --compiled` with `--design-project`:
+  the tool renders the whole build itself into `output/deck.pptx`, which is the reviewed
+  deck to deliver, and pictures each slide. `reviews()` is its capability `compose-review`;
+  a tool that lists no capabilities has none, so nothing is asked by a refusal. Every review
+  call asks for JSON. `review_prepare` returns the tool's summary: {'output', 'revision',
+  'slides', 'pending', 'creativeReviewComplete', 'readyForUserReview', 'designReview',
+  'qualityRevision', 'assessmentBinding', ...}; the record it wrote is `output/review.json`.
+  `review_slide` returns {'revision', 'assessmentBinding', 'slide': the prompt, with its
+  'criteria', 'objects', 'expectedText', 'sources' and any 'proseCards', 'findings'}, and
+  checks the review's receipts first. `review_mark` records that the pictures were looked
+  at, and `review_assess` records an assessment, a file of the shape the tool takes, and
+  adds `unresolved`. A changed deck, picture, build or design revision is refused as
+  `review-stale`, a changed asset copy as `asset-hash-changed`, and a computer without
+  LibreOffice or Poppler as `renderer-unavailable`.
 - `slides.runtime` is the folder the tool is installed in, with links followed. Give it to
   `Slides(runtime=...)` to use that same tool somewhere else, as the worker tools' server
   does. `Slides(read=...)` replaces how a guidance file is read.
@@ -291,6 +310,7 @@ class Slides:
         self._designs: bool | None = None
         self._sections: bool | None = None
         self._assets: bool | None = None
+        self._reviews: bool | None = None
         self._capabilities: frozenset | None = None
         self._asked_capabilities = False
         if self.node is None:
@@ -582,6 +602,42 @@ class Slides:
                               '--prompt-file', str(brief), '--output', output,
                               '--design-project', str(project), '--slide', slide,
                               *(['--alt', alt] if alt else []), '--json')
+
+    # --- the design-bound review of a composition ---
+
+    def reviews(self) -> bool:
+        """Whether this tool reviews a whole compiled deck against its approved design and
+        renders the deck it reviews: its capability `compose-review`. A tool that lists no
+        capabilities has none, so it is not asked by a refusal."""
+        if self._reviews is None:
+            self._reviews = 'compose-review' in (self.capabilities() or ())
+        return self._reviews
+
+    def review_prepare(self, compiled: Path, output: Path, design: Path) -> dict:
+        """Render a whole deck compiled against the design approved in `design` into
+        `output/deck.pptx`, picture each slide, and prepare its creative review. An unchanged
+        build keeps its deck and its receipts. Renders are taken one at a time."""
+        with PREVIEWING:
+            return self._json('review', '--compiled', str(compiled), '--output', str(output),
+                              '--design-project', str(design), '--json')
+
+    def review_slide(self, output: Path, slide: str) -> dict:
+        """One slide's part of a prepared review, by its ID, once its receipts are checked."""
+        return self._json('review', '--output', str(output), '--slide', slide, '--json')
+
+    def review_mark(self, output: Path, revision: str, numbers: list[int], note: str) -> dict:
+        """Record that the pictures of these slides were looked at, for this revision."""
+        return self._json('review', '--output', str(output), '--mark',
+                          ','.join(str(number) for number in numbers), '--revision', revision,
+                          '--note', note, '--json')
+
+    def review_assess(self, output: Path, revision: str, assessment: dict) -> dict:
+        """Record a creative assessment of this revision: every criterion of every slide."""
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / 'assessment.json'
+            file.write_text(json.dumps(assessment, ensure_ascii=False), encoding='utf-8')
+            return self._json('review', '--output', str(output), '--assessment', str(file),
+                              '--revision', revision, '--json')
 
     # --- what the tool's own workers read ---
 

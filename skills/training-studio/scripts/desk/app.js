@@ -218,6 +218,18 @@ const ASSET_WORDS = {
 const SEVERITIES = { critical: ['late', 'Critical'], major: ['late', 'Major'],
   minor: ['none', 'Minor'] };
 const SERIOUS = ['critical', 'major'];
+// What a finding is about, where drawing again would not put it right, and the categories a
+// review against the approved design files its findings in, as the slides tool orders them.
+const ABOUT_TAGS = {
+  content: 'About what it says', concept: 'About how it was approved to teach',
+};
+const CATEGORY_WORDS = {
+  'asset-failure': 'The pictures and icons it was approved with',
+  'design-deviation': 'How it departs from the approved design',
+  'visual-teaching': 'Whether the visual teaches',
+  'fit-defect': 'How it fits',
+  'direct-text': 'Direct text by decision',
+};
 // What a brand's own check answers when it has nothing to raise.
 const AUDIT_QUIET = ['ok', 'clear', 'clean', 'pass', 'passed', 'fine', 'success'];
 // What the page says once what a deck says is decided. A gate's decision is answered by the
@@ -545,7 +557,9 @@ function say(problem, text) {
 // A labelled box to type in. What is typed is kept in `held[name]` as it is typed, so a
 // screen that is drawn again still has it. With `picked` it is the browser's own file picker
 // instead: nothing of it is kept, and what is chosen is handed to `picked`. With `options`,
-// each a value and its name, it is the browser's own list to choose one from.
+// each a value and its name, it is the browser's own list to choose one from. An option
+// with a third word, a group's name, is put in that group with the options next to it
+// that name it too.
 function field(id, label, held, name, about) {
   const spec = about || {};
   const title = make('label', 'field-label', label);
@@ -560,10 +574,17 @@ function field(id, label, held, name, about) {
     input.accept = spec.accept || '';
     input.addEventListener('change', () => spec.picked(input));
   } else {
-    for (const [value, text] of spec.options || []) {
+    let group = null;
+    for (const [value, text, under] of spec.options || []) {
       const option = make('option', '', text);
       option.value = value;
-      input.append(option);
+      if (!under) group = null;
+      else if (!group || group.label !== under) {
+        group = make('optgroup');
+        group.label = under;
+        input.append(group);
+      }
+      (group || input).append(option);
     }
     input.value = held[name] || '';
     input.maxLength = spec.long ? 4000 : 400;
@@ -2269,9 +2290,15 @@ function findingsNote(found) {
   // The reviewer drew none of the slides. How often it has looked says how far repair went.
   const looked = 'An independent reviewer, which drew none of the slides, has looked at each '
     + 'one' + (review.round > 0 ? ' ' + times(review.round) : '') + '.';
+  // Reviewed against the approved design: the slides drawn as text by decision, accepted so.
+  const accepted = list(review.direct).filter((entry) => entry.accepted);
+  const direct = accepted.length ? make('p', 'quiet', 'Drawn as text by decision, and '
+    + 'accepted so by the review: ' + slidesNamed(accepted.map((entry) => entry.number))
+    + '.') : null;
   if (!findings.length) {
     return add(node, make('p', '', 'The reviewer has nothing left to raise.'),
-      make('p', 'quiet', looked + ' Whether the deck is good is still yours to judge.'));
+      make('p', 'quiet', looked + ' Whether the deck is good is still yours to judge.'),
+      direct);
   }
   const counted = order.map((severity) => [findings.filter((finding) => finding.severity
     === severity).length, SEVERITIES[severity][1].toLowerCase()])
@@ -2282,24 +2309,50 @@ function findingsNote(found) {
     : ' findings remain.');
   add(node, serious(found).length ? state('late', says) : make('p', '', says),
     make('p', 'quiet', looked + ' The deck comes to you as it is.'));
-  const items = make('ol', 'look findings');
-  findings.forEach((finding, index) => {
+  const item = (finding, index) => {
     const [shape, words] = SEVERITIES[finding.severity]
       || ['none', spoken(finding.severity || 'finding')];
     const go = button('Slide ' + finding.number, 'link',
       () => view.viewer && view.viewer.go(finding.number, true), 'finding ' + index);
-    add(items, add(make('li', 'finding'),
+    return add(make('li', 'finding'),
       add(make('p', 'foot-line'), state(shape, words), go,
-        finding.about === 'content' ? make('span', 'tag', 'About what it says') : null),
+        ABOUT_TAGS[finding.about] ? make('span', 'tag', ABOUT_TAGS[finding.about]) : null),
       make('p', '', finding.note),
-      finding.fix ? make('p', 'quiet', 'Suggested: ' + finding.fix) : null));
-  });
-  add(node, items);
+      finding.fix ? make('p', 'quiet', 'Suggested: ' + finding.fix) : null);
+  };
+  // A review against the approved design files each finding in one of the slides tool's
+  // categories, and they are shown so, in its order. Any other review is one list.
+  const filed = findings.some((finding) => finding.category);
+  if (filed) {
+    const known = Object.keys(CATEGORY_WORDS);
+    const rank = (finding) => (known.includes(finding.category) ? known.indexOf(finding.category)
+      : known.length);
+    const groups = [...new Set(findings.map((finding) => finding.category))]
+      .sort((one, other) => rank({ category: one }) - rank({ category: other }));
+    groups.forEach((category) => {
+      const items = make('ol', 'look findings');
+      findings.forEach((finding, index) => {
+        if (finding.category === category) add(items, item(finding, index));
+      });
+      add(node, make('h3', 'row-title', CATEGORY_WORDS[category] || 'Found'), items);
+    });
+  } else {
+    const items = make('ol', 'look findings');
+    findings.forEach((finding, index) => add(items, item(finding, index)));
+    add(node, items);
+  }
+  add(node, direct);
   if (findings.some((finding) => finding.about === 'content')) {
     add(node, make('p', 'quiet', '“About what it says” is a finding about a slide’s words, '
       + 'not how it is drawn, so drawing the slide again would not put it right. Choose “Ask '
       + 'for changes” and say what should change: that leads back to what the deck says, and '
       + 'the slides are drawn from it again.'));
+  }
+  if (findings.some((finding) => finding.about === 'concept')) {
+    add(node, make('p', 'quiet', '“About how it was approved to teach” is a finding that only '
+      + 'another visual concept than the one you approved would put right. Choose “Ask for '
+      + 'changes” and say what should change: that leads back to what the deck says and how '
+      + 'each slide is drawn.'));
   }
   return node;
 }
@@ -3316,7 +3369,7 @@ async function readModels(agent, again) {
   }
   view.models[agent] = found.problem ? { problem: String(found.problem), at: Date.now() }
     : { models: list(found.models).filter((one) => one && typeof one.name === 'string'),
-      levels: list(found.levels) };
+      levels: list(found.levels), source: found.source || '' };
   paintPick();
 }
 
@@ -3327,15 +3380,17 @@ function paintPick() {
 }
 
 // The model, from the agent's own list, and how hard it reasons, from the levels that model
-// takes. "Another model…" is for a name the list does not have, and stays where the list
-// could not be made.
+// takes. Models of one family are a group, and what the agent says of a model follows its
+// name. "Another model…" is for a name the list does not have, and stays where the list
+// could not be made. A model that takes no level is offered none.
 function modelFields(held, prefix, fill, told) {
   const name = AGENT_NAMES[held.agent] || held.agent;
   const known = view.models[held.agent] || { asking: true };
   const found = listedFor(held.agent);
   const listed = found ? found.models : [];
   const model = held.other ? null : listed.find((one) => one.name === held.model);
-  const options = [['', OWN_CHOICE], ...listed.map((one) => [one.name, one.label || one.name])];
+  const options = [['', OWN_CHOICE], ...listed.map((one) => [one.name,
+    (one.label || one.name) + (one.about ? ': ' + one.about : ''), one.family || ''])];
   // Until the list comes, a model already chosen is offered as it is.
   if (!found && held.model && !held.other) options.push([held.model, held.model]);
   options.push([OTHER_MODEL, 'Another model…']);
@@ -3352,8 +3407,8 @@ function modelFields(held, prefix, fill, told) {
       settlePick(held);
       fill();
     },
-    hint: 'As ' + name + ' lists them. Its own choice is the model it uses when none is '
-      + 'named.' })];
+    hint: 'As ' + (found && found.source ? 'the ' + found.source + ',' : name) + ' lists '
+      + 'them. Its own choice is the model it uses when none is named.' })];
   if (known.asking) {
     nodes.push(make('p', 'quiet', 'Asking ' + name + ' which models it has…'));
   } else if (!found) {
@@ -3368,6 +3423,10 @@ function modelFields(held, prefix, fill, told) {
       hint: 'As ' + name + ' knows it, with no spaces.' }));
   }
   const levels = levelsFor(held);
+  if (model && !list(model.levels).length) {
+    nodes.push(make('p', 'quiet', (model.label || model.name) + ' takes no reasoning level.'));
+    return nodes;
+  }
   const usual = model && model.default_level
     ? ' (' + lower(levelName(model.default_level)) + ')' : '';
   const choices = [['', OWN_CHOICE + usual], ...list(levels).map((level) => [level,

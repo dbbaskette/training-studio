@@ -36,10 +36,11 @@ from runner import agents, gitstate, page, pipeline, settings
 from workspace import WorkspaceError
 
 VERSION = (helpers.SKILL / 'VERSION').read_text().strip()
-LISTED = [{'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
+LISTED = [{'name': 'gpt-6-sol', 'label': 'GPT-6-Sol (gpt-6-sol)', 'family': None,
+           'about': 'Previous generation workhorse model.', 'default_level': 'medium',
            'levels': ['low', 'medium', 'high', 'xhigh']},
-          {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna', 'default_level': None,
-           'levels': ['low', 'medium', 'high']}]
+          {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna (gpt-6-luna)', 'family': None,
+           'about': None, 'default_level': None, 'levels': ['low', 'medium', 'high']}]
 GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
          '/api/documents', '/api/copies', '/api/share', '/api/companions', '/api/asset',
@@ -383,6 +384,8 @@ class SetUpTests(FirstTimeCase):
                  'medium, high, xhigh, max, or nothing for the agent\'s own choice.'),
                 ({'path': folder, 'agent': 'codex', 'effort': ['high']}, 'The reasoning level '
                  'is one of: none, minimal, low, medium, high, xhigh, max, ultra,'),
+                ({'path': folder, 'model': 'claude-haiku-4-5', 'effort': 'low'},
+                 'Haiku 4.5 takes no reasoning level: leave it to the agent.'),
                 ({'path': folder, 'limits': [900]}, 'Give the limits as'),
                 ({'path': folder, 'limits': {'step_seconds': 5}},
                  'The time for one step, in seconds, is a whole number from 60 to 7200.'),
@@ -633,7 +636,8 @@ class AgentTests(PageCase):
                 self.assertEqual(self.get('models', agent='codex'), first)
             self.assertEqual(listed.call_count, 2, 'and asked for again once it is old')
         self.assertEqual(first, {'agent': 'codex', 'models': LISTED,
-                                 'levels': ['low', 'medium', 'high'], 'problem': None})
+                                 'levels': ['low', 'medium', 'high'], 'source': None,
+                                 'problem': None})
         self.assertEqual(self.workers.jobs, [], 'listing starts no agent')
 
     def test_a_list_that_cannot_be_made_says_why_and_is_asked_for_again_soon(self):
@@ -642,7 +646,7 @@ class AgentTests(PageCase):
             said = self.get('models', agent='codex')
             self.assertEqual(self.get('models', agent='codex'), said)
             listed.assert_called_once_with()
-        self.assertEqual(said, {'agent': 'codex', 'models': [], 'levels': [],
+        self.assertEqual(said, {'agent': 'codex', 'models': [], 'levels': [], 'source': None,
                                 'problem': 'Codex did not answer in 30 seconds.'})
         with self.models(return_value=agents.offered(LISTED)), \
                 mock.patch.object(self.engines, 'MODELS_MISSED', 0):
@@ -752,7 +756,9 @@ class StartTests(PageCase):
                 ({'model': '--flag'}, 'The model is the short name'),
                 ({'agent': 'claude', 'effort': 'ultra'}, 'The reasoning level is one of: low, '
                  'medium, high, xhigh, max,'),
-                ({'effort': 'warp'}, 'The reasoning level is one of: none, minimal,')):
+                ({'effort': 'warp'}, 'The reasoning level is one of: none, minimal,'),
+                ({'agent': 'claude', 'model': 'claude-opus-4-6', 'effort': 'xhigh'},
+                 'Opus 4.6 takes one of these reasoning levels: low, medium, high, max,')):
             with self.subTest(changes=changes):
                 self.assertIn(said, self.post('trainings', {**FORM, **changes}, 400)['error'])
         self.assertEqual((self.get('trainings')['trainings'], self.workers.jobs), ([], []))

@@ -473,7 +473,14 @@ function snapshot() {
     fields: Object.fromEntries(boxes().map(([label, held]) => [label, held.value])),
     // What each of the browser's own lists offers, in order, under the words of its label.
     lists: Object.fromEntries(boxes().filter(([, held]) => held.tagName === 'SELECT')
-      .map(([label, held]) => [label, held.children.map((option) => option.textContent)])),
+      .map(([label, held]) => [label, held.querySelectorAll('option')
+        .map((option) => option.textContent)])),
+    // The groups a list puts its entries in, each with its name, where it has any.
+    groups: Object.fromEntries(boxes().filter(([, held]) => held.tagName === 'SELECT'
+      && held.querySelector('optgroup'))
+      .map(([label, held]) => [label, held.children.map((part) => (part.tagName === 'OPTGROUP'
+        ? [part.label, part.children.map((option) => option.textContent)]
+        : part.textContent))])),
     locked: boxes().filter(([, held]) => held.readOnly).map(([label]) => label),
     invalid: boxes().filter(([, held]) => held.getAttribute('aria-invalid') === 'true')
       .map(([label]) => label),

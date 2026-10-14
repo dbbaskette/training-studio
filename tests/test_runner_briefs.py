@@ -48,7 +48,8 @@ class BriefTests(JobCase):
                                        'deck-outline', 'deck-section', 'deck-review'))
         self.assertEqual(sorted(path.name for path in briefs.HERE.glob('*.md')),
                          ['blueprint-level.md', 'blueprint.md', 'brief.md', 'deck-design.md',
-                          'deck-outline.md', 'deck-repair.md', 'deck-review.md',
+                          'deck-outline.md', 'deck-repair-beyond.md', 'deck-repair.md',
+                          'deck-review-design.md', 'deck-review.md',
                           'deck-section-assets.md', 'deck-section-design.md',
                           'deck-section.md',
                           'document.md', 'level.md', 'naming.md', 'research-plan.md',

@@ -11,7 +11,9 @@ What a caller needs to know
   workspace can use different agents and different limits.
 - `model` is the model the agent is asked for and `effort` how hard it reasons, its
   reasoning level; None for each is the agent's own choice. A level is one of the words an
-  agent takes (EFFORTS): which of them a model takes is what the agent lists.
+  agent takes (EFFORTS): which of them a model takes is what the agent lists. Claude Code
+  lists nothing, so its models and their levels are kept in `claude-code-models.json`
+  beside this file, and a level its model does not take is refused (`takes`).
 - `step_seconds` is how long one worker may run. `training_dollars` is what one training
   may spend, where the agent reports spending, before it stops and asks. `parallel` is how
   many trainings work at once.
@@ -28,7 +30,10 @@ What a caller needs to know
 """
 from __future__ import annotations
 
+import functools
+import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
 import home
@@ -44,6 +49,8 @@ MODEL = 100                 # characters in a model's name
 # catalog and its service use.
 LEVELS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 EFFORTS = {'claude': ('low', 'medium', 'high', 'xhigh', 'max'), 'codex': LEVELS}
+# Claude Code has no list of its models, so the runner keeps one, with its source and date.
+CLAUDE_MODELS = Path(__file__).resolve().with_name('claude-code-models.json')
 PREVIEWS = ('drive', 'local')   # how a deck's previews are rendered
 
 
@@ -88,16 +95,83 @@ def check_model(model) -> str | None:
     return model
 
 
-def check_effort(effort, agent: str | None = None) -> str | None:
-    """A reasoning level the agent takes, or None for the agent's own. With no agent, any
-    level one of them takes."""
+def check_effort(effort, agent: str | None = None, model: str | None = None) -> str | None:
+    """A reasoning level the agent and its model take, or None for the agent's own. With
+    no agent, any level one of them takes."""
     if effort is None or effort == '':
         return None
-    known = EFFORTS.get(agent, LEVELS)
+    known = takes(agent, model)
     if not isinstance(effort, str) or effort not in known:
-        raise WorkspaceError('The reasoning level is one of: ' + ', '.join(known)
+        named = claude_models()['named'].get(model) if agent == 'claude' else None
+        if named and not known:
+            raise WorkspaceError(f'{named} takes no reasoning level: leave it to the agent.')
+        raise WorkspaceError((f'{named} takes one of these reasoning levels: ' if named
+                              else 'The reasoning level is one of: ') + ', '.join(known)
                              + ', or nothing for the agent\'s own choice.')
     return effort
+
+
+def takes(agent: str | None, model: str | None = None) -> tuple:
+    """The reasoning levels a model takes: those the list of Claude Code's models gives
+    it, or for a model that is not listed, every level its agent takes."""
+    if agent == 'claude' and model:
+        for listed in claude_models()['models']:
+            if listed['name'] == model:
+                return tuple(listed['levels'])
+    return EFFORTS.get(agent, LEVELS)
+
+
+@functools.lru_cache(maxsize=None)
+def claude_models() -> dict:
+    """Claude Code's models, read once from the file beside this one. See read_models."""
+    return read_models(CLAUDE_MODELS)
+
+
+def read_models(path: Path) -> dict:
+    """A list of Claude Code's models: {'source', 'date', 'models', 'named'}. Each model is
+    {'name', 'label', 'family', 'about', 'levels', 'default_level'}, in the file's order,
+    and `named` gives each model's short name ("Opus 4.6") by its ID. An alias takes its
+    label and its levels from the model it names. A list that is not whole is refused."""
+    try:
+        kept = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        raise WorkspaceError(f'The list of Claude Code\'s models in {path} cannot be read.')
+    entries = kept.get('models') if isinstance(kept, dict) else None
+    if not isinstance(entries, list):
+        raise WorkspaceError(f'{path} has no list of models.')
+    found: dict[str, dict] = {}
+    for entry in entries:
+        entry = entry if isinstance(entry, dict) else {}
+        name = entry.get('id')
+        try:
+            check_model(name)
+        except WorkspaceError:
+            name = None
+        if not name:
+            raise WorkspaceError(f'{entry.get("id")} is not a model\'s name, in {path}.')
+        if name in found:
+            raise WorkspaceError(f'{name} is listed twice, in {path}.')
+        for part in ('family',) if 'alias' in entry else ('family', 'label'):
+            if not isinstance(entry.get(part), str) or not entry[part].strip():
+                raise WorkspaceError(f'{name} has no {part}, in {path}.')
+        levels = entry.get('levels', [])
+        if 'alias' not in entry and (not isinstance(levels, list) or any(
+                level not in EFFORTS['claude'] for level in levels)):
+            raise WorkspaceError(f'{name} takes a level Claude Code does not, in {path}.')
+        found[name] = entry
+    models, named = [], {}
+    for name, entry in found.items():
+        meant = found.get(entry.get('alias')) if 'alias' in entry else entry
+        if meant is None or 'alias' in meant:
+            raise WorkspaceError(f'{name} names {entry.get("alias")}, which is not a version '
+                                 f'listed in {path}.')
+        named[name] = meant['label']
+        label = (f'{entry["family"]}, always the newest (now {meant["label"]})'
+                 if meant is not entry else f'{entry["label"]} ({name})')
+        models.append({'name': name, 'label': label, 'family': entry['family'],
+                       'about': None, 'levels': list(meant['levels']), 'default_level': None})
+    return {'source': kept.get('source'), 'date': kept.get('date'), 'models': models,
+            'named': named}
 
 
 def check_previews(how) -> str | None:
@@ -141,7 +215,7 @@ def check(chosen: Settings) -> Settings:
     agent = check_agent(chosen.agent)
     return Settings(
         agent=agent, model=check_model(chosen.model),
-        effort=check_effort(chosen.effort, agent),
+        effort=check_effort(chosen.effort, agent, chosen.model),
         step_seconds=number(chosen.step_seconds, 'The time for one step, in seconds,',
                             *SECONDS, True),
         training_dollars=number(chosen.training_dollars,

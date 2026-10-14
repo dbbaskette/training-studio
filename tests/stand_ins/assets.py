@@ -792,7 +792,8 @@ def verify(folder) -> None:
     except FileNotFoundError:
         return
     for asset in (report.get('inputs') or {}).get('assets') or []:
-        if not asset.get('asset'):
+        # An icon is drawn from the brand library at render, so the build holds no copy of it.
+        if not asset.get('asset') or asset.get('kind') == 'icon':
             continue
         slide = asset.get('slide')
         try:

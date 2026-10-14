@@ -105,6 +105,7 @@ DESIGNS = 'deck'                    # where the slides tool keeps its record of 
 APPROVED_DESIGN = Path('given') / 'design.json'   # in a start: the plan the tool approved
 ASSETS = 'deck/.harness-slides/assets.json'   # the tool's record of the deck's pictures and icons
 SUPPLIED = ('supplied', 'screenshot', 'chart')   # the assets a person gives, on the page
+JUDGED = 'design'   # a start whose deck the slides tool reviews against its approved design
 SHOWS = 'deck/review.json'          # what its gate shows of the deck that was saved
 WORK = 'work/deck'                  # what it is built with: never shared
 BUILT = f'{WORK}/state.json'        # what this computer has built, and from what
@@ -132,6 +133,11 @@ DESIGN_CHECKED = ('The slides tool took the design: every slide has a claim, a v
                   'its asset, and its copy keeps the wording it must.')
 UNCHANGED = ('The design is the same as the one you asked to change, so the slides tool still '
              'waits for those changes. Ask for them again.')
+RETURNED = ('This comes back to you because the slides were drawn and reviewed against the '
+            'design you approved, and the review found what only a change here can put right: '
+            'what a slide says, or the visual concept it was approved with. Ask for changes '
+            'and say what should change, or approve it as it stands to have the deck drawn on, '
+            'with these listed when it comes to you.')
 IN_OTHER_WORDS = ('The blueprint lists open gaps. Whether a slide teaches one of them in '
                   'other words is for you to read.')
 DECLARED = ('Coverage is declared: each section says in a comment what it teaches, and the '
@@ -419,7 +425,7 @@ def check_form(sent: dict, brands=None) -> dict:
     form['yoodli'] = sent.get('yoodli', False)
     form['agent'] = None if sent.get('agent') is None else settings.check_agent(sent['agent'])
     form['model'] = settings.check_model(sent.get('model'))
-    form['effort'] = settings.check_effort(sent.get('effort'), form['agent'])
+    form['effort'] = settings.check_effort(sent.get('effort'), form['agent'], form['model'])
     return form
 
 
@@ -898,13 +904,33 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
         done.add('deck-repair')
     current = {ident: drawn[ident].get('sha256') for ident in sections if ident in drawn}
     whole = bool(last) and not first and (bool(again) or last.get('made_from') == current) \
-        and bool(shots(root, level, last.get('deck'))) and holds(last)
+        and bool(shots(root, level, last.get('deck'))) and holds(last) and intact(work, last)
     if whole:
         done.add('deck-whole')
     if whole and last.get('review'):
         done.add('deck-review')
     return Deck(level, name, frozenset(done), kept, built, outline, waiting, first, again,
                 rounds)
+
+
+def intact(work: Path, made: dict | None) -> bool:
+    """Whether a whole deck the slides tool reviewed against its design still is what was
+    reviewed: not found out of date when it was to be kept, and its deck the file the review
+    rendered. Any other round is taken as it is."""
+    if not (made or {}).get('judged'):
+        return True
+    return not made.get('stale') \
+        and workspace.sha256_file(Path(work) / str(made.get('file'))) == made.get('deck')
+
+
+def returned(mine: Deck) -> dict | None:
+    """Why what a deck says was taken back to the person after its slides were drawn and
+    reviewed, while that still waits for them: the run record's last return, of this start,
+    with nothing approved since."""
+    kept = mine.kept
+    last = (kept.get('returns') or [None])[-1]
+    return last if last and not kept.get('approved') \
+        and last.get('start') == mine.start.get('folder') else None
 
 
 def cannot(session: dict, seen: dict | None) -> tuple[str, ...]:
@@ -1515,7 +1541,13 @@ def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
     inputs['research findings'] = findings_text(root)
     _named_by(inputs, naming_rules(root, mine))
     said = [finding for finding in ((mine.last or {}).get('review') or {}).get('findings')
-            or () if finding['about'] == deck.ABOUT[1]] if request else []
+            or () if finding['about'] in deck.JUDGED[1:]] if request else []
+    # Taken back after a review against the design: what was found there, as it was found.
+    back = returned(mine) if request else None
+    said += [finding for finding in (back or {}).get('findings') or ()
+             if (finding.get('slide'), finding.get('note'))
+             not in {(seen['slide'], seen['note']) for seen in said}]
+    taught = any(finding.get('about') == deck.JUDGED[2] for finding in said)
     earlier = _read(place(root, level, OUTLINE))
     if earlier and designed and _read(place(root, level, DESIGN)):
         earlier = ('The outline:\n\n' + earlier.rstrip('\n') + '\n\nThe proposal made from '
@@ -1531,7 +1563,9 @@ def outline_work(root: Path, found: Survey, step: Step, request: dict | None,
                if designed else 'Hand the outline in with submit_outline.')
             + _again(request, earlier, error, answered, 'the outline', dated)
             + ('\n\nWhen the slides were drawn, a review found these things about what '
-               'they say. Put right the ones the person\'s request covers:\n\n'
+               + ('they say, or how they were approved to teach. Put right the ones the '
+                  "person's request covers, in the outline or in the design:\n\n" if taught else
+                  'they say. Put right the ones the person\'s request covers:\n\n')
                + '\n'.join(f"- {finding['slide']}: {finding['note']}" for finding in said)
                if said else ''))
     prepared = {'inputs': inputs,
@@ -1598,12 +1632,16 @@ def section_work(root: Path, found: Survey, step: Step, section: str, error: str
                 f'alone what works.\n\nYour inputs are {_inputs(inputs)}.\n'
                 'Hand the section in with submit_section.')
     task += _again(None, None, error, [], 'the section')
+    # Drawn again after a review against the design: what drawing cannot put right is named.
+    beyond = again and design is not None and start.get('review') == JUDGED
     prepared = {'inputs': inputs, 'ask': False, 'look': look,
                 'artifacts': {name: {'kind': 'section', 'brand': str(contract(root, mine)),
                                      **deck.fixed(whole, ids, number, design),
-                                     'previews': deck.PREVIEWS, **how, **bound}}}
+                                     'previews': deck.PREVIEWS, **how, **bound,
+                                     **({'beyond': True} if beyond else {})}}}
     return Work(briefs.guidance('deck-section', repair=again, design=design is not None,
-                                assets='assets' in bound), task, 'write', prepared, name)
+                                assets='assets' in bound, beyond=beyond), task, 'write',
+                prepared, name)
 
 
 def _family(design, ident: str) -> str | None:
@@ -1629,6 +1667,8 @@ def review_work(root: Path, found: Survey, step: Step, error: str | None) -> Wor
     slides = [{**{key: slide[key] for key in ('number', 'id', 'title')},
                'image': str(place(root, level, SHOTS) / f"{slide['number']}.png")}
               for slide in last['slides']]
+    if last.get('judged'):
+        return _judging_work(root, step, mine, slides, objectives, earlier, error)
     task = (f'Review {workspace.label(step.artifact)} as it was rendered: '
             f'{len(slides)} slides. Your input "the review" has the questions, the slides '
             'and the objectives. Hand in what you find with submit_assessment, then say '
@@ -1640,6 +1680,30 @@ def review_work(root: Path, found: Survey, step: Step, error: str | None) -> Wor
                            'slides': slides, 'objectives': list(objectives),
                            'recorded': str(work / last['folder'] / 'assessment.json')}}
     return Work(briefs.guidance('deck-review'), task, 'write', prepared)
+
+
+def _judging_work(root: Path, step: Step, mine: Deck, slides: list[dict], objectives: dict,
+                  earlier, error: str | None) -> Work:
+    """The job of reviewing a whole deck against its approved design: the slides tool's own
+    assessment, answered by a worker that drew none of it."""
+    work, last = place(root, mine.level, WORK), mine.last
+    packets = home.read_json(work / last['folder'] / 'packets.json', [])
+    task = (f'Review {workspace.label(step.artifact)} as it was rendered, against the design '
+            f'the person approved: {len(slides)} slides. Your input "the review" has the '
+            'criteria, each slide with what you may cite and what the slides tool points at, '
+            'and the objectives. Hand in your judgement of every criterion of every slide with '
+            'submit_judgements, then say which slides address each objective with '
+            'submit_coverage.' + _again(None, None, error, [], 'the review'))
+    prepared = {'inputs': {'the review': deck.judging(objectives, slides, packets, earlier)},
+                'ask': False,
+                'review': {'preview': str(work / last['preview']), 'deck': last['deck'],
+                           'slides': slides, 'objectives': list(objectives),
+                           'recorded': str(work / last['folder'] / 'assessment.json'),
+                           'judged': {'output': str(work / last['preview']),
+                                      'revision': last['judged']['revision'],
+                                      'binding': last['judged']['binding'],
+                                      'packets': packets}}}
+    return Work(briefs.guidance('deck-review', design=True), task, 'write', prepared)
 
 
 WORKS = {'blueprint': blueprint_work, 'document': document_work, 'brief': brief_work,
@@ -1956,6 +2020,13 @@ def outline_view(root: Path, found: Survey, level: str | None) -> dict | None:
         'This is not the version the checks were run on.']
     worth += [f"Did not pass ({outcome['check']}): {problem}" for outcome in ran
               if outcome['status'] != 'passed' for problem in outcome['problems']]
+    back = returned(mine)
+    if back:   # first, since it is why this is put to the person again
+        worth[:0] = [RETURNED] + [
+            f"Slide {finding.get('number')}, {finding.get('severity')}, about "
+            f"{deck.ABOUT_WORDS.get(finding.get('about'), 'how it is drawn')}"
+            + (', said by whoever drew it again' if finding.get('by') == 'composer' else '')
+            + f": {finding.get('note')}" for finding in back.get('findings') or ()]
     blueprint = _text(root, found.session, workspace.qualify('blueprint', level)) or ''
     if checks.parse_blueprint(blueprint)['open_gaps'].strip():
         worth.append(IN_OTHER_WORDS)
@@ -2093,8 +2164,14 @@ def deck_shows(root: Path, session: dict, mine: Deck, audit: dict, cited: dict |
             'slides': [{key: slide[key] for key in ('number', 'id', 'title')}
                        for slide in last['slides']],
             'findings': [{key: finding.get(key) for key in (
-                'slide', 'number', 'severity', 'about', 'note', 'fix')}
+                'slide', 'number', 'severity', 'about', 'note', 'fix',
+                *(('category', 'criterion') if 'criterion' in finding else ()))}
                 for finding in deck.ordered(review['findings'])],
+            # Reviewed against the design: the slides drawn as text by decision, and whether
+            # the review accepted each so.
+            **({'direct': [{key: entry.get(key) for key in ('slide', 'number', 'accepted')}
+                           for entry in review.get('direct') or ()]}
+               if last.get('judged') else {}),
             'audit': audit,
             'coverage': [{'objective': ident, 'says': objective['text'],
                           'reviewed': list((review.get('coverage') or {}).get(ident) or ()),
@@ -2123,13 +2200,25 @@ def deck_note(shows: dict, request: dict | None, dated: bool) -> list[str]:
     left = deck.grave(findings)
     if left:
         lines += ['', 'What the review still finds, in the reviewer\'s words:']
-        lines += [f"- Slide {finding['number']}, {finding['severity']}, about "
-                  + ('what it says' if finding['about'] == deck.ABOUT[1] else
-                     'how it is drawn') + f": {finding['note']}" for finding in left]
-    if any(finding['about'] == deck.ABOUT[1] for finding in left):
+        lines += [f"- Slide {finding['number']}, {finding['severity']}, "
+                  + (f"{deck.CATEGORIES.get(finding['category'], 'found').lower()}, "
+                     if finding.get('category') else '')
+                  + f"about {deck.ABOUT_WORDS.get(finding['about'], 'how it is drawn')}"
+                  f": {finding['note']}" for finding in left]
+    if any(finding['about'] == deck.ABOUT[1] for finding in left) \
+            and not any(finding['about'] == deck.JUDGED[2] for finding in left):
         lines += ['', 'A finding about what a slide says is yours to settle. Ask for '
                   'changes here, and what the deck says is written again and comes back '
                   'to you before anything is drawn.']
+    elif any(finding['about'] in deck.JUDGED[1:] for finding in left):
+        lines += ['', 'A finding about what a slide says, or about the visual concept it was '
+                  'approved with, is yours to settle. Ask for changes here, and what the deck '
+                  'says and how each slide is drawn are written again and come back to you '
+                  'before anything is drawn.']
+    accepted = [entry for entry in shows.get('direct') or () if entry.get('accepted')]
+    if accepted:
+        lines += ['', 'Drawn as text by decision, and accepted so by the review: '
+                  + ', '.join(f"slide {entry['number']}" for entry in accepted) + '.']
     drawn_again = shows['round'] - 1
     if drawn_again:
         lines += ['', f"The slides were drawn again {drawn_again} time"
@@ -2186,5 +2275,6 @@ def deck_gate(root: Path, session: dict, name: str) -> dict:
         return {'slides': [], 'review': None, 'audit': None, 'coverage': []}
     here = {slide['number'] for slide in shots(root, level, shows.get('rendered'))}
     return {'slides': [slide for slide in shows['slides'] if slide['number'] in here],
-            'review': {'round': shows['round'], 'findings': shows['findings']},
+            'review': {'round': shows['round'], 'findings': shows['findings'],
+                       **({'direct': shows['direct']} if 'direct' in shows else {})},
             'audit': shows['audit'], 'coverage': shows['coverage']}
