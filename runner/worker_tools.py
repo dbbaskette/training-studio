@@ -51,7 +51,8 @@ checked here before anything is kept. Each job has a folder that only the runner
 - A deck's jobs have tools of their own, and these and no others beside the inputs:
   an 'outline' (what each slide says) has `check_outline` and `submit_outline`; a 'section'
   (some slides, drawn) has `check_section`, `preview_section`, `search_icons` and
-  `submit_section`; a review, set up with `review=`, has `look_at_slide`,
+  `submit_section`, and `list_assets` and `request_asset` when its deck's slides tool keeps
+  the deck's assets; a review, set up with `review=`, has `look_at_slide`,
   `submit_assessment` and `submit_coverage`. `look=` gives any job slides to look at.
 - An 'outline' takes 'brand' (the exported brand contract's path) and 'blueprint' (its
   text). It is checked with the slides tool's own check and with `deck.rules`. With 'design'
@@ -66,6 +67,11 @@ checked here before anything is kept. Each job has a folder that only the runner
   last previewed; a hand-in that is not costs nothing and is sent back. A deck drawn from
   its approved design adds 'design', the design project, and 'section': its sections are
   then compiled and previewed against that design, each intent written as it was approved.
+  One whose tool keeps the deck's assets adds 'assets': {'project', 'generated'}, the design
+  project and each generated candidate of its own generated-art slides, by asset ID, with
+  its slide. Its composer may list what is recorded, record a brand icon by its library ID,
+  and have the tool's own image provider make those candidates, GENERATIONS times at most.
+  It can never add a file, or answer for the person.
 - Previews are taken one at a time on this computer, whatever is drawn side by side:
   `render` waits for the file named by 'lock'. 'kept' names the file that remembers the one
   preview file a deck keeps in Google Drive, so that it is written again and no second
@@ -130,6 +136,10 @@ QUESTION = 1000
 PASSAGES = 20
 ADDRESS = 2000
 ICONS = 8               # the most icons one search returns
+GENERATIONS = 2         # pictures one composer may have made: each one costs money
+BRIEF = (20, 4000)      # the shortest and longest brief for a picture, in characters
+ASSET_ID = re.compile(r'^\w[\w.:-]{0,127}$', re.ASCII)
+ICON_ID = re.compile(r'^[\w.-]{1,80}$', re.ASCII)
 RENDER_WAIT = 900       # seconds a preview waits for its turn at the renderer
 PNG = b'\x89PNG\r\n\x1a\n'
 PICTURE = 12_000_000    # bytes: the largest picture that is shown
@@ -978,6 +988,8 @@ class WorkerTools:
             names += ['check_outline', 'submit_outline', 'submit_review']
         elif 'section' in kinds:
             names += ['check_section', 'preview_section', 'search_icons', 'submit_section']
+            if any(spec.get('assets') for spec in job['artifacts'].values()):
+                names += ['list_assets', 'request_asset']
         elif job['artifacts']:
             names += ['submit_artifact', 'submit_review']
         if job.get('look'):
@@ -1081,6 +1093,11 @@ class WorkerTools:
 
     def _plainly(self, text: str) -> str:
         """What a tool said, without the name of a folder on this computer."""
+        held = next((spec.get('assets') for spec in self.job['artifacts'].values()
+                     if spec.get('assets')), None)
+        if held:
+            text = text.replace(str(Path(held['project']).resolve()), 'the deck') \
+                .replace(str(held['project']), 'the deck')
         for folder in (self.folder / 'drafts', self.folder):
             text = text.replace(f'{folder.resolve()}{os.sep}', '').replace(str(folder), '.')
         return text.replace(str(Path.home()), '~')
@@ -1244,6 +1261,111 @@ class WorkerTools:
                       + '\n'.join(f"- {icon.get('id')}: {icon.get('name')}"
                                   + (f" ({icon['category']})" if icon.get('category') else '')
                                   for icon in found))
+
+    def _assets(self) -> tuple[dict, dict]:
+        """The section's particulars, and what it may do with the deck's assets."""
+        _, spec = self._spec('section')
+        if not spec.get('assets'):
+            raise Refusal("This deck's slides tool keeps no record of its assets.")
+        return spec, spec['assets']
+
+    @tool
+    def list_assets(self):
+        """What the deck's asset manifest records, and how each is placed."""
+        spec, held = self._assets()
+        found = self.slides().asset_status(Path(held['project'])).get('assets') or []
+        lines = []
+        for entry in found:
+            ident, kind = entry.get('assetId'), entry.get('kind')
+            if kind == 'icon':
+                lines.append(f"- `{ident}`: the icon `{entry.get('ref')}`"
+                             + (f" ({entry['alt']})" if entry.get('alt') else '')
+                             + '. Place it as an icon node with that icon ID.')
+                continue
+            line = (f"- `{ident}`: a {kind} picture of {entry.get('alt') or 'what it shows'}"
+                    f". Source: {entry.get('source')}."
+                    + (f" Use it only so: {entry['restrictions']}."
+                       if entry.get('restrictions') else ''))
+            line += (' Place it by its asset ID.' if entry.get('state') == 'ok' else
+                     ' Its file is not as it was recorded, so it cannot be placed: say so '
+                     'when you hand in.')
+            lines.append(line)
+        made = {entry.get('assetId') for entry in found}
+        lines += [f"- `{ident}`: generated art for `{slide}`, not made yet. Ask for it with "
+                  'request_asset.' for ident, slide in held['generated'].items()
+                  if ident not in made]
+        if not lines:
+            return True, 'Nothing is recorded for this deck yet.'
+        return True, 'Recorded for this deck:\n' + '\n'.join(lines)
+
+    @tool
+    def request_asset(self, asset, icon=None, slide=None, prompt=None, alt=None):
+        """Record a brand icon by its library ID, or have the slides tool make the generated
+        art of one of this section's slides drawn as generated art."""
+        spec, held = self._assets()
+        asset = str(asset or '').strip()
+        if not ASSET_ID.match(asset):
+            raise Refusal('Name the asset by an ID of letters, digits, _ . : or -.')
+        alt = ' '.join(str(alt).split())[:300] if alt else None
+        project = Path(held['project'])
+        if (icon is None) == (prompt is None):
+            raise Refusal('Ask for one thing: an icon by its library ID, or generated art '
+                          'with a brief.')
+        if icon is not None:
+            icon = str(icon).strip()
+            if not ICON_ID.match(icon):
+                raise Refusal('An icon is named by the ID search_icons gives.')
+            try:
+                made = self.slides().asset_icon(project, icon, asset, alt, Path(spec['brand']))
+            except WorkspaceError as refusal:
+                return False, self._unmade(refusal)
+            return True, (f"`{asset}` is the icon `{made.get('ref')}`"
+                          + (f" ({made['alt']})" if made.get('alt') else '')
+                          + '. Place it as an icon node with that icon ID.')
+        if asset not in held['generated']:
+            listed = ', '.join(f'`{ident}`' for ident in held['generated']) or 'none'
+            raise Refusal('Only the generated art the approved design names for your own '
+                          f'slides can be made. Yours: {listed}.')
+        wanted = held['generated'][asset]
+        if slide is not None and str(slide) != wanted:
+            raise Refusal(f'`{asset}` is the generated art of `{wanted}`, not of `{slide}`.')
+        brief = ' '.join(str(prompt).split())
+        if not BRIEF[0] <= len(brief) <= BRIEF[1]:
+            raise Refusal(f'Write the brief for the picture in {BRIEF[0]} to {BRIEF[1]} '
+                          'characters.')
+        state = self._state()
+        if state.get('generated', 0) >= GENERATIONS:
+            raise Refusal(f'You have asked for {GENERATIONS} pictures, which is the most a '
+                          'section may. Draw the rest, and say what is missing when you hand '
+                          'in.')
+        home.write_json(self.folder / 'state.json',
+                        {**state, 'generated': state.get('generated', 0) + 1})
+        try:
+            self.slides().generate_image(project, asset, brief,
+                                         f"assets/generated/{asset.replace(':', '_')}.png",
+                                         wanted, alt)
+        except WorkspaceError as refusal:
+            return False, self._unmade(refusal)
+        return True, (f'`{asset}` is made and recorded. Place it by its asset ID on '
+                      f'`{wanted}`, and preview the section to look at it.')
+
+    def _unmade(self, refusal: WorkspaceError) -> str:
+        """Why the slides tool did not record an asset, as its composer is told it: each
+        problem, the provider it concerns, and what the tool says to do."""
+        found = getattr(refusal, 'found', None) or []
+        if not found:
+            return 'Not recorded:\n- ' + '\n- '.join(self._plainly(line)
+                                                     for line in said_no(refusal))
+        lines = []
+        for problem in found:
+            line = self._plainly(str(problem.get('detail') or problem.get('code')))
+            if problem.get('provider'):
+                line += f" The image provider ({problem['provider']}) is not ready."
+            if problem.get('next') and problem.get('next') not in line:
+                line += f" {self._plainly(str(problem['next']))}"
+            lines.append(line)
+        return ('Not recorded:\n- ' + '\n- '.join(lines) + '\n\nDraw the rest of the slide, '
+                'and say what is missing when you hand in. The person is told too.')
 
     @tool
     def submit_section(self, section, changed='', bothers=''):
@@ -1670,6 +1792,13 @@ TOOLS = [
     _described('search_icons', "Search the brand's icons by one or two plain words. "
                'Returns the ID to use for each.', {'words': TEXT, 'limit': NUMBER},
                ['words']),
+    _described('list_assets', "List the pictures and icons recorded for this deck: each "
+               'one\'s asset ID, what it shows, and how it is placed.', {}, []),
+    _described('request_asset', 'Record a brand icon under an asset ID, by the ID '
+               'search_icons gives; or have generated art made for one of your slides drawn '
+               'as generated art, from a brief you write. Costs money: ask once.',
+               {'asset': TEXT, 'icon': TEXT, 'slide': TEXT, 'prompt': TEXT, 'alt': TEXT},
+               ['asset']),
     _described('submit_section', 'Hand your section in. It must be exactly the version you '
                'last previewed. Say what you changed after looking at the pictures, and '
                'what still bothers you.',

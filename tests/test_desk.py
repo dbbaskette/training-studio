@@ -2282,7 +2282,8 @@ OUTLINE_SLIDE_FIELDS = {'id', 'kind', 'title', 'subtitle', 'understand', 'points
                         'source', 'notes', 'serves', 'design'}
 DESIGN_FIELDS = {'claim', 'question', 'family', 'purpose', 'drawn', 'why', 'alternative',
                  'asset', 'candidates', 'keeps'}
-DECK_FIELDS = {'level', 'sections', 'pictures', 'before'}
+DECK_FIELDS = {'level', 'sections', 'pictures', 'before'}   # and `assets`, where it has them
+ASSET_FIELDS = {'asset', 'slide', 'kind', 'ref', 'concept', 'state', 'alt', 'supply'}
 SECTION_FIELDS = {'id', 'state', 'previews', 'slides', 'titles'}
 FINDING_FIELDS = {'slide', 'number', 'severity', 'about', 'note', 'fix'}
 STEP_FIELDS = {'id', 'label', 'kind', 'status', 'attempts', 'seconds', 'dollars', 'error'}
@@ -2394,8 +2395,17 @@ def a_section(ident: str, state: str, previews: int, titles: list) -> dict:
 def a_deck(*sections: dict, **more) -> dict:
     """What a run says about a deck while it is drawn."""
     deck = {'level': None, 'sections': list(sections), 'pictures': 0, 'before': None, **more}
-    assert set(deck) == DECK_FIELDS, deck
+    assert set(deck) - {'assets'} == DECK_FIELDS, deck
+    assert all(set(entry) == ASSET_FIELDS for entry in deck.get('assets') or ()), deck
     return deck
+
+
+def an_asset(ident: str, kind: str, ref: str, state: str, alt=None,
+             supply: bool = False) -> dict:
+    """One asset a deck's approved design uses, as the runner says it."""
+    return {'asset': ident, 'slide': 'what-it-does', 'kind': kind, 'ref': ref,
+            'concept': 'An instance' if kind == 'icon' else 'Instances replaced in turn',
+            'state': state, 'alt': alt, 'supply': supply}
 
 
 def a_finding(number: int, severity: str, about: str, note: str, fix: str) -> dict:
@@ -4437,6 +4447,57 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                       'first.', shots['unread']['sheet'])
         self.assertEqual((shots['unread']['posts'], shots['cancelled']['filled']),
                          (2, ['Show the new version']))
+
+    def test_a_deck_waiting_for_a_picture_lists_its_assets_and_takes_one(self):
+        self.started()
+        waits = ('The deck is not drawn until what its approved design uses is to hand. Slide '
+                 '`what-it-does` needs the screenshot "The console" (Instances replaced in '
+                 'turn). Supply it on this page.')
+        going = 'Drawing the slides, in two sections.'
+        icon = an_asset('icon_instance', 'icon', 'server', 'recorded', alt='Server')
+        wanted = an_asset('console_view', 'screenshot', 'The console', 'wanted', supply=True)
+        problem = {'what': waits, 'kept': 'Nothing needs approving again.', 'action': 'retry',
+                   'label': 'Try again'}
+
+        def run(state: str, said: str, *assets: dict, stopped=None) -> dict:
+            return a_run(state, said, outline=an_outline(waiting=False), problem=stopped,
+                         steps=deck_steps('done', 'done', 'done', 'working'),
+                         deck=a_deck(assets=list(assets)))
+
+        recorded = {**wanted, 'state': 'recorded', 'alt': 'The console mid-restart'}
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('waiting', waits)],
+            'GET /api/training': [self.detail('waiting', waits)],
+            'GET /api/run': [run('waiting', waits, icon, wanted, stopped=problem),
+                             run('working', going, icon, recorded)],
+            'POST /api/asset': [run('working', going, icon, recorded)]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'waiting'},
+            {'click': 'Add the picture'}, {'snapshot': 'unchosen'},
+            {'attach': 'Supply the picture', 'files': [{'name': 'console.png',
+                                                        'bytes': [137, 80, 78, 71]}]},
+            {'fill': 'What it shows', 'value': 'The console mid-restart'},
+            {'fill': 'Where it came from', 'value': 'Course author'},
+            {'click': 'Add the picture'}, {'snapshot': 'given'}])
+        shots = result['snapshots']
+        first = shots['waiting']
+        for shown in ('It is waiting for you', waits, 'Pictures and icons',
+                      'Icon: server', 'An instance, on what-it-does. It shows: Server',
+                      'Recorded', 'Screenshot: The console', 'Still needed',
+                      'Supply the picture', 'What it shows', 'Where it came from'):
+            self.assertIn(shown, first['text'])
+        self.assertEqual(first['buttons'].count('Add the picture'), 1,
+                         'only a picture the person gives can be supplied here')
+        self.assertIn('Choose the picture first.', shots['unchosen']['text'])
+        self.assertEqual(self.posts(result), [('/api/asset', {
+            'path': str(self.root), 'level': None, 'asset': 'console_view',
+            'content': base64.b64encode(bytes([137, 80, 78, 71])).decode(),
+            'alt': 'The console mid-restart', 'source': 'Course author',
+            'restrictions': None})])
+        given = shots['given']
+        self.assertIn('The picture is recorded.', given['toasts'])
+        self.assertIn('It shows: The console mid-restart', given['text'])
+        self.assertNotIn('Still needed', given['text'])
 
     def test_a_deck_being_drawn_shows_each_section_and_its_latest_preview(self):
         self.started()

@@ -14,7 +14,10 @@ What a caller needs to know
     spec = deck.fixed(whole, ids, number)       # what a section's composer may not change
     deck.kept(section, spec)                    # what the runner refuses in a section
     deck.as_approved(section, spec)             # each approved intent, as it was approved
-    deck.icons(design)                          # each concept's icon, across the deck
+    deck.icons(design, recorded=None)           # each concept's icon, across the deck
+    deck.candidates(design)                     # every asset the design selected, by slide
+    deck.placed(section, recorded)              # the recorded assets a section draws
+    deck.icon_for(ref, found)                   # an icon's library ID, from a search for it
     deck.checked(finding, slides)               # one finding of a review, or why it is wrong
     deck.to_repair(findings, sections)          # the sections a review sends back
     deck.before(slides)                         # what a deck of this size has cost before
@@ -42,6 +45,10 @@ What a caller needs to know
   exactly. `fixed` takes the wording from the approved copy and adds the intent and the
   wording the copy must keep. A deck without a design is told and held to what it always
   was.
+- `recorded` is the slides tool's asset manifest of the deck, as {asset ID: entry}, for a
+  deck whose tool keeps one. A section's brief then names each concept's icon by its ID
+  in the brand's library and the asset it is recorded as, and says how a recorded picture
+  is placed. Without it the brief is as it was.
 - `brief` rewrites the brief the slides tool writes for one section. That brief is written
   for a worker at a shell, with paths to read and a folder to write in. A worker here has
   tools and no files, so those parts are replaced and everything else is kept as written.
@@ -116,6 +123,11 @@ KEY_POINT = re.compile(r'^- (K\d+\.\d+):\s*(.+?)\s*(?:\[[^\]]*\]\s*)*$')
 POINTER = re.compile(r'Read `references/[^\n]*')
 DESIGNED = ('id', 'intent', 'composition', 'asset', 'qualifications')   # a worker's to write
 LEAD = 'outline'        # what a cover, section or closing slide cites, as the slides tool does
+PLACED = ("A picture the design selected is recorded in the deck's asset manifest. Place it "
+          'by its asset ID: `{"type": "image", "id": "<your ID>", "asset": "<asset ID>"}`, '
+          'with `alt` where the recorded one does not say what it shows here. `list_assets` '
+          'lists every recorded asset. Generated art for a slide whose visual is '
+          '`generated-art` is made with `request_asset`, from a brief you write.', '')
 USE = ('The deck is both presented and handed out. Every slide must make sense to someone '
        'reading it alone, so no slide may depend on its speaker notes for meaning. The notes '
        'carry the talk track and timing for a presenter.')
@@ -474,11 +486,13 @@ def _part(text: str, heading: str, body: str, renamed: str | None = None) -> str
     return text.rstrip('\n') + '\n\n' + new
 
 
-def brief(written: str, whole: dict, previews: int = PREVIEWS, design=None) -> str:
+def brief(written: str, whole: dict, previews: int = PREVIEWS, design=None,
+          recorded: dict | None = None) -> str:
     """The brief the slides tool wrote for one section, for a worker with tools and no
     files. Its slides, their order and the direction are kept as written. With `design`,
     the plan the slides tool approved, it also carries the approved design of each of its
-    slides and the icon of each concept across the deck."""
+    slides and the icon of each concept across the deck; with `recorded`, the deck's asset
+    manifest, each by the ID it is recorded with."""
     skeleton = json.dumps({'version': 1, 'title': whole.get('title'),
                            'direction': whole.get('direction') or DIRECTION,
                            'slides': ['your slides, in order']}, ensure_ascii=False)
@@ -498,8 +512,10 @@ Each slide is `{{{shape}"brief": {{"relation", "focal": the ID of the node that 
     text = _part(text, 'House style', '\n'.join(
         f'- {line}' for line in (DESIGNED_HOUSE if design else HOUSE)))
     if design:
-        text = _part(text, 'The approved design', drawn_from(design, named_in(written, whole)))
-        text = _part(text, 'Icons across the deck', _icons_told(icons(design)))
+        text = _part(text, 'The approved design', drawn_from(design, named_in(written, whole),
+                                                             recorded))
+        text = _part(text, 'Icons across the deck', _icons_told(icons(design, recorded),
+                                                                recorded is not None))
     text = _part(text, 'Preview', f'''
 `preview_section` renders your whole section and returns a picture of every slide, with what the renderer found. You have {previews} previews. `check_section` is free: use it until the section compiles before you spend a preview.''')
     return _part(text, 'Return', '''
@@ -510,9 +526,10 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def drawn_from(design, ids: list[str]) -> str:
+def drawn_from(design, ids: list[str], recorded: dict | None = None) -> str:
     """What a section's composer is told of the approved design of its slides, one record
-    each, with the intent it copies."""
+    each, with the intent it copies. With `recorded`, each candidate says how it is
+    recorded, and a picture is placed by its asset ID."""
     by_id = {slide.get('id'): slide for slide in slides_of(design)}
     lines = ['The person approved how each of your slides teaches together with what it '
              'says, in one decision. Draw each as its design says: the visual, what the '
@@ -521,8 +538,9 @@ def drawn_from(design, ids: list[str]) -> str:
              'is direct text by decision: draw it as text and add nothing to decorate it. If '
              'a design cannot be drawn as approved, draw the nearest you can and say so when '
              'you hand in. Another concept needs the person\'s approval.', '',
-             'Only icons can be placed in this version. Where a design selects a picture, '
-             'draw the rest as designed and name the picture when you hand in.', '',
+             *(PLACED if recorded is not None else (
+                 'Only icons can be placed in this version. Where a design selects a picture, '
+                 'draw the rest as designed and name the picture when you hand in.', '')),
              'Copy each slide\'s `intent` into it exactly as it is given here. The slides '
              'tool checks it against the approval.']
     for ident in ids:
@@ -540,24 +558,61 @@ def drawn_from(design, ids: list[str]) -> str:
         lines.append(f"- Asset: {asset['description']} ({asset['disposition']}: "
                      f"{asset['reason']})")
         lines += [f"  - {candidate['kind']} \"{candidate['ref']}\" for {candidate['concept']}"
-                  + (', still to be found' if candidate['status'] == 'pending' else '')
-                  for candidate in shown['candidates']]
+                  + (_held(candidate, (recorded or {}).get(candidate['asset']))
+                     if recorded is not None else
+                     ', still to be found' if candidate['status'] == 'pending' else '')
+                  for candidate in _with_ids(slide)]
         lines += [f'- Wording it must keep: {_json(kept)}' for kept in shown['keeps']]
         lines += ['- `intent`, to copy:', '', '```json', _json(slide.get('intent')), '```']
     return '\n'.join(lines)
 
 
-def icons(design) -> list[dict]:
+def _held(candidate: dict, entry: dict | None) -> str:
+    """How a candidate stands in the deck's asset manifest, as its composer is told."""
+    if entry is None:
+        return (f", to be made with `request_asset` as `{candidate['asset']}`"
+                if candidate['kind'] == 'generated' else ', not recorded')
+    if candidate['kind'] == 'icon':
+        return f", recorded as `{candidate['asset']}`: the icon `{entry.get('ref')}`"
+    return f", recorded as `{candidate['asset']}`: place it by that asset ID"
+
+
+def _with_ids(slide: dict) -> list[dict]:
+    """A slide's candidates as `drawn_as` gives them, each with its `asset` ID."""
+    asset = slide.get('asset') if isinstance(slide.get('asset'), dict) else {}
+    raw = [candidate for candidate in asset.get('candidates') or ()
+           if isinstance(candidate, dict)]
+    return [{**shown, 'asset': candidate.get('assetId')}
+            for shown, candidate in zip(drawn_as(slide)['candidates'], raw)]
+
+
+def candidates(design) -> list[dict]:
+    """Every asset candidate of the approved design, as {'slide', 'asset', 'kind', 'ref',
+    'concept', 'alt'}, in slide order."""
+    return [{'slide': slide.get('id'), 'asset': candidate.get('assetId'),
+             'kind': candidate.get('kind'), 'ref': candidate.get('ref'),
+             'concept': candidate.get('concept'), 'alt': candidate.get('alt')}
+            for slide in slides_of(design) if isinstance(slide.get('asset'), dict)
+            for candidate in slide['asset'].get('candidates') or ()
+            if isinstance(candidate, dict)]
+
+
+def icons(design, recorded: dict | None = None) -> list[dict]:
     """The icon the approved design names for each concept, across every slide of the
-    deck, as {'concept', 'ref', 'status', 'slides'}, in the order they first appear."""
+    deck, as {'concept', 'ref', 'status', 'slides'}, in the order they first appear. With
+    `recorded`, the deck's asset manifest, each also has `icon`, its ID in the brand's
+    library, and `asset`, the ID it is recorded as: both None for one not recorded."""
     found: dict = {}
     for slide in slides_of(design):
-        for candidate in drawn_as(slide)['candidates']:
+        for candidate in _with_ids(slide):
             if candidate['kind'] != 'icon':
                 continue
+            entry = (recorded or {}).get(candidate['asset']) or {}
             made = found.setdefault((candidate['concept'], candidate['ref']), {
                 'concept': candidate['concept'], 'ref': candidate['ref'],
-                'status': candidate['status'], 'slides': []})
+                'status': candidate['status'], 'slides': [],
+                **({'icon': entry.get('ref'), 'asset': candidate['asset'] if entry else None}
+                   if recorded is not None else {})})
             made['status'] = 'resolved' if 'resolved' in (made['status'], candidate['status']) \
                 else made['status']
             if slide.get('id') not in made['slides']:
@@ -565,10 +620,19 @@ def icons(design) -> list[dict]:
     return list(found.values())
 
 
-def _icons_told(listed: list[dict]) -> str:
+def _icons_told(listed: list[dict], recorded: bool = False) -> str:
     if not listed:
         return ('The approved design names no icon. Use one only where it names a '
                 'recognisable thing, and the same one for the same thing in every section.')
+    if recorded:
+        return '\n'.join(['The same concept has the same icon in every section of the deck. '
+                          'These are the icons the approved design names, found in the '
+                          "brand's library and recorded before any section was drawn. Use "
+                          'each ID as the `icon` of an icon node, on any slide of yours that '
+                          'shows that concept. `search_icons` finds others, for a thing the '
+                          'design does not name.', ''] + [
+            f"- {icon['concept']}: `{icon['icon']}`, recorded as `{icon['asset']}`, on "
+            + ', '.join(f'`{ident}`' for ident in icon['slides']) for icon in listed])
     return '\n'.join(['The same concept has the same icon in every section of the deck. These '
                       'are the icons the approved design names, on every slide. Find each with '
                       '`search_icons` by its name and use the ID it gives you for that '
@@ -613,6 +677,47 @@ def fixed(whole: dict, ids: list[str], number: int, design=None) -> dict:
             intent=json.dumps(mine.get('intent'), separators=(',', ':'), ensure_ascii=False),
             qualifications=[str(kept) for kept in mine.get('qualifications') or ()])
     return made
+
+
+def icon_for(ref, found) -> str | None:
+    """The brand library's ID for the icon a design names by `ref`, from what a search of
+    the library for it found: the one whose ID is `ref`, else the one called that, else the
+    first found. None when the search found no icon that can be drawn."""
+    found = [icon for icon in found or () if isinstance(icon, dict)
+             and isinstance(icon.get('id'), str) and icon.get('native', True) is not False]
+    wanted = plain(ref)
+    for chosen in ([icon for icon in found if icon['id'] == ref],
+                   [icon for icon in found if plain(icon.get('name')) == wanted], found):
+        if chosen:
+            return chosen[0]['id']
+    return None
+
+
+def placed(section, recorded: dict) -> list[str]:
+    """The assets of the deck's manifest a section draws, by their IDs, in the order it
+    draws them: each picture it names by `asset`, and each recorded icon whose library ID
+    it places."""
+    found: list[str] = []
+    by_icon = {entry.get('ref'): ident for ident, entry in recorded.items()
+               if entry.get('kind') == 'icon'}
+
+    def walk(node) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            # A picture is named by `asset`, in an image node or a layout's picture slot.
+            named = by_icon.get(node.get('icon')) if node.get('type') == 'icon' \
+                else node.get('asset')
+            if isinstance(named, str) and named in recorded and named not in found:
+                found.append(named)
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value)
+
+    for slide in slides_of(section):
+        walk([slide.get('canvas'), slide.get('picture')])
+    return found
 
 
 # --- a section, as it is handed in -------------------------------------------------------

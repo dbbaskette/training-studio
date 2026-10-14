@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import helpers  # noqa: F401
+import runner_support
 from runner_support import BLUEPRINT, OUTLINE
 from test_runner_deck import MAJOR, SMALL, DeckCase
 
@@ -269,6 +270,57 @@ class DesignedDeckTests(WholeCase):
             self.assertIn('## The approved design', read['brief'])
             self.assertIn('## Icons across the deck', read['brief'])
         self.assertEqual(self.to_end(root), ['deck', 'scenario:main'])
+
+
+class AssetDeckTests(WholeCase):
+    """The same deck through a slides tool that keeps its assets and says what it has: the
+    icons the approved design names are found in the brand's library and recorded before
+    any section is drawn, and one the brand does not have keeps the deck waiting."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides, self.brand = self.stand_ins(assets=True)
+        self.tool, self.skill = self.slides.run, self.brand.run
+        self.engine.deck_needs(fresh=True)
+
+    def approve(self, root: Path) -> dict:
+        shown = self.to_outline(root)['outline']
+        return self.engine.outline(root, None, 'approve', seen=shown['sha256'],
+                                   design=shown['design']['revision'])
+
+    def test_an_icon_the_brand_does_not_have_keeps_the_deck_waiting(self):
+        root = self.begin()
+        view = self.approve(root)
+        self.assertEqual(view['state'], 'waiting')
+        self.assertIn('Slide `what-it-does` needs the icon "server" (An instance), and the '
+                      "brand's icon library has none by that name.", view['problem']['what'])
+        self.assertEqual([entry['state'] for entry in view['deck']['assets']], ['wanted'])
+        self.assertEqual(self.asked('outline start'), [])
+        self.assertEqual(len(self.asked('design respond')), 1)
+
+    def test_a_deck_draws_the_icons_recorded_for_it_and_is_built_with_its_manifest(self):
+        design = runner_support.designed(PARTED)
+        design['slides'][1]['asset']['candidates'][0]['ref'] = 'database'
+        self.workers.design_said = design
+        root = self.begin()
+        view = self.approve(root)
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'),
+                         view.get('problem'))
+        manifest = json.loads((root / pipeline.ASSETS).read_text())
+        [icon] = manifest['assets']
+        self.assertEqual((icon['assetId'], icon['ref'], icon['provenance']['label']),
+                         ('icon_instance', 'ex-database', 'Icon database'))
+        recorded = self.asked('assets icon')
+        self.assertEqual(recorded[0][:3], ['assets', 'icon', 'ex-database'])
+        self.assertIn('--brand', recorded[0])
+        for read in self.composers.read.values():
+            self.assertIn('- An instance: `ex-database`, recorded as `icon_instance`, on '
+                          '`what-it-does`', read['brief'])
+        # What the tool has is read from its version: nothing is asked by a refusal.
+        self.assertEqual(self.tool.calls.count(['version']), 1)
+        built = self.asked('compose compile') + self.asked('compose preview')
+        self.assertEqual([call for call in built if '--design-project' not in call], [])
+        self.assertEqual(self.asked('design propose')[0][-1], '--json')
 
 
 class TroubleTests(WholeCase):

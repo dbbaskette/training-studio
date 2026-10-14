@@ -73,6 +73,10 @@ What a caller needs to know
   the training's own folder or the folder of the worker drawing that section, is sent.
 - `POST /api/outline` records what the person decided about what a deck says, which is the
   runner's own gate, and answers the run.
+- `POST /api/asset` with {"path", "level", "asset", "content", "alt", "source",
+  "restrictions"?} gives the slides tool a picture the person supplies for an asset of
+  their deck's approved design, and answers the run. `content` is the picture in base64;
+  like a document, it may be up to DOCUMENT_LIMIT bytes. A deck waiting for it carries on.
 - The page's check of this computer gains what a deck needs here. Asking for a new look
   also lets the trainings that were waiting on what was missing carry on.
 - `GET /api/file` also answers for `README.md`, the index at the top of a training this
@@ -115,9 +119,10 @@ READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/
          '/api/slide', '/api/status', '/api/published', '/api/delete')
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
-          '/api/publish', '/api/adopt', '/api/fetch', '/api/delete')
+          '/api/publish', '/api/adopt', '/api/fetch', '/api/delete', '/api/asset')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
+ASSET = '/api/asset'
 DOCUMENT_LIMIT = 12_000_000     # bytes: one document of the largest size, in base64
 CLOSE = 'You can close this page; it says when it needs you again.'
 HALTED = ('This training is not running, so nothing more happens until you resume it or '
@@ -250,7 +255,7 @@ class RunnerPage(desk.Page):
     def body_limit(self, target: str, headers) -> int:
         """A document may be sent whole, to its own address, by whoever holds the key.
         Anyone else's request there is held to the desk's limit, so it is refused unread."""
-        if target.partition('?')[0] == DOCUMENTS:
+        if target.partition('?')[0] in (DOCUMENTS, ASSET):
             try:
                 self.check_token(headers)
             except desk.Refusal:
@@ -389,6 +394,8 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.copied(sent))
         if path == '/api/share':
             return desk.as_json(HTTPStatus.OK, self.engine.share())
+        if path == ASSET:
+            return desk.as_json(HTTPStatus.OK, self.asset(sent))
         if path == '/api/outline':
             return desk.as_json(HTTPStatus.OK, self.outline(sent))
         return super().write(path, sent)
@@ -429,6 +436,30 @@ class RunnerPage(desk.Page):
         return self.engine.outline(path, level or None, decision, note,
                                    desk.text(sent, 'seen', False),
                                    desk.text(sent, 'design', False))
+
+    def asset(self, sent: dict) -> dict:
+        """A picture the person supplies for their deck: it is theirs alone to give."""
+        path, asset = desk.text(sent, 'path'), desk.text(sent, 'asset')
+        alt, source = desk.text(sent, 'alt'), desk.text(sent, 'source')
+        level = desk.text(sent, 'level', False)
+        restrictions = desk.text(sent, 'restrictions', False)
+        content = sent.get('content')
+        if not isinstance(content, str) or not content:
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Give the picture as text.')
+        if not alt.strip() or not source.strip():
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Say what the picture shows and where '
+                               'it came from.')
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError):
+            raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'That picture did not arrive whole. '
+                               'Add it again.')
+        self.run(path)
+        try:
+            return self.engine.supply_asset(path, level or None, asset, data, alt, source,
+                                            restrictions or None)
+        except WorkspaceError as refusal:
+            raise desk.Refusal(HTTPStatus.CONFLICT, str(refusal))
 
     def act(self, sent: dict) -> dict:
         path, action = desk.text(sent, 'path'), desk.text(sent, 'action')

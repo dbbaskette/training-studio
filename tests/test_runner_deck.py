@@ -680,6 +680,94 @@ class SectionToolTests(ToolCase):
         self.assertFalse(lock.exists())
 
 
+class AssetToolTests(ToolCase):
+    """A composer whose deck's slides tool keeps its assets: it lists them, records a brand
+    icon, and asks the tool's own image provider for the generated art of its own slides."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides.design = self.slides.keeps = True
+        self.project = self.base / 'deck'
+        self.project.mkdir()
+        proposal = self.base / 'proposal.json'
+        proposal.write_text(json.dumps(deck.proposal(OUTLINE, with_assets(
+            runner_support.designed(OUTLINE), generated=True))))
+        asked = self.slides.design_propose(self.project, proposal)
+        self.slides.design_respond(self.project, {
+            'questionId': asked['question']['id'], 'planRevision': asked['revision'],
+            'decision': 'approve', 'feedback': 'Approve the whole plan'})
+        plan = self.slides.design_check(self.project)['plan']
+        self.slides.asset_icon(self.project, 'icon-server', 'icon_instance', None,
+                               self.contract)
+        picture = self.base / 'console.png'
+        picture.write_bytes(png(3))
+        self.slides.asset_supplied(self.project, picture, 'console_view', 'The console',
+                                   'Course author', 'screenshot', 'Internal only')
+        whole = deck.complete(OUTLINE, Slides.LAYOUTS, [], designed=True)
+        self.spec = {**self.spec, **deck.fixed(whole, ['what-it-does', 'when-capacity-holds'],
+                                               1, plan), 'design': str(self.project),
+                     'section': True, 'assets': {
+                         'project': str(self.project),
+                         'generated': {'capacity_art': 'when-capacity-holds'}}}
+
+    def test_a_composer_lists_what_is_recorded_and_never_a_folder(self):
+        tools = self.composer()
+        self.assertEqual(self.offered(tools), [
+            'list_inputs', 'read_input', 'check_section', 'preview_section', 'search_icons',
+            'list_assets', 'request_asset', 'submit_section'])
+        said = self.ok(tools.list_assets())
+        for told in ('- `icon_instance`: the icon `icon-server` (Server). Place it as an icon '
+                     'node with that icon ID.',
+                     '- `console_view`: a screenshot picture of The console. Source: Course '
+                     'author. Use it only so: Internal only. Place it by its asset ID.',
+                     '- `capacity_art`: generated art for `when-capacity-holds`, not made yet.'):
+            self.assertIn(told, said)
+        self.assertNotIn(str(self.base), said)
+        # A recorded picture is placed by its ID, and one not recorded is the tool's to refuse.
+        shot = {'type': 'image', 'id': 's1_console', 'asset': 'console_view'}
+        good = drawn(self.spec, placing={'what-it-does': [shot]})
+        self.assertTrue(self.ok(tools.check_section(json.dumps(good))).startswith(
+            'Nothing to put right.'))
+        wrong = drawn(self.spec, placing={'what-it-does': [{**shot, 'asset': 'nowhere'}]})
+        self.assertIn("asset nowhere is not in the project's asset manifest",
+                      self.ok(tools.check_section(json.dumps(wrong))))
+
+    def test_generated_art_is_asked_of_the_tools_own_provider_for_its_own_slides_alone(self):
+        tools, brief = self.composer(), 'Two instances side by side, one restarting.'
+        said = self.refused(tools.request_asset('capacity_art', slide='when-capacity-holds',
+                                                prompt=brief))
+        for told in ('The image provider (gemini-api) is not ready.', 'GEMINI_API_KEY',
+                     'say what is missing when you hand in'):
+            self.assertIn(told, said)
+        self.assertIn('Only the generated art the approved design names for your own slides',
+                      self.refused(tools.request_asset('console_view', prompt=brief)))
+        self.assertIn('not of `what-it-does`', self.refused(tools.request_asset(
+            'capacity_art', slide='what-it-does', prompt=brief)))
+        self.assertIn('Ask for one thing', self.refused(tools.request_asset(
+            'capacity_art', icon='icon-clock', prompt=brief)))
+        self.slides.env = {'GEMINI_API_KEY': 'set'}   # the stub stands for the provider
+        self.assertIn('`capacity_art` is made and recorded', self.ok(tools.request_asset(
+            'capacity_art', prompt=brief, alt='Two instances')))
+        entry = json.loads((self.project / '.harness-slides' / 'assets.json').read_text())
+        art = next(item for item in entry['assets'] if item['assetId'] == 'capacity_art')
+        self.assertEqual((art['kind'], art['provenance']['slide'], art['alt']),
+                         ('generated', 'when-capacity-holds', 'Two instances'))
+        self.assertIn(f'have asked for {worker_tools.GENERATIONS} pictures', self.refused(
+            tools.request_asset('capacity_art', prompt=brief)))
+
+    def test_a_brand_icon_is_recorded_by_its_library_id(self):
+        tools = self.composer()
+        self.assertEqual(self.ok(tools.request_asset('icon_clock', icon='icon-clock')),
+                         '`icon_clock` is the icon `icon-clock` (Clock). Place it as an icon '
+                         'node with that icon ID.')
+        self.assertIn('unknown icon icon-nowhere', self.refused(tools.request_asset(
+            'icon_other', icon='icon-nowhere')))
+        self.assertIn('already recorded', self.refused(tools.request_asset(
+            'icon_instance', icon='icon-clock')))
+        self.assertIn('An icon is named by the ID', self.refused(tools.request_asset(
+            'icon_x', icon='a/b')))
+
+
 class ReviewToolTests(ToolCase):
     def reviewer(self, **more) -> worker_tools.WorkerTools:
         build = self.base / 'whole'
@@ -1461,6 +1549,181 @@ class DesignTests(DeckCase):
         self.assertNotIn('approved', self.record(root)['deck'][''])
         self.assertEqual(self.kinds().count('section'), 0)
 
+def with_assets(design: dict, generated: bool = False) -> dict:
+    """The design of OUTLINE with a screenshot the person supplies on its first content slide,
+    and with `generated`, the slide after it drawn as generated art."""
+    design = json.loads(json.dumps(design))
+    first, second = design['slides'][1], design['slides'][2]
+    first['asset']['candidates'].append({
+        'assetId': 'console_view', 'kind': 'screenshot', 'ref': 'The restart in the console',
+        'concept': 'Instances replaced in turn', 'status': 'pending'})
+    if generated:
+        second['intent']['visual']['family'] = 'generated-art'
+        second['asset']['candidates'] = [{
+            'assetId': 'capacity_art', 'kind': 'generated', 'ref': 'Two instances sharing load',
+            'concept': 'Capacity held by the others', 'status': 'pending'}]
+    return design
+
+
+class AssetTests(DeckCase):
+    """A slides tool that keeps the deck's assets: the icons an approved design names are found
+    and recorded before any section is drawn, a picture is the person's to supply on the page,
+    and what is drawn is made from what each asset is now. Rows V05, V06 and V07 of the
+    state-transition matrix in docs/superpowers/plans/2026-10-14-visual-teaching-in-decks.md."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides.design = self.slides.keeps = True
+        self.workers.design_said = with_assets(runner_support.designed(OUTLINE))
+
+    def supply(self, root: Path, shade: int = 40, asset: str = 'console_view') -> dict:
+        return self.engine.supply_asset(root, None, asset, png(shade), 'The console mid-restart',
+                                        'Course author, October 2026', 'Internal training only')
+
+    def listed(self, view: dict) -> dict:
+        return {entry['asset']: entry['state'] for entry in view['deck']['assets']}
+
+    def test_icons_are_found_and_recorded_before_any_section_is_drawn(self):
+        root = self.begin()
+        self.drawn(root)
+        self.supply(root)
+        recorded = pipeline.recorded(root, None)
+        self.assertEqual((recorded['icon_instance']['kind'], recorded['icon_instance']['ref']),
+                         ('icon', 'icon-server'))
+        names = [call[0] for call in self.slides.calls]
+        self.assertLess(names.index('asset_icon'), names.index('outline_start'))
+        start = next((root / 'work' / 'deck').glob('start-*'))
+        brief = (start / 'given' / 'section-1.md').read_text()
+        for told in ('- An instance: `icon-server`, recorded as `icon_instance`, on '
+                     '`what-it-does`', deck.PLACED[0],
+                     'screenshot "The restart in the console" for Instances replaced in turn, '
+                     'recorded as `console_view`: place it by that asset ID'):
+            self.assertIn(told, brief)
+        job, spec = [(job, spec) for kind, job, spec in self.workers.jobs
+                     if kind == 'section'][0]
+        self.assertEqual(job.guidance, briefs.guidance('deck-section', design=True,
+                                                       assets=True))
+        self.assertEqual(spec['artifacts']['section']['assets'],
+                         {'project': str(root / pipeline.DESIGNS), 'generated': {}})
+        # The manifest and the picture are shared with the design they belong to.
+        tracked = self.git('ls-files', 'trainings/rolling-restarts').splitlines()
+        for kept in ('deck/.harness-slides/assets.json', 'deck/assets/supplied/console_view.png'):
+            self.assertIn(f'trainings/rolling-restarts/{kept}', tracked)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_visual_05_missing_asset_waits(self):
+        self.workers.design_said = with_assets(runner_support.designed(OUTLINE), generated=True)
+        self.workers.placing = {'what-it-does': [
+            {'type': 'image', 'id': 's1_console', 'asset': 'console_view'}]}
+        root = self.begin()
+        view = self.drawn(root)
+        approved = self.record(root)['deck']['']['approved']
+        self.assertEqual((view['state'], view['problem']['action']), ('waiting', 'retry'))
+        said = view['problem']['what']
+        for told in ('The deck is not drawn until what its approved design uses is to hand.',
+                     'Slide `what-it-does` needs the screenshot "The restart in the console" '
+                     '(Instances replaced in turn). Supply it on this page.',
+                     'Slide `when-capacity-holds` is drawn as generated art, "Two instances '
+                     "sharing load\" (Capacity held by the others), and the slides tool's image "
+                     'provider (gemini-api) is not set up: key_required.', 'GEMINI_API_KEY'):
+            self.assertIn(told, said)
+        self.assertEqual(view['problem']['kept'], self.engines.ASSETS_KEPT)
+        self.assertEqual(self.listed(view), {'icon_instance': 'recorded',
+                                             'console_view': 'wanted',
+                                             'capacity_art': 'wanted'})
+        self.assertEqual([entry['supply'] for entry in view['deck']['assets']],
+                         [False, True, False])
+        # The approval and what was saved stay; nothing is started or asked again.
+        self.assertEqual(self.record(root)['deck']['']['approved'], approved)
+        self.assertEqual(([call[0] for call in self.slides.calls].count('outline_start'),
+                          self.kinds().count('section'), len(self.slides.replies)), (0, 0, 1))
+        self.assertEqual(self.engine.act(root, 'retry')['problem']['what'], said,
+                         'trying again waits again, for the same things')
+        # A file gone from under a deck already drawn waits too, before anything is drawn.
+        self.slides.env = {'GEMINI_API_KEY': 'set'}
+        self.supply(root)
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        sections = self.kinds().count('section')
+        (root / 'deck' / 'assets' / 'supplied' / 'console_view.png').unlink()
+        self.engine.wake(root)
+        view = self.view(root)
+        self.assertEqual(view['state'], 'waiting')
+        self.assertIn('console_view: file assets/supplied/console_view.png is missing from the '
+                      'project. Supply it again on this page, or put the file back.',
+                      view['problem']['what'])
+        self.assertEqual(self.kinds().count('section'), sections, 'nothing drawn without it')
+        self.assertEqual(self.listed(view)['console_view'], 'missing')
+
+    def test_visual_06_asset_resolution_resumes(self):
+        root = self.begin()
+        waiting = self.drawn(root)
+        self.assertEqual(waiting['state'], 'waiting')
+        approved = self.record(root)['deck']['']['approved']
+        view = self.supply(root)
+        self.assertIsNone(view['problem'])
+        self.assertEqual((workspace.status(root)['gate'], len(self.slides.replies)), ('deck', 1),
+                         'drawn to its gate with the one decision already made')
+        self.assertEqual(self.record(root)['deck']['']['approved'], approved)
+        recorded = pipeline.recorded(root, None)['console_view']
+        self.assertEqual((recorded['kind'], recorded['alt'], recorded['source'],
+                          recorded['restrictions']),
+                         ('screenshot', 'The console mid-restart', 'Course author, October 2026',
+                          'Internal training only'))
+        start = self.built(root)['start']
+        self.assertEqual(set(start['assets']), {'icon_instance', 'console_view'})
+        self.assertEqual(self.kinds().count('section'), 2)
+        # A picture is the person's alone, and only one the approved design asks for.
+        for asset, data, why in (('icon_instance', png(), 'is not a picture the approved'),
+                                 ('console_view', b'not a picture', 'PNG, JPEG or GIF')):
+            with self.assertRaisesRegex(WorkspaceError, why):
+                self.engine.supply_asset(root, None, asset, data, 'Alt', 'Source')
+
+    def test_visual_07_asset_change_invalidates_build(self):
+        shot = {'type': 'image', 'id': 's1_console', 'asset': 'console_view'}
+        self.workers.placing = {'what-it-does': [shot]}
+        root = self.begin()
+        self.drawn(root)
+        self.supply(root, shade=40)
+        built = self.built(root)
+        first = built['sections']['section-1']
+        self.assertEqual(set(first['assets']), {'console_view'})
+        self.assertEqual(built['sections']['section-2']['assets'], {})
+        self.assertEqual(built['rounds'][-1]['assets'], first['assets'])
+        jobs, rounds = len(self.workers.jobs), len(built['rounds'])
+        saved = self.record(root)['deck']['']['saved']
+        # The person gives another picture for it, at the deck's gate.
+        view = self.supply(root, shade=200)
+        drawn_again = [spec['artifacts']['section']['slides'][0]['id']
+                       for kind, _, spec in self.workers.jobs[jobs:] if kind == 'section']
+        self.assertEqual(drawn_again, ['what-it-does'], 'only the section that shows it')
+        self.assertEqual(self.kinds(jobs)[-1], 'review')
+        built = self.built(root)
+        self.assertEqual(len(built['rounds']), rounds + 1)
+        self.assertNotEqual(built['rounds'][-1]['assets'], first['assets'])
+        self.assertEqual(built['sections']['section-1']['assets'], built['rounds'][-1]['assets'])
+        self.assertNotEqual(self.record(root)['deck']['']['saved'], saved)
+        self.assertEqual((view['problem'], workspace.status(root)['gate'],
+                          len(self.slides.replies)), (None, 'deck', 1))
+        # A file changed underneath, with no new picture given, is stale as well.
+        (root / 'deck' / 'assets' / 'supplied' / 'console_view.png').write_bytes(png(7))
+        found = self.engine._survey(root, self.record(root)).decks[None]
+        self.assertNotIn('deck-sections', found.done)
+        self.assertEqual(found.todo, ('section-1',))
+
+    def test_a_tool_without_the_manifest_draws_as_before(self):
+        self.slides.keeps = False
+        root = self.begin()
+        self.drawn(root)
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        self.assertNotIn('assets', self.built(root)['start'])
+        self.assertFalse((root / pipeline.ASSETS).exists())
+        job, spec = [(job, spec) for kind, job, spec in self.workers.jobs
+                     if kind == 'section'][0]
+        self.assertEqual(job.guidance, briefs.guidance('deck-section', design=True))
+        self.assertNotIn('assets', spec['artifacts']['section'])
+        self.assertNotIn('assets', self.view(root)['deck'] or {})
+
+
 class CompatibleTests(DeckCase):
     """A slides tool as released, 0.13.1, with no design session, and trainings that were
     already under way when a newer tool came."""
@@ -2048,6 +2311,42 @@ class DesignPageTests(PageCase):
                          (False, None))
         self.assertEqual(self.record(root)['deck']['']['approved']['design']['revision'],
                          shown['design']['revision'])
+
+
+class AssetPageTests(PageCase):
+    """A deck waiting for a picture: the run lists what its design uses, and the person
+    supplies the picture on the page."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides.design = self.slides.keeps = True
+        self.workers.design_said = with_assets(runner_support.designed(OUTLINE))
+
+    def test_the_run_lists_the_decks_assets_and_a_picture_is_supplied_on_the_page(self):
+        import base64
+        root = self.begin()
+        self.drawn(root)
+        run = self.get('run', path=str(root))
+        self.assertEqual(run['state'], 'waiting')
+        self.assertEqual(run['deck']['assets'], [
+            {'asset': 'icon_instance', 'slide': 'what-it-does', 'kind': 'icon', 'ref': 'server',
+             'concept': 'An instance', 'state': 'recorded', 'alt': 'Server', 'supply': False},
+            {'asset': 'console_view', 'slide': 'what-it-does', 'kind': 'screenshot',
+             'ref': 'The restart in the console', 'concept': 'Instances replaced in turn',
+             'state': 'wanted', 'alt': None, 'supply': True}])
+        sent = {'path': str(root), 'level': None, 'asset': 'console_view',
+                'content': base64.b64encode(png(9)).decode(), 'alt': 'The console',
+                'source': 'Course author', 'restrictions': None}
+        self.assertIn('Say what the picture shows', self.post('asset', {**sent, 'alt': ' '},
+                                                               400)['error'])
+        self.assertIn('did not arrive whole', self.post('asset', {**sent, 'content': '%%'},
+                                                        400)['error'])
+        self.assertIn('is not a picture the approved design', self.post(
+            'asset', {**sent, 'asset': 'icon_instance'}, 409)['error'])
+        run = self.post('asset', sent)
+        self.assertIsNone(run['problem'])
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        self.assertEqual(pipeline.recorded(root, None)['console_view']['alt'], 'The console')
 
 
 class BriefTests(JobCase):

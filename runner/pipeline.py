@@ -103,6 +103,8 @@ OUTLINE = 'deck/outline.json'       # what the deck says
 DESIGN = 'deck/design.json'         # how each slide is drawn, as proposed with what it says
 DESIGNS = 'deck'                    # where the slides tool keeps its record of the design
 APPROVED_DESIGN = Path('given') / 'design.json'   # in a start: the plan the tool approved
+ASSETS = 'deck/.harness-slides/assets.json'   # the tool's record of the deck's pictures and icons
+SUPPLIED = ('supplied', 'screenshot', 'chart')   # the assets a person gives, on the page
 SHOWS = 'deck/review.json'          # what its gate shows of the deck that was saved
 WORK = 'work/deck'                  # what it is built with: never shared
 BUILT = f'{WORK}/state.json'        # what this computer has built, and from what
@@ -778,6 +780,31 @@ def write_built(root: Path, level: str | None, built: dict) -> None:
     home.write_json(place(root, level, BUILT), built)
 
 
+def recorded(root: Path, level: str | None) -> dict:
+    """The deck's asset manifest, as the slides tool keeps it beside the design: {asset ID:
+    entry}. Empty when it records nothing. It is read, and only the tool writes it."""
+    found = home.read_json(place(root, level, ASSETS), {})
+    listed = found.get('assets') if isinstance(found, dict) else None
+    return {entry['assetId']: entry for entry in listed or ()
+            if isinstance(entry, dict) and isinstance(entry.get('assetId'), str)} \
+        if isinstance(listed, list) else {}
+
+
+def assets_now(root: Path, level: str | None, known: dict | None = None) -> dict:
+    """What each recorded asset of a deck is now, as {asset ID: fingerprint}: a picture's
+    file hash, None when its file is gone; an icon's library ID with the hash of its entry.
+    A section and a whole deck are made from these, and are made again when one changes."""
+    project = place(root, level, DESIGNS).resolve()
+    found = {}
+    for ident, entry in (recorded(root, level) if known is None else known).items():
+        if entry.get('kind') == 'icon':
+            found[ident] = f"{entry.get('ref')}:{entry.get('sha256')}"
+            continue
+        file = (project / str(entry.get('path'))).resolve()
+        found[ident] = workspace.sha256_file(file) if project in file.parents else None
+    return found
+
+
 def outline_of(root: Path, level: str | None) -> dict | None:
     """What a deck says, as it lies in its folder, or None when it cannot be read."""
     try:
@@ -814,11 +841,20 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
     file = root / workspace.artifact(root, session, name)['file']
     rounds = tuple(made for made in built.get('rounds') or ()
                    if made.get('start') == start.get('folder'))
+    # A deck whose tool keeps its assets is made from what each asset is now.
+    now = assets_now(root, level) if start.get('assets') is not None else {}
+
+    def holds(made: dict | None) -> bool:
+        return all(now.get(ident) == fingerprint
+                   for ident, fingerprint in ((made or {}).get('assets') or {}).items())
+
     asked_of = kept.get('waiting') or {}
     waiting = bool(said) and asked_of.get('sha256') == said \
         and (asked_of.get('design') or {}).get('sha256') == drawn_as
     if state.get(name) in CURRENT and name not in asked and entry.get('sha256') \
-            and entry['sha256'] == workspace.sha256_file(file):
+            and entry['sha256'] == workspace.sha256_file(file) \
+            and (not rounds or holds(rounds[-1]) and (kept.get('saved') or {}).get('deck')
+                 == rounds[-1].get('deck')):
         # Saved and current: nothing is left before its gate, wherever it was built.
         done = set(DECK_STEPS[:-1]) | ({DECK_STEPS[-1]} if state[name] == 'approved' else set())
         return Deck(level, name, frozenset(done), kept, built, outline, rounds=rounds)
@@ -849,7 +885,7 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
     sections = [section['id'] for section in start.get('sections') or ()]
     drawn = {ident: made for ident, made in (built.get('sections') or {}).items()
              if made.get('start') == start.get('folder')
-             and (work / str(made.get('file'))).is_file()}
+             and (work / str(made.get('file'))).is_file() and holds(made)}
     first = tuple(ident for ident in sections if ident not in drawn)
     last = rounds[-1] if rounds else None
     wanting = deck.to_repair((last.get('review') or {}).get('findings'), start['sections']) \
@@ -862,7 +898,7 @@ def stands(root: Path, session: dict, state: dict, asked: dict, run: dict,
         done.add('deck-repair')
     current = {ident: drawn[ident].get('sha256') for ident in sections if ident in drawn}
     whole = bool(last) and not first and (bool(again) or last.get('made_from') == current) \
-        and bool(shots(root, level, last.get('deck')))
+        and bool(shots(root, level, last.get('deck'))) and holds(last)
     if whole:
         done.add('deck-whole')
     if whole and last.get('review'):
@@ -1527,6 +1563,15 @@ def section_work(root: Path, found: Survey, step: Step, section: str, error: str
     bound = {'design': str(place(root, level, DESIGNS)), 'section': True} \
         if design is not None else {}
     ids = next(listed['slides'] for listed in start['sections'] if listed['id'] == section)
+    # A deck whose tool keeps its assets: what its composer may list, and may ask the tool
+    # for, which is generated art for its own slides drawn as generated art.
+    if design is not None and start.get('assets') is not None:
+        bound['assets'] = {
+            'project': bound['design'],
+            'generated': {candidate['asset']: candidate['slide']
+                          for candidate in deck.candidates(design)
+                          if candidate['kind'] == 'generated' and candidate['slide'] in ids
+                          and _family(design, candidate['slide']) == 'generated-art'}}
     inputs = {'brief': _read(folder / 'given' / f'{section}.md') or '',
               'composition contract': _told(root, mine, 'compose-contract.txt')}
     relations = [slide.get('relation') for slide in deck.slides_of(whole)
@@ -1557,8 +1602,16 @@ def section_work(root: Path, found: Survey, step: Step, section: str, error: str
                 'artifacts': {name: {'kind': 'section', 'brand': str(contract(root, mine)),
                                      **deck.fixed(whole, ids, number, design),
                                      'previews': deck.PREVIEWS, **how, **bound}}}
-    return Work(briefs.guidance('deck-section', repair=again, design=design is not None),
-                task, 'write', prepared, name)
+    return Work(briefs.guidance('deck-section', repair=again, design=design is not None,
+                                assets='assets' in bound), task, 'write', prepared, name)
+
+
+def _family(design, ident: str) -> str | None:
+    """The approved visual family of one slide of a design."""
+    slide = next((slide for slide in deck.slides_of(design) if slide.get('id') == ident), {})
+    visual = (slide.get('intent') or {}).get('visual') if isinstance(slide.get('intent'),
+                                                                       dict) else None
+    return visual.get('family') if isinstance(visual, dict) else None
 
 
 def review_work(root: Path, found: Survey, step: Step, error: str | None) -> Work:
@@ -1945,7 +1998,13 @@ def deck_view(root: Path, found: Survey, level: str | None, live: dict | None = 
     A section's `slides` are numbered within that section's own preview, from 1, which is
     what `picture_of` takes with the section: where a slide falls in the deck is not known
     until the sections are merged. `titles` gives each of those slides its title, in the
-    same order."""
+    same order.
+
+    `assets` lists, for a deck whose slides tool keeps them, each asset its approved design
+    uses: {'asset', 'slide', 'kind', 'ref', 'concept', 'state', 'alt', 'supply'}, where
+    `state` is 'recorded', 'missing' (its file is gone), 'changed' (its file is not what was
+    recorded), 'conflict' (recorded as another kind) or 'wanted' (not recorded yet), and
+    `supply` says the person gives it. Any other deck has no `assets`."""
     mine = found.decks.get(level)
     if mine is None:
         return None
@@ -1970,7 +2029,27 @@ def deck_view(root: Path, found: Survey, level: str | None, live: dict | None = 
     slides = len(deck.slides_of(mine.outline))
     return {'level': level, 'sections': sections,
             'pictures': len(shots(root, level, mine.last['deck'])) if mine.last else 0,
-            'before': deck.before(slides) if slides else None}
+            'before': deck.before(slides) if slides else None,
+            **({'assets': assets_view(root, level)} if mine.built.get('assets') else {})}
+
+
+def assets_view(root: Path, level: str | None) -> list[dict]:
+    """Each asset a deck's approved design uses, and how it stands in the slides tool's
+    manifest of the deck, read from the files as they lie."""
+    known, design = recorded(root, level), home.read_json(place(root, level, DESIGN), {})
+    now, listed = assets_now(root, level, known), []
+    for candidate in deck.candidates(design):
+        entry = known.get(candidate['asset'])
+        state = ('wanted' if entry is None else 'conflict' if entry.get('kind')
+                 != candidate['kind'] else 'recorded' if entry.get('kind') == 'icon'
+                 else 'missing' if now.get(candidate['asset']) is None
+                 else 'changed' if now[candidate['asset']] != entry.get('sha256')
+                 else 'recorded')
+        listed.append({**{key: candidate[key] for key in ('asset', 'slide', 'kind', 'ref',
+                                                          'concept')},
+                       'state': state, 'alt': (entry or {}).get('alt'),
+                       'supply': candidate['kind'] in SUPPLIED})
+    return listed
 
 
 def picture_of(root: Path, level: str | None, number, section: str | None = None) -> Path:

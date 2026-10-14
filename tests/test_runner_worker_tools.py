@@ -1122,7 +1122,7 @@ class ServerTests(JobCase):
             self.assertTrue(entry['description'])
             self.assertLessEqual(set(entry['inputSchema']['required']),
                                  set(entry['inputSchema']['properties']))
-        self.assertEqual(len(worker_tools.NAMES), 18)
+        self.assertEqual(len(worker_tools.NAMES), 20)
 
     def answer(self, tools, method, params=None, ident=1):
         message = {'jsonrpc': '2.0', 'method': method, 'params': params or {}}

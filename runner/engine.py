@@ -256,6 +256,13 @@ DESIGN_GONE = ('What this deck says is written with its design, which the slides
 SECTIONS_GONE = ('This deck is drawn from the design you approved, and the slides tool on '
                  'this computer cannot check a section against it. Update harness-slides, '
                  'then try again.')
+ASSETS_WAIT = ('The deck is not drawn until what its approved design uses is to hand. {said}')
+ASSETS_KEPT = ('What you approved the deck should say, and how it is drawn, is kept, and so is '
+               'everything made before. Nothing needs approving again.')
+NOT_SUPPLIED = ('{asset} is not a picture the approved design of this deck asks you for. '
+                'Supply one of those it lists.')
+PICTURES = {b'\x89PNG\r\n\x1a\n': '.png', b'\xff\xd8\xff': '.jpg', b'GIF87a': '.gif',
+            b'GIF89a': '.gif'}   # what a supplied picture may be, by how its file begins
 DESIGN_DIFFERS = ('The design you approved is not what the slides tool holds as approved, so '
                   'the deck cannot be started. {said}')
 NOT_CHOSEN = ("How a deck's previews are rendered has not been chosen. Choose Google Drive "
@@ -1098,13 +1105,15 @@ class Engine:
             pass
 
     def _problem(self, root: Path, step: str | None, state: str, what: str, kept: str,
-                 action: str | None = 'retry') -> None:
-        """Stop a training in a state that says what went wrong and offers one action."""
+                 action: str | None = 'retry', waits: str | None = None) -> None:
+        """Stop a training in a state that says what went wrong and offers one action.
+        `waits` names what it waits for, when something done on the page settles it."""
         label = {'retry': 'Try again', 'resume': 'Carry on'}.get(action)
         with self.files:
             record = self._load(root)
             record['problem'] = {'state': state, 'step': step, 'what': what, 'kept': kept,
-                                 'action': action, 'label': label, 'at': home.now()}
+                                 'action': action, 'label': label, 'at': home.now(),
+                                 **({'waits': waits} if waits else {})}
             self._store(root, record)
             self._commit(root, f'stop. {workspace.shortened(what)}')
 
@@ -1484,6 +1493,102 @@ class Engine:
             self._problem(root, it.id, 'stopped', SECTIONS_GONE, DECK_KEPT)
         return can
 
+    def _with_assets(self) -> bool:
+        """Whether the slides tool here keeps a deck's assets."""
+        try:
+            return self.slides().assets()
+        except WorkspaceError:
+            return False
+
+    def _assets_hold(self, root: Path, it: pipeline.Step, level: str | None, plan: dict,
+                     contract: Path, find: bool = False) -> dict | None:
+        """Whether every asset an approved design uses is to hand: recorded in the slides
+        tool's manifest of the deck, its file as it was recorded, and an icon as the brand
+        has it. Generated art is its composer's to make, so it needs only the tool's image
+        provider. With `find`, each icon not yet recorded is first found in the brand's
+        library and recorded. Returns what each asset is now, or None when the deck waits,
+        having said for what, asset by asset, and what to do."""
+        tool, project = self.slides(), pipeline.place(root, level, pipeline.DESIGNS)
+        wanted, said = deck.candidates(plan), []
+        try:
+            recorded = {entry['assetId']: entry
+                        for entry in tool.asset_status(project).get('assets') or ()}
+            if find:
+                said += self._icons_found(project, contract, wanted, recorded)
+                recorded = {entry['assetId']: entry
+                            for entry in tool.asset_status(project).get('assets') or ()}
+            try:
+                tool.asset_check(project, contract)
+            except slides_tool.Refused as refusal:
+                said += [_assets_said(problem, recorded) for problem in refusal.found] \
+                    or refusal.problems
+            provider = None
+            for candidate in wanted:
+                entry, where = recorded.get(candidate['asset']), f"Slide `{candidate['slide']}`"
+                what = f"\"{candidate['ref']}\" ({candidate['concept']})"
+                if entry is not None and entry.get('kind') != candidate['kind']:
+                    said.append(f"{where}: {candidate['asset']} is recorded as a "
+                                f"{entry.get('kind')}, and its approved design asks for a "
+                                f"{candidate['kind']}.")
+                elif entry is not None or candidate['kind'] == 'icon' and find:
+                    continue
+                elif candidate['kind'] == 'generated':
+                    provider = provider or tool.images_status()
+                    if provider.get('status') != 'configured':
+                        steps = ' '.join(str(step) for step in provider.get('steps') or ())
+                        said.append(f"{where} is drawn as generated art, {what}, and the "
+                                    f"slides tool's image provider ({provider.get('provider')})"
+                                    f" is not set up: {provider.get('status')}. "
+                                    + (steps or 'Set it up as harness-slides says.')
+                                    + ' Then try again.')
+                elif candidate['kind'] in pipeline.SUPPLIED:
+                    said.append(f"{where} needs the {candidate['kind']} {what}. Supply it on "
+                                'this page.')
+                else:
+                    said.append(f"{where} needs the icon {what}, which is not recorded yet.")
+        except WorkspaceError as refusal:
+            said.append(f'The slides tool could not say what is recorded. {refusal}')
+        if said:
+            self._problem(root, it.id, 'waiting', ASSETS_WAIT.format(said=' '.join(said)),
+                          ASSETS_KEPT, waits='assets')
+            return None
+        return pipeline.assets_now(root, level)
+
+    def _icons_found(self, project: Path, contract: Path, wanted: list[dict],
+                     recorded: dict) -> list[str]:
+        """Find each icon an approved design names, not yet recorded, in the brand's own
+        library, and record it under the asset ID the design gave it, checked against the
+        brand. Returns a sentence for each that could not be."""
+        said, skill = [], None
+        for candidate in wanted:
+            if candidate['kind'] != 'icon' or candidate['asset'] in recorded:
+                continue
+            where = f"Slide `{candidate['slide']}`"
+            try:
+                skill = skill or self._skill()
+                found = skill.icons(str(candidate['ref'] or candidate['concept']),
+                                    worker_tools.ICONS)
+            except WorkspaceError:
+                found = []
+            chosen = deck.icon_for(candidate['ref'], found)
+            if chosen is None:
+                said.append(f"{where} needs the icon \"{candidate['ref']}\" "
+                            f"({candidate['concept']}), and the brand's icon library has none "
+                            'by that name. Add one to the brand, then try again.')
+                continue
+            try:
+                self.slides().asset_icon(project, chosen, candidate['asset'],
+                                         candidate.get('alt'), contract)
+            except slides_tool.Refused as refusal:
+                said += [_assets_said(problem, recorded) for problem in refusal.found] \
+                    or refusal.problems
+        return said
+
+    def _approved(self, root: Path, level: str | None, mine: pipeline.Deck) -> dict:
+        """The plan a deck's start was drawn from, as the slides tool approved it."""
+        return home.read_json(pipeline.place(root, level, pipeline.WORK)
+                              / mine.start['folder'] / pipeline.APPROVED_DESIGN, {})
+
     def _propose(self, root: Path, level: str | None) -> dict:
         """Propose a deck's design to the slides tool as one question for the whole plan, in
         the deck's own folder, and say what is put to the person: the design file's hash,
@@ -1555,6 +1660,16 @@ class Engine:
             except (WorkspaceError, KeyError, TypeError) as refusal:
                 return self._problem(root, it.id, 'stopped', DESIGN_DIFFERS.format(
                     said=refusal), DECK_KEPT)
+        # Its pictures and icons are to hand, and recorded, before any section is drawn.
+        held, recorded = None, None
+        if plan is not None and self._with_assets():
+            with self.files:
+                self._note(root, level, assets=True)
+            held = self._assets_hold(root, it, level, plan, pipeline.contract(root, mine),
+                                     find=True)
+            if held is None:
+                return
+            recorded = pipeline.recorded(root, level)
         words = [f"Approved on the page, {approved['at']}."]
         words += [approved['note']] if approved.get('note') else []
         try:
@@ -1575,7 +1690,8 @@ class Engine:
                 if not slides:
                     raise WorkspaceError(f'The slides tool gave {ident} no slides.')
                 worker_tools._write(folder / 'given' / f'{ident}.md', deck.brief(
-                    written, whole, design=plan).replace(str(folder), '.').replace(
+                    written, whole, design=plan, recorded=recorded).replace(
+                    str(folder), '.').replace(
                     str(Path.home()), '~'))
                 sections.append({'id': ident, 'file': part, 'slides': slides})
             if not sections:
@@ -1597,7 +1713,7 @@ class Engine:
                     shutil.rmtree(old, ignore_errors=True)
             self._note(root, level, sections={}, rounds=[], start={
                 'outline': approved['sha256'], 'brand': mine.built['brand']['sha256'],
-                'design': design,
+                'design': design, **({'assets': held} if held is not None else {}),
                 'folder': folder.name, 'sections': sections, 'at': home.now()})
             self._done(root, it, clock, f'split {workspace.label(it.artifact)} into '
                        f"{len(sections)} section{'' if len(sections) == 1 else 's'}")
@@ -1609,7 +1725,12 @@ class Engine:
         if not self._brand_holds(root, found, step.step):
             return
         level = self._level(step.step)
-        if not self._sections_bound(root, step.step, found.decks[level].start.get('design')):
+        mine = found.decks[level]
+        if not self._sections_bound(root, step.step, mine.start.get('design')):
+            return
+        if mine.start.get('assets') is not None and self._assets_hold(
+                root, step.step, level, self._approved(root, level, mine),
+                pipeline.contract(root, mine)) is None:
             return
         how = self._how(root, found, level)
 
@@ -1662,7 +1783,9 @@ class Engine:
                 'sha256': workspace.sha256_file(base / file),
                 'previews': handed['shown']['previews'],
                 'pictures': [slide['number'] for slide in handed['shown']['slides']],
-                'notes': (handed['review'] or '').strip() or None}
+                'notes': (handed['review'] or '').strip() or None,
+                **({'assets': _placed(root, level, draft['text'])}
+                   if mine.start.get('assets') is not None else {})}
             self._note(root, level, sections=drawn)
             record = self._load(root)
             self._tried(record, it.id, started_at, outcome.seconds, 'kept',
@@ -1686,6 +1809,10 @@ class Engine:
             root, level, pipeline.SHOTS)
         drawn = mine.built.get('sections') or {}
         if not self._sections_bound(root, it, mine.start.get('design')):
+            return
+        if mine.start.get('assets') is not None and self._assets_hold(
+                root, it, level, self._approved(root, level, mine),
+                pipeline.contract(root, mine)) is None:
             return
         # A deck drawn from its approved design is checked whole against it.
         bound = {'design': pipeline.place(root, level, pipeline.DESIGNS)} \
@@ -1729,6 +1856,9 @@ class Engine:
                 'compiled': (folder / 'compiled').relative_to(base).as_posix(),
                 'file': file.relative_to(base.resolve()).as_posix(),
                 'made_from': {ident: made['sha256'] for ident, made in drawn.items()},
+                **({'assets': {ident: fingerprint for made in drawn.values()
+                               for ident, fingerprint in (made.get('assets') or {}).items()}}
+                   if mine.start.get('assets') is not None else {}),
                 'deck': shown['deckSha256'], 'slides': slides})
             self._note(root, level, rounds=rounds)
             self._done(root, it, clock, f'put {workspace.label(it.artifact)} together: '
@@ -2375,6 +2505,61 @@ class Engine:
                              'no documents were added; research uses the public web')
         if action == 'done':
             self.wake(root)
+        return self.view(root)
+
+    def supply_asset(self, path, level: str | None, asset: str, data: bytes, alt: str,
+                     source: str, restrictions: str | None = None) -> dict:
+        """Record a picture the person gives for one their deck's approved design asks
+        for, through the slides tool, which keeps it. A picture recorded before is replaced
+        where it is kept, so what is drawn with it is drawn again. A deck waiting for its
+        pictures carries on, and nothing is approved again."""
+        root = self._held(path)
+        ending = next((suffix for start, suffix in PICTURES.items()
+                       if data.startswith(start)), None)
+        if ending is None:
+            raise WorkspaceError('A picture is a PNG, JPEG or GIF file.')
+        if not alt.strip() or not source.strip():
+            raise WorkspaceError('Say what the picture shows and where it came from.')
+        with self.files:
+            record = self._load(root)
+            mine = self._survey(root, record).decks.get(level)
+            if mine is None or not mine.built.get('assets') \
+                    or not (mine.kept.get('approved') or {}).get('design'):
+                raise WorkspaceError('This deck takes no pictures from you: it is not drawn '
+                                     'from an approved design whose slides tool keeps them.')
+            design = home.read_json(pipeline.place(root, level, pipeline.DESIGN), {})
+            wanted = next((candidate for candidate in deck.candidates(design)
+                           if candidate['asset'] == asset
+                           and candidate['kind'] in pipeline.SUPPLIED), None)
+            if wanted is None:
+                raise WorkspaceError(NOT_SUPPLIED.format(asset=asset))
+            project = pipeline.place(root, level, pipeline.DESIGNS)
+            entry = pipeline.recorded(root, level).get(asset) or {}
+            target = (project / str(entry['path'])).resolve() if entry.get('path') else None
+            if target is not None and project.resolve() not in target.parents:
+                target = None
+            before = target.read_bytes() if target is not None and target.is_file() else None
+            staged = pipeline.place(root, level, pipeline.WORK) / f'supplied-{asset}{ending}'
+            file = target or staged
+            try:
+                workspace.write_atomic(file, data)
+                self.slides().asset_supplied(project, file, asset, alt.strip(),
+                                             source.strip(), wanted['kind'],
+                                             (restrictions or '').strip() or None)
+            except WorkspaceError as refusal:
+                if target is not None and before is not None:
+                    workspace.write_atomic(target, before)
+                raise WorkspaceError(f'The picture was not recorded. {refusal}')
+            finally:
+                staged.unlink(missing_ok=True)
+            problem = record.get('problem') or {}
+            if problem.get('waits') == 'assets':
+                self._fresh(record, problem.get('step'))
+                record['problem'] = None
+                self._store(root, record)
+            self._commit(root, f"supply the {wanted['kind']} {asset} for "
+                         f"{workspace.label(mine.name)}")
+        self.wake(root)
         return self.view(root)
 
     def copies_again(self, path) -> dict:
@@ -3241,3 +3426,26 @@ class Engine:
         record['driver'] = team.claim(space)
         self._tried(record, 'intake', home.now(), 0.0, 'kept')
         return record
+
+
+def _assets_said(problem: dict, recorded: dict) -> str:
+    """One problem the slides tool found with a deck's assets, as the person is told it. A
+    supplied picture whose file is gone or changed is theirs to supply again."""
+    detail = str(problem.get('detail') or problem.get('code'))
+    entry = recorded.get(problem.get('asset')) or {}
+    if problem.get('code') in ('asset-file-missing', 'asset-hash-changed') \
+            and entry.get('kind') in pipeline.SUPPLIED:
+        return f'{detail}. Supply it again on this page, or put the file back.'
+    then = str(problem.get('next') or '')
+    return f"{detail}. {then}." if then and then not in detail else f'{detail}.'
+
+
+def _placed(root: Path, level: str | None, text: str) -> dict:
+    """The recorded assets a section draws, with what each is now."""
+    recorded = pipeline.recorded(root, level)
+    try:
+        section = json.loads(text)
+    except ValueError:
+        return {}
+    now = pipeline.assets_now(root, level, recorded)
+    return {ident: now.get(ident) for ident in deck.placed(section, recorded)}
