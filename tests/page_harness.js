@@ -470,6 +470,9 @@ function snapshot() {
     posts: report.requests.filter((request) => request.method === 'POST').length,
     badge: badge.hidden ? '' : badge.textContent,
     fields: Object.fromEntries(boxes().map(([label, held]) => [label, held.value])),
+    // What each of the browser's own lists offers, in order, under the words of its label.
+    lists: Object.fromEntries(boxes().filter(([, held]) => held.tagName === 'SELECT')
+      .map(([label, held]) => [label, held.children.map((option) => option.textContent)])),
     locked: boxes().filter(([, held]) => held.readOnly).map(([label]) => label),
     invalid: boxes().filter(([, held]) => held.getAttribute('aria-invalid') === 'true')
       .map(([label]) => label),

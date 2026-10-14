@@ -2242,13 +2242,15 @@ NO_BRAND = {'found': False, 'name': None, 'brands': [],
             'problem': 'No brand skill was found on this computer. Install one, then check '
                        'this computer again.'}
 NOT_SET_UP = {'configured': False, 'workspace': None,
-              'agent': {'default': 'claude', 'model': None}, 'limits': LIMITS,
+              'agent': {'default': 'claude', 'model': None, 'effort': None},
+              'limits': LIMITS,
               'previews': NO_PREVIEWS, 'brand': BRAND}
 WORKSPACE = {'name': 'Field enablement', 'repository': 'git@example.com:team/tools.git',
              'path': '/Users/pat/Library/Training Studio/workspace', 'folder': 'trainings',
              'branch': 'main', 'share_when': 'each-decision', 'shared': True, 'notice': None}
 SET_UP = {'configured': True, 'workspace': WORKSPACE,
-          'agent': {'default': 'claude', 'model': None}, 'limits': LIMITS,
+          'agent': {'default': 'claude', 'model': None, 'effort': None},
+              'limits': LIMITS,
           'previews': NO_PREVIEWS, 'brand': BRAND}
 AGENTS_FOUND = {'agents': [
     {'agent': 'claude', 'installed': True, 'signed_in': None, 'reachable': True,
@@ -2256,8 +2258,22 @@ AGENTS_FOUND = {'agents': [
     {'agent': 'codex', 'installed': True, 'signed_in': False, 'reachable': None,
      'version': '0.48.0',
      'problem': 'Codex is not signed in. Run codex login in a terminal, then look again.'}]}
-RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'steps', 'workers', 'spent', 'question',
-              'problem', 'documents', 'copies', 'deck_left', 'finished', 'outline', 'deck'}
+FIVE = ['low', 'medium', 'high', 'xhigh', 'max']
+# What `GET /api/models` answers for each agent: Claude Code's aliases, and Codex's catalog.
+CLAUDE_MODELS = {'agent': 'claude', 'problem': None, 'levels': FIVE, 'models': [
+    {'name': name, 'label': label, 'levels': FIVE, 'default_level': None}
+    for name, label in (('fable', 'Fable'), ('opus', 'Opus'), ('sonnet', 'Sonnet'),
+                        ('haiku', 'Haiku'))]}
+CODEX_MODELS = {'agent': 'codex', 'problem': None, 'levels': ['low', 'medium', 'high'], 'models': [
+    {'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
+     'levels': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']},
+    {'name': 'gpt-6-luna', 'label': 'GPT-6-Luna', 'default_level': 'low',
+     'levels': ['low', 'medium', 'high']}]}
+MODELS = {'GET /api/models?agent=claude': [ok(CLAUDE_MODELS)],
+          'GET /api/models?agent=codex': [ok(CODEX_MODELS)]}
+RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'effort', 'steps', 'workers', 'spent',
+              'question', 'problem', 'documents', 'copies', 'deck_left', 'finished', 'outline',
+              'deck'}
 OUTLINE_FIELDS = {'level', 'waiting', 'slides', 'sha256', 'checked', 'worth', 'note'}
 OUTLINE_SLIDE_FIELDS = {'id', 'kind', 'title', 'subtitle', 'understand', 'points', 'caveat',
                         'source', 'notes', 'serves'}
@@ -2285,7 +2301,7 @@ def a_step(name: str, label: str, kind: str, status: str, **more) -> dict:
 
 def a_run(state: str, sentence: str, **more) -> dict:
     run = {'state': state, 'sentence': sentence, 'agent': 'claude', 'model': None,
-           'steps': [], 'workers': [], 'spent': {'dollars': None, 'tokens': None},
+           'effort': None, 'steps': [], 'workers': [], 'spent': {'dollars': None, 'tokens': None},
            'question': None, 'problem': None, 'documents': None, 'copies': [],
            'deck_left': None, 'finished': None, 'outline': None, 'deck': None, **more}
     assert set(run) == RUN_FIELDS, run
@@ -2416,7 +2432,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         return {'GET /api/capabilities': [RUNNER], 'GET /api/setup': [ok(setup)],
                 'GET /api/trainings': [self.read('trainings')],
                 'GET /api/computer': [self.read('computer')],
-                'GET /api/agents': [ok(AGENTS_FOUND)], **more}
+                'GET /api/agents': [ok(AGENTS_FOUND)], **MODELS, **more}
 
     def posts(self, result: dict) -> list:
         """Every change the page asked for, each sent as milestone 1 says a change is."""
@@ -2474,7 +2490,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         found = {'ok': True, 'checks': passed,
                  'found': {'name': 'Field enablement', 'folder': 'tools/trainings',
                            'branch': 'trainings', 'existing': True}}
-        saved = {'configured': True, 'agent': {'default': 'codex', 'model': 'gpt-5'},
+        saved = {'configured': True,
+                 'agent': {'default': 'codex', 'model': 'gpt-6-sol', 'effort': 'xhigh'},
                  'limits': {'step_seconds': 600, 'training_dollars': 15, 'parallel': 1},
                  'workspace': {**WORKSPACE, 'folder': 'tools/trainings', 'branch': 'trainings',
                                'share_when': 'when-asked', 'shared': False}}
@@ -2489,7 +2506,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             {'click': 'Save and go on'}, {'snapshot': 'not yet'},
             {'fill': address, 'value': second}, {'snapshot': 'found'},
             {'click': 'Only when I ask'}, {'click': 'Codex'},
-            {'fill': 'Its model', 'value': ' gpt-5 '},
+            {'fill': 'Its model', 'value': 'gpt-6-sol'},
+            {'fill': 'Its reasoning level', 'value': 'xhigh'},
             {'fill': 'The longest a step may take', 'value': '10'},
             {'fill': 'The most a training may spend', 'value': '15'},
             {'fill': parallel, 'value': '0'},
@@ -2519,7 +2537,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                                             'Claude Code'])
         self.assertEqual(start['fields'], {
             address: '', 'The folder inside it': '', 'The branch': '',
-            'A name for this workspace': '', 'Its model (optional)': '',
+            'A name for this workspace': '', 'Its model': '', 'Its reasoning level': '',
             'The longest a step may take, in minutes': '15',
             'The most a training may spend, in dollars': '20', parallel: '2'})
         self.assertEqual(self.asked(result, 'capabilities'), ['/api/capabilities'])
@@ -2565,7 +2583,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             ('/api/setup/check', {'repository': second, **nothing}),
             ('/api/setup', {'repository': second, 'folder': 'tools/trainings',
                             'branch': 'trainings', 'name': 'Field enablement',
-                            'share_when': 'when-asked', 'agent': 'codex', 'model': 'gpt-5',
+                            'share_when': 'when-asked', 'agent': 'codex',
+                            'model': 'gpt-6-sol', 'effort': 'xhigh',
                             'limits': {'step_seconds': 600, 'training_dollars': 15,
                                        'parallel': 1}})])
 
@@ -2634,7 +2653,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             ('/api/setup', {'repository': 'git@example.com:team/tools.git',
                             'folder': 'trainings', 'branch': 'main',
                             'name': 'Field enablement', 'share_when': 'each-decision',
-                            'agent': 'claude', 'model': None,
+                            'agent': 'claude', 'model': None, 'effort': None,
                             'limits': {'step_seconds': 900, 'training_dollars': 30,
                                        'parallel': 2}})])
         saved = shots['saved']
@@ -2670,7 +2689,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             ('/api/setup/check', {**place, 'folder': 'courses'}),
             ('/api/setup', {'path': '/Users/pat/try-out', 'folder': 'courses', 'branch': 'main',
                             'name': 'try-out', 'share_when': 'when-asked', 'agent': 'claude',
-                            'model': None, 'limits': LIMITS})])
+                            'model': None, 'effort': None, 'limits': LIMITS})])
         self.assertIn('Your trainings are kept in a folder on this computer, and are not '
                       'shared with anyone.', shots['saved']['text'])
         self.assertNotIn('Share now', shots['saved']['buttons'])
@@ -2709,6 +2728,113 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertEqual(self.posts(result)[1][1]['name'], 'field-training')
         # Enter in a box saves, as the filled button does.
         self.assertEqual(shots['saved']['heading'], 'Home')
+
+    def test_the_model_is_chosen_from_the_agents_own_list_with_a_level_it_takes(self):
+        check = {'ok': True, 'found': {'name': 'Field enablement', 'folder': 'trainings',
+                                       'branch': 'main', 'existing': True},
+                 'checks': [{'what': 'The repository can be reached', 'ok': True, 'fix': None}]}
+        saved = {**SET_UP, 'agent': {'default': 'codex', 'model': 'gpt-7-preview',
+                                     'effort': 'high'}}
+        answers = self.answers(**{'POST /api/setup/check': [ok(check)],
+                                  'POST /api/setup': [ok(saved)]})
+        model, level, typed = 'Its model', 'Its reasoning level', 'The model’s name'
+        result = self.run_page(answers, [
+            {'click': 'Settings'}, {'click': 'Change the set-up'}, {'snapshot': 'claude'},
+            {'fill': level, 'value': 'max'}, {'click': 'Codex'}, {'snapshot': 'codex'},
+            {'fill': model, 'value': 'gpt-6-sol'}, {'snapshot': 'sol'},
+            {'fill': level, 'value': 'ultra'}, {'fill': model, 'value': 'gpt-6-luna'},
+            {'snapshot': 'luna'},
+            {'fill': level, 'value': 'high'}, {'fill': model, 'value': ' other'},
+            {'snapshot': 'other'},
+            {'fill': typed, 'value': 'gpt-7-preview', 'stay': True}, {'enter': typed},
+            {'snapshot': 'saved'},
+        ])
+        shots = result['snapshots']
+        own = 'The agent’s own choice'
+
+        # Claude Code's aliases, and every level each takes. Nothing is chosen at first.
+        claude = shots['claude']
+        self.assertEqual(claude['lists'][model], [own, 'Fable', 'Opus', 'Sonnet', 'Haiku',
+                                                  'Another model…'])
+        self.assertEqual(claude['lists'][level], [own, 'Low', 'Medium', 'High', 'Extra high',
+                                                  'Maximum'])
+        self.assertEqual((claude['fields'][model], claude['fields'][level]), ('', ''))
+        self.assertNotIn(typed, claude['fields'])
+
+        # Another agent lists its own models. A level none of them all takes is let go.
+        codex = shots['codex']
+        self.assertEqual(codex['lists'][model], [own, 'GPT-6-Sol', 'GPT-6-Luna',
+                                                 'Another model…'])
+        self.assertEqual(codex['lists'][level], [own, 'Low', 'Medium', 'High'])
+        self.assertEqual((codex['fields'][model], codex['fields'][level]), ('', ''))
+
+        # A model offers the levels it takes, and says which it uses by itself.
+        sol = shots['sol']
+        self.assertEqual(sol['lists'][level], [own + ' (medium)', 'Low', 'Medium', 'High',
+                                               'Extra high', 'Maximum', 'Ultra'])
+        self.assertEqual(sol['focus'], 'setup-model')
+        luna = shots['luna']
+        self.assertEqual(luna['lists'][level], [own + ' (low)', 'Low', 'Medium', 'High'])
+        self.assertEqual((luna['fields'][model], luna['fields'][level]), ('gpt-6-luna', ''))
+
+        # "Another model…" asks for its name; a level every model takes is kept.
+        other = shots['other']
+        self.assertEqual((other['fields'][model], other['fields'][typed],
+                          other['fields'][level]), (' other', '', 'high'))
+        self.assertIn('As Codex knows it, with no spaces.', other['text'])
+
+        # Enter in the name saves, as the filled button does.
+        self.assertEqual(self.posts(result)[-1], ('/api/setup', {
+            'repository': 'git@example.com:team/tools.git', 'folder': 'trainings',
+            'branch': 'main', 'name': 'Field enablement', 'share_when': 'each-decision',
+            'agent': 'codex', 'model': 'gpt-7-preview', 'effort': 'high', 'limits': LIMITS}))
+        self.assertIn('Codex, with the model gpt-7-preview and reasoning set to high',
+                      shots['saved']['text'])
+        # Each agent's list is asked for once, apart from the page's refresh.
+        self.assertEqual(self.asked(result, 'models'),
+                         ['/api/models?agent=claude', '/api/models?agent=codex'])
+
+    def test_a_list_of_models_that_cannot_be_made_still_takes_a_name(self):
+        self.started()
+        chosen = {**SET_UP, 'agent': {'default': 'codex', 'model': 'gpt-5', 'effort': 'high'}}
+        missed = {'agent': 'codex', 'models': [], 'levels': [],
+                  'problem': 'Codex did not answer in 30 seconds.'}
+        answers = self.answers(chosen, **{
+            'GET /api/models?agent=codex': [ok(missed), ok(CODEX_MODELS)],
+            'POST /api/trainings': [ok({'path': str(self.root), 'id': 'rolling-restarts',
+                                        'gates': 5})],
+            'GET /api/run': [a_run('working', 'Drafting the research questions.')]})
+        model, level, typed = 'Its model', 'Its reasoning level', 'The model’s name'
+        result = self.run_page(answers, [
+            {'click': 'New training'},
+            {'fill': 'A short title', 'value': 'Rolling restarts'},
+            {'fill': 'What should it teach?', 'value': 'How a rolling restart works.'},
+            {'fill': 'Who is it for?', 'value': 'Platform engineers new to it.'},
+            {'click': 'Continue'}, {'click': 'Continue'}, {'snapshot': 'missed'},
+            {'click': 'Look again'}, {'snapshot': 'listed'},
+            {'fill': level, 'value': 'medium'},
+            {'click': 'Start the training'},
+        ])
+        shots = result['snapshots']
+        missed = shots['missed']
+        for shown in ('Codex’s models could not be listed. Codex did not answer in 30 seconds.',
+                      'Choose “Another model…” to give one by its name, or try “Look again”.',
+                      'It is drafted by Codex, with the model gpt-5 and reasoning set to high.'):
+            self.assertIn(shown, missed['text'])
+        # What was chosen before is still there, and nothing is lost.
+        self.assertEqual(missed['lists'][model], ['The agent’s own choice', 'gpt-5',
+                                                  'Another model…'])
+        self.assertEqual((missed['fields'][model], missed['fields'][level]), ('gpt-5', 'high'))
+
+        # Asked again, it lists them, and a model it does not list is a name typed in.
+        listed = shots['listed']
+        self.assertNotIn('could not be listed', listed['text'])
+        self.assertEqual((listed['fields'][model], listed['fields'][typed],
+                          listed['fields'][level]), (' other', 'gpt-5', 'high'))
+        self.assertEqual(self.asked(result, 'models'), ['/api/models?agent=codex'] * 2)
+        sent = self.posts(result)[0][1]
+        self.assertEqual({key: sent[key] for key in ('agent', 'model', 'effort')},
+                         {'agent': 'codex', 'model': 'gpt-5', 'effort': 'medium'})
 
     def test_a_new_training_takes_three_steps_and_lands_on_its_run(self):
         self.started('--levels', '101,301')
@@ -2782,12 +2908,17 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                       'levels.',
                       'It asks once more for each practice scenario. How many there are is not '
                       'known until a blueprint names them.',
+                      'It is drafted by Claude Code, with the model it chooses itself.',
                       'In between, you can close it.'):
             self.assertIn(shown, three['text'])
         self.assertNotIn('not offered yet', three['text'])
         self.assertEqual((three['pressed'], three['posts']),
                          (['The public web', 'Claude Code'], 0))
+        self.assertEqual((three['fields']['Its model'], three['fields']['Its reasoning level']),
+                         ('', ''))
         self.assertEqual(self.asked(result, 'agents'), ['/api/agents'] * 2)
+        # The list of models is asked for once, however often the step is drawn.
+        self.assertEqual(self.asked(result, 'models'), ['/api/models?agent=claude'])
 
         # Going back a step loses nothing.
         kept = shots['kept']
@@ -2803,7 +2934,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
             'levels': ['101', '301'], 'brief_kind': 'competitive', 'time_limit': '30 minutes',
             'source_scope': 'public-web', 'deck_target': 'google',
             'brand': {'brand': 'example-co', 'variant': 'dark'},
-            'copies': ['google'], 'yoodli': False, 'agent': 'claude', 'model': None})])
+            'copies': ['google'], 'yoodli': False, 'agent': 'claude', 'model': None,
+            'effort': None})])
 
         run = shots['run']
         self.assertEqual((run['heading'], run['title']),
@@ -2832,7 +2964,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
              'lines': ['Read your answers', 'Listed what to ask', 'Drafting question 4']}],
             spent={'dollars': 0.4, 'tokens': 18200})
         waiting = a_run('waiting', asking, steps=steps('done', 'done', 'waiting'),
-                        spent={'dollars': 0.62, 'tokens': 30100})
+                        spent={'dollars': 0.62, 'tokens': 30100}, agent='codex',
+                        model='gpt-6-sol', effort='xhigh')
         failed = a_run('failed', broke, spent={'dollars': 1.9, 'tokens': 81000}, steps=[
             *steps('done', 'done', 'done')[:3],
             a_step('research', 'Do the research', 'agent', 'failed', attempts=3, seconds=754,
@@ -2906,7 +3039,9 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                           '(1) Rolling restarts · Training Studio', 0, 5000))
         for shown in ('Waiting for you', asking,
                       'The research plan is waiting for your review.',
-                      'Training Studio asks: Are these the right questions?', '$0.62'):
+                      'Training Studio asks: Are these the right questions?', '$0.62',
+                      'Drafted by Codex, with the model gpt-6-sol and reasoning set to extra '
+                      'high.'):
             self.assertIn(shown, gate['text'])
         self.assertNotIn('Pause', gate['buttons'])
         self.assertNotIn('Working now', gate['text'])
@@ -3938,7 +4073,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                  'url': 'javascript:alert(1)'}]
         saved = {'repository': 'git@example.com:team/tools.git', 'folder': 'trainings',
                  'branch': 'main', 'name': 'Field enablement', 'share_when': 'each-decision',
-                 'agent': 'claude', 'model': None, 'limits': LIMITS}
+                 'agent': 'claude', 'model': None, 'effort': None, 'limits': LIMITS}
 
         def run(before: dict, after: dict, *choose: dict) -> dict:
             answers = self.answers({**SET_UP, 'previews': before}, **{
@@ -4013,7 +4148,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                  'checks': [{'what': 'The repository can be reached', 'ok': True, 'fix': None}]}
         saved = {'repository': 'git@example.com:team/tools.git', 'folder': 'trainings',
                  'branch': 'main', 'name': 'Field enablement', 'share_when': 'each-decision',
-                 'agent': 'claude', 'model': None, 'limits': LIMITS}
+                 'agent': 'claude', 'model': None, 'effort': None, 'limits': LIMITS}
         kit = {'name': 'Example Brand Kit', 'path': '/skills/example-brand', 'chosen': True}
         labs = {'name': 'Example Labs Kit', 'path': '/skills/example-labs', 'chosen': False}
 
@@ -5304,7 +5439,7 @@ class TeamScreenTests(ScriptedPage, PageCase):
         shots = result['snapshots']
         whole = {'repository': WORKSPACE['repository'], 'folder': 'trainings', 'branch': 'main',
                  'name': 'Field enablement', 'share_when': 'each-decision', 'agent': 'claude',
-                 'model': None, 'limits': LIMITS}
+                 'model': None, 'effort': None, 'limits': LIMITS}
         self.assertEqual(self.posts(result), [('/api/setup', {**whole, 'notify': True}),
                                               ('/api/setup', {**whole, 'notify': False})])
         first = shots['off']

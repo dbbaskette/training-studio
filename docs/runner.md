@@ -42,7 +42,10 @@ The first time, the page opens on set-up. It asks three things.
 
 - **Where your trainings are kept.** Give the address of a repository your team shares, or a folder on this computer for trying things out. The runner keeps a copy of the repository for itself and writes inside one folder of it, `trainings` unless you choose another, and nowhere else. Other tools can keep their own folders in the same repository. Each answer is checked as you give it: that the repository can be reached and written to, that git knows who you are, and that the folder can be used.
 - **When your team sees the work.** After each decision, or only when you press "Share now". Sharing never forces: if someone else changed the same file, the page says so and your work stays on your computer until it is sorted out.
-- **The agent and the limits.** Which agent drafts by default, the longest one step may take, the most one training may spend, and how many trainings may work at once.
+- **The agent and the limits.** Which agent drafts by default, which of its models and how hard it reasons, the longest one step may take, the most one training may spend, and how many trainings may work at once.
+  - The models are the agent's own. Codex lists them itself; the list is asked for when the choice is shown and kept for an hour. Claude Code has no list, so its four names are offered: Fable, Opus, Sonnet and Haiku, each meaning the latest of its kind. "The agent's own choice" leaves the model to the agent, and "Another model…" takes a name the list does not have. If the list cannot be had, the page says so, and a name can still be typed.
+  - The reasoning level is how much the agent thinks before it answers: more is slower, and costs more. Only the levels the chosen model takes are offered, and choosing another agent or model lets go of a level it does not take. "The agent's own choice" leaves that to the agent too.
+  - The last step of "New training" asks the same, starting from these. A training keeps what it started with, and every step of it uses that.
 
 Where this computer can make a deck, set-up asks two more things.
 

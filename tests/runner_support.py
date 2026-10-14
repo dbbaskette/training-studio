@@ -244,7 +244,7 @@ FORM = {'title': 'Rolling restarts', 'topic': 'Rolling restarts on the platform'
         'audience': 'Solutions engineers who deploy apps', 'purpose': 'Field enablement',
         'levels': [], 'brief_kind': 'product', 'time_limit': '25 minutes',
         'source_scope': 'public-web', 'deck_target': None, 'brand': None, 'copies': [],
-        'yoodli': False, 'agent': None, 'model': None}
+        'yoodli': False, 'agent': None, 'model': None, 'effort': None}
 
 
 def fails(detail: str = 'It stopped without finishing: the model gave up.',

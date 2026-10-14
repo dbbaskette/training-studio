@@ -132,7 +132,7 @@ class FormTests(StudioCase):
             'audience': 'Operators', 'purpose': 'Technical upskilling', 'time_limit': None,
             'brand': None, 'levels': ['101', '301'], 'copies': ['google', 'word'],
             'brief_kind': 'product', 'deck_target': None, 'source_scope': 'public-web',
-            'yoodli': False, 'agent': None, 'model': None})
+            'yoodli': False, 'agent': None, 'model': None, 'effort': None})
 
     def test_research_may_look_at_the_web_the_persons_documents_or_both(self):
         self.assertEqual(pipeline.check_form({**FORM, 'source_scope': None})['source_scope'],
