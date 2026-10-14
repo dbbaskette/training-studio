@@ -318,20 +318,24 @@ class Upkeep:
 
     @staticmethod
     def _main_version() -> str | None:
-        """Training Studio's version on `main` when guidance was last fetched, from the
-        guidance cache. Nothing is fetched."""
-        last = home.read_json(sync_guidance.guidance_root() / 'last.json', None)
-        commit = last.get('commit') if isinstance(last, dict) else None
+        """Training Studio's version on the source branch when guidance was last fetched,
+        read from the helper's guidance cache with its own isolated git. Nothing is fetched,
+        and a cache the helper would not use is not read: it is the helper's to rebuild."""
         cache = sync_guidance.guidance_root() / 'cache.git'
-        if not isinstance(commit, str) or not (cache / 'HEAD').is_file():
+        if not sync_guidance.ours(cache):
             return None
         try:
-            kept = json.loads(sync_guidance.git('show', f'{commit}:guidance/manifest.json',
-                                                cwd=cache))
+            commit = sync_guidance.git('rev-parse', '--verify',
+                                       f'{sync_guidance.MAIN}^{{commit}}',
+                                       repo=cache).decode().strip()
+            # Not `manifest()`: that refuses guidance a newer version needs, which is just
+            # what is looked for here.
+            kept = json.loads(sync_guidance.git(
+                'cat-file', 'blob', f'{commit}:guidance/manifest.json', repo=cache))
             root = str(kept['content_root']).strip('/')
-            found = sync_guidance.git('show', f'{commit}:{root}/VERSION',
-                                      cwd=cache).decode().strip()
-        except (sync_guidance.SyncError, ValueError, KeyError, TypeError,
+            found = sync_guidance.git('cat-file', 'blob', f'{commit}:{root}/VERSION',
+                                      repo=cache).decode().strip()
+        except (sync_guidance.SyncError, ValueError, KeyError, TypeError, AttributeError,
                 UnicodeDecodeError):
             return None
         return found if _version(found) else None
@@ -534,7 +538,9 @@ class Upkeep:
                 '%Y-%m-%dT%H:%M:%SZ') if last is not None else None
         except OSError:
             at = None
-        if isinstance(commit, str) and commit:
+        # The guidance `adopt` pins a new training to: a whole commit whose folder is there.
+        if isinstance(commit, str) and sync_guidance.COMMIT.fullmatch(commit) \
+                and (sync_guidance.folder_for(commit) / 'SKILL.md').is_file():
             branch = sync_guidance.source().get('branch', 'main')
             return {'commit': commit[:12], 'at': at, 'says': (
                 f'New trainings follow the guidance from revision {commit[:12]} of {branch}, '

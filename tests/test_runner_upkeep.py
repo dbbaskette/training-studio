@@ -490,6 +490,12 @@ class GuidanceTests(UpkeepCase):
         keep.check()
         (newer,) = keep.report()['releases']['newer']
         self.assertEqual((newer['name'], newer['version']), ('training-studio', '99.1.0'))
+        # A cache the helper would rebuild is not read, and nothing here rebuilds it.
+        cache = sync_guidance.guidance_root() / 'cache.git'
+        git(cache, 'update-ref', 'refs/heads/planted', commit)
+        keep.check()
+        self.assertEqual(keep.report()['releases']['newer'], [])
+        self.assertTrue((cache / 'refs' / 'heads' / 'planted').is_file())
 
 
 if __name__ == '__main__':
