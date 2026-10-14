@@ -15,6 +15,7 @@ from runner_support import PAGE, Web
 
 import workspace
 from runner import research, worker_tools
+from stand_ins import research as research_stand_in
 from workspace import WorkspaceError
 
 SCRIPT = Path('scripts') / 'harness-research.mjs'
@@ -177,7 +178,7 @@ class StandInTests(helpers.TrainingCase):
 
     def setUp(self):
         super().setUp()
-        self.research = research.stand_in()
+        self.research = research_stand_in.stand_in()
         self.plan_file = self.write('.training-studio/research-plan.json', json.dumps(PLAN))
         self.write('sources/docs-example-com-0123456789ab.txt', SNAPSHOT)
 

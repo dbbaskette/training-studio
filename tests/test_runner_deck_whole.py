@@ -1,7 +1,7 @@
-"""The slide deck from the handoff to an approved deck, with the two modules' own stand-ins
-behind the engine and behind every worker's tools.
+"""The slide deck from the handoff to an approved deck, with the stand-ins for the slides
+tool and a brand skill behind the engine and behind every worker's tools.
 
-`slides.stand_in()` and `brand.stand_in()` keep the rules of the real slides tool and of a
+The two in tests/stand_ins keep the rules of the real slides tool and of a
 real brand skill: an outline is checked as the tool checks one, a section is compiled, a
 preview is rendered to real pictures, and the audit reads the deck that was rendered. The
 scripted workers here use their tools as a worker does: they read their inputs, check
@@ -16,11 +16,12 @@ from runner_support import BLUEPRINT, OUTLINE
 from test_runner_deck import MAJOR, SMALL, DeckCase
 
 import workspace
-from runner import brand as brand_skill
 from runner import deck, pipeline, worker_tools
 from runner import slides as slides_tool
+from stand_ins import brand as brand_stand_in
+from stand_ins import slides as slides_stand_in
 
-CHOSEN = {'brand': brand_skill.BRAND, 'variant': 'light'}
+CHOSEN = {'brand': brand_stand_in.BRAND, 'variant': 'light'}
 # The slides tool starts a new section of work at each section slide, so this deck is drawn
 # by two composers. Without the section slide it is one composer's.
 PARTED = {**OUTLINE, 'slides': [
@@ -51,7 +52,7 @@ class Composers:
             test.assertIn(name, listed)
         self.icons.append(test.ok(tools.search_icons('database')))
         made = {'version': 1, 'title': spec['title'], 'direction': spec['direction'],
-                'slides': [slides_tool.sketch(self.said(slide['id']), spec['prefix'])
+                'slides': [slides_stand_in.sketch(self.said(slide['id']), spec['prefix'])
                            for slide in spec['slides']]}
         if tools.job['look']:   # drawn again after a review: it looks, then draws otherwise
             for slide in tools.job['look']:
@@ -246,7 +247,7 @@ class TroubleTests(WholeCase):
             spec = tools.job['artifacts']['section']
             made = json.dumps({
                 'version': 1, 'title': spec['title'], 'direction': spec['direction'],
-                'slides': [slides_tool.sketch(self.composers.said(slide['id']),
+                'slides': [slides_stand_in.sketch(self.composers.said(slide['id']),
                                               spec['prefix']) for slide in spec['slides']]})
             tried.append(tools.preview_section(made))
             del self.tool.fails['compose preview']
@@ -310,7 +311,7 @@ class GivenTests(WholeCase):
     def contract(self) -> Path:
         folder = self.base / 'exported'
         if not folder.exists():
-            self.brand.export(folder, brand_skill.BRAND, 'light')
+            self.brand.export(folder, brand_stand_in.BRAND, 'light')
         return folder / 'brand-contract.json'
 
     def test_the_engine_and_a_workers_tools_use_the_same_tool_and_the_same_brand_skill(self):

@@ -32,6 +32,7 @@ guidance/manifest.json      which script version the guidance needs
 installer/                  install.sh, install.py and a double-click launcher
                             companions.json pins each companion skill to one revision
 tests/                      unit tests; temporary directories only
+  stand_ins/                the companion tools the runner calls, played in Python
 docs/                       this documentation, the spec, the plan and reviews
 ```
 
@@ -186,11 +187,11 @@ The page reads the runner every 2 to 20 seconds, so a refresh asks only for what
 - **The runner.** `Engine._look` is taken one at a time and reused for five minutes, with the brand skills `brand.found()` lists. Drive is not asked once LibreOffice is chosen for previews. `shared()` keeps its count while the clone's ref files are unchanged, so `/api/setup` starts no process when nothing has changed. A run waiting its turn reads the limit when it starts to wait and when set-up saves, not every half second.
 - **What goes wrong in the background is said.** `_serve` keeps the last error of each job, fetching and notifying, until that job next works; `/api/status` returns it as `background` and the Status screen shows it.
 
-No test starts a real agent, the real harness-research, the slides tool or a brand skill. Each is replaceable: `agents.Scripted`, `research.StandIn`, `slides.StandIn` and `brand.StandIn`. A change to the engine or the pipelines is finished with one real training, through the page, on each agent it claims to support.
+No test starts a real agent, the real harness-research, the slides tool or a brand skill. Each is replaceable: `agents.Scripted`, and the stand-ins in `tests/stand_ins/` for harness-research, the slides tool and a brand skill. The runner ships none of them. A change to the engine or the pipelines is finished with one real training, through the page, on each agent it claims to support.
 
 ### The slide deck
 
-- **Two wrappers, each with a stand-in.** `slides.py` and `brand.py` each wrap one command line and say in their docstrings what a caller gets back. `slides.stand_in()` and `brand.stand_in()` keep the real tools' rules: an outline is checked, a section is compiled, a preview is real pictures, the audit reads the deck. No brand's name is in this repository.
+- **Two wrappers, each with a stand-in.** `slides.py` and `brand.py` each wrap one command line and say in their docstrings what a caller gets back. `stand_ins.slides.stand_in()` and `stand_ins.brand.stand_in()`, under `tests/`, keep the real tools' rules: an outline is checked, a section is compiled, a preview is real pictures, the audit reads the deck. No brand's name is in this repository.
 - **Two sets of tests.** `tests/test_runner_deck.py` drives the flow against small fakes in `tests/runner_support.py`, which make each kind of trouble easy to cause. `tests/test_runner_deck_whole.py` drives the same flow against the two stand-ins, with workers that use their tools as an agent would. A change to either wrapper or to the flow must pass both.
 - **The deck's steps are the runner's own.** The core knows one file for the stage, the deck. What the deck says has a gate the runner keeps in its run record; gate 6 is the core's.
 - **What is shared and what is not.** `deck-handoff.md`, `deck/outline.json`, `deck/review.json` and the deck are committed. Everything a deck is built with is under `work/deck/`, which is ignored: the exported brand, the tool's guidance, the sections, the builds and the pictures.
