@@ -11,7 +11,7 @@ The [installer](installation.md) brings the runner, offers the two companion ski
 - Python 3.11 or newer.
 - Claude Code or Codex, installed and signed in as you. The runner uses your own sign-in. It has no key of its own.
 - [harness-research](https://github.com/dbbaskette/harness-research-skill), installed. The research cannot run without it. The installer offers it.
-- git, set up with your name and email.
+- git, set up with your name and email. For a repository your team shares, git must reach it without asking for anything. The runner never waits for a password, a passphrase or a question about a host key. If `git clone` works for its address in a terminal without asking, the runner can use it.
 
 A slide deck needs four more things. The Status screen shows each one, and what to do about one that is missing.
 
@@ -126,7 +126,7 @@ A runner that is closed still holds its trainings. Nothing passes to someone els
 
 **If the rule is broken.** If the same training is changed on two computers anyway, for instance by hand, sharing stops and nothing is overwritten. Home, Settings and the training's own run say which training it is. "Carry on from the shared version" puts it right on one side: what that computer made and never shared is set aside and kept, and the training carries on from what the team has.
 
-**Staying in step.** The runner looks for what teammates shared when it starts, every few minutes while it is open, and when you press "Look now". Looking never changes a training this computer runs. Sharing after each decision, or only when you ask, is as you set it. Starting, taking and handing over a training are always shared at once, and anything not yet shared goes with them.
+**Staying in step.** The runner looks for what teammates shared when it starts, every few minutes while it is open, and when you press "Look now". The page does not wait for it: it opens at once, and your trainings carry on once the runner has looked. Until then, a change you ask for is refused with a sentence that says why, so nothing is done to a training a teammate took while your runner was closed. A slow repository never holds up a decision. Looking never changes a training this computer runs. Sharing after each decision, or only when you ask, is as you set it. Starting, taking and handing over a training are always shared at once, and anything not yet shared goes with them.
 
 **Several at once.** Settings says how many trainings may work at once on this computer. One that waits says how many are ahead of it, and they take turns in the order they became ready. The Status screen shows every run on this computer with what it is doing and what it has cost, and your teammates' trainings apart.
 
