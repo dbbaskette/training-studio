@@ -14,9 +14,9 @@ import helpers  # noqa: F401
 from runner_support import (BLUEPRINT, BRIEF, DOCUMENT, FORM, QUOTE, SCENARIO, YOODLI,
                             NO_BRAND_SKILL, NO_SLIDES, StudioCase, asks, left)
 
+import assess
 import desk
 import home
-import training
 import workspace
 from runner import page, pipeline
 from workspace import WorkspaceError
@@ -341,7 +341,7 @@ class YoodliTests(FlowCase):
         self.assertEqual(view['finished'], {
             'ready': True, 'limitations': ['The deck stage was left out'], 'blocking': [],
             'index': 'README.md'})
-        self.assertEqual(training.run_checks(root)['practice']['basis'], 'Yoodli goals')
+        self.assertEqual(assess.run_checks(root)['practice']['basis'], 'Yoodli goals')
 
     def test_without_yoodli_no_scenario_is_laid_out(self):
         root = self.start()

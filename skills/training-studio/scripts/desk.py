@@ -20,10 +20,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import assess
 import checks
 import computer
 import home
-import training
 import workspace
 
 HOST = '127.0.0.1'
@@ -161,7 +161,7 @@ def read(root: Path) -> tuple[dict, dict]:
     The same as `status` and `check`, except that reading here is not remembered in the
     registry: looking at a training writes nothing.
     """
-    return training.describe(root), training.run_checks(root)
+    return assess.describe(root), assess.run_checks(root)
 
 
 def touched(root: Path, seen: str) -> str:
@@ -505,7 +505,7 @@ def offered(session: dict, spec: dict, name: str, state: dict) -> tuple[list[str
 def gate(path: str, name: str) -> dict:
     """Everything the gate screen shows for one artifact of one training."""
     root, session = artifact_of(path, name)
-    report, result = training.describe(root), training.run_checks(root, show_all=True)
+    report, result = assess.describe(root), assess.run_checks(root, show_all=True)
     state, spec = report['artifacts'], workspace.artifact(root, session, name)
     about = summary(report, result)
     needs = about['waiting']
@@ -567,7 +567,7 @@ def decide(path: str, target: str, decision: str, note: str | None, seen: str | 
                       'conversation. Move them to the page first.')
     if decision in ('approve', 'accept') and not seen:
         raise Refusal(HTTPStatus.BAD_REQUEST, 'Say which version was read, as `seen`.')
-    outcome = training.decide(root, target, decision, note, by='page', seen=seen)
+    outcome = assess.decide(root, target, decision, note, by='page', seen=seen)
     return {'decided': outcome, 'said': f'{SAID[decision]} {BACK_TO_CHAT}', 'next': next_up()}
 
 

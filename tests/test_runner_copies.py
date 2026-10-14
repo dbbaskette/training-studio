@@ -517,7 +517,7 @@ class PandocTests(Built):
                          'that right, then try the copies again.')
 
     def test_a_pandoc_that_does_not_finish_or_cannot_start_is_a_reason_not_an_error(self):
-        timed_out = subprocess.TimeoutExpired(['pandoc'], copies.TIMEOUT)
+        timed_out = subprocess.TimeoutExpired(['pandoc'], workspace.PANDOC_TIMEOUT)
         self.answers = [timed_out, OSError(8, 'Exec format error')]
         self.assertEqual(copies.make(self.root), ([], {}))
         exports = workspace.load(self.root)['exports']
@@ -531,7 +531,7 @@ class PandocTests(Built):
                         (1, f'pandoc: {self.root}/document.md: withBinaryFile: failed'), 0]
         copies.make(self.root)
         reason = workspace.load(self.root)['exports']['document']['unavailable']
-        self.assertEqual(reason, 'pandoc could not make the Word copy (pandoc: /document.md: '
+        self.assertEqual(reason, 'pandoc could not make the Word copy (pandoc: document.md: '
                          'withBinaryFile: failed). Put that right, then try the copies again.')
         self.assertNotIn(str(self.root.parent), reason)
 

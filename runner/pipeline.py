@@ -401,6 +401,7 @@ def check_form(sent: dict, brands=None) -> dict:
     form['yoodli'] = sent.get('yoodli', False)
     form['agent'] = None if sent.get('agent') is None else settings.check_agent(sent['agent'])
     form['model'] = settings.check_model(sent.get('model'))
+    form['effort'] = settings.check_effort(sent.get('effort'), form['agent'])
     return form
 
 

@@ -11,8 +11,9 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
+
+from home import alive, now
 
 SCHEMA = 1
 STATE_DIR = '.training-studio'
@@ -81,10 +82,6 @@ class WorkspaceError(Exception):
 
 
 # --- files and the session record -------------------------------------------
-
-def now() -> str:
-    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-
 
 def sha256_file(path: Path) -> str | None:
     if not path.is_file():
@@ -159,16 +156,6 @@ def log(session: dict, event: str, **details) -> None:
     session['events'].append({'at': now(), 'event': event, **details})
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 @contextmanager
 def locked(root: Path):
     """Hold the workspace lock so two commands cannot overwrite each other's changes."""
@@ -179,7 +166,7 @@ def locked(root: Path):
             handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             text = path.read_text(encoding='utf-8').strip() if path.is_file() else ''
-            if text.isdigit() and _alive(int(text)):
+            if text.isdigit() and alive(int(text)):
                 raise WorkspaceError('Another Training Studio command is running in this '
                                      f'directory (process {text}). Try again when it finishes.')
             path.unlink(missing_ok=True)
@@ -1013,6 +1000,11 @@ PANDOC_TIMEOUT = 120  # seconds for one conversion
 NO_PANDOC = ('pandoc, which makes Word copies, is not installed on this computer. Install it '
              'from pandoc.org, then make the copy again.')
 PICTURE = ('![', '<img')  # how a Markdown file names a picture for pandoc to fetch
+PANDOC_SAYS = {   # why pandoc made no copy: {seconds}, {why} and {said} are filled in
+    'missing': NO_PANDOC,
+    'slow': 'pandoc did not finish in {seconds} seconds, so no Word copy was made.',
+    'start': 'pandoc could not be started ({why}), so no Word copy was made.',
+    'said': 'pandoc could not make the Word copy ({said}).'}
 
 
 def export_spec(root: Path, session: dict, name: str) -> dict:
@@ -1098,23 +1090,25 @@ def _export(root: Path, name: str, file: str | None = None, unavailable: str | N
     return record
 
 
-def pandoc(source: Path, target: Path) -> None:
+def pandoc(source: Path, target: Path, says: dict | None = None) -> None:
     """Convert a Markdown file to Word with pandoc, or refuse with a plain reason.
 
     pandoc is kept to the one file it is given: `--sandbox` stops it reading any other file
     or fetching anything from the web. A pandoc too old for `--sandbox` is used without it
     only for a file that names no picture, since a picture is what it would fetch.
+    `says` gives the reasons in other words, by the keys of PANDOC_SAYS.
     """
+    says = says or PANDOC_SAYS
     program = shutil.which('pandoc')
     if program is None:
-        raise WorkspaceError(NO_PANDOC)
+        raise WorkspaceError(says['missing'])
     command = [program, '--from', 'markdown-raw_attribute', '--to', 'docx',
                '--output', str(target), str(source)]
-    done = _pandoc([program, '--sandbox', *command[1:]])
+    done = _pandoc([program, '--sandbox', *command[1:]], says)
     if done.returncode != 0:
         text = source.read_text(encoding='utf-8', errors='replace').lower()
         if not any(mark in text for mark in PICTURE):
-            done = _pandoc(command)
+            done = _pandoc(command, says)
     if done.returncode != 0 or not target.is_file():
         # Its first line that is not a warning says what went wrong.
         lines = [line.strip() for line in (done.stderr or '').splitlines()
@@ -1122,20 +1116,18 @@ def pandoc(source: Path, target: Path) -> None:
         said = lines[0] if lines else f'it ended with exit code {done.returncode}'
         for folder in (str(source.parent), str(target.parent)):
             said = said.replace(folder + os.sep, '').replace(folder, '')
-        raise WorkspaceError(f"pandoc could not make the Word copy ({said[:200].rstrip('.')}).")
+        raise WorkspaceError(says['said'].format(said=said[:200].rstrip('.')))
 
 
-def _pandoc(command: list[str]) -> subprocess.CompletedProcess:
+def _pandoc(command: list[str], says: dict) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
                               timeout=PANDOC_TIMEOUT, encoding='utf-8', errors='replace')
     except subprocess.TimeoutExpired:
-        raise WorkspaceError(f'pandoc did not finish in {PANDOC_TIMEOUT} seconds, so no Word '
-                             'copy was made.') from None
+        raise WorkspaceError(says['slow'].format(seconds=PANDOC_TIMEOUT)) from None
     except OSError as failure:
-        raise WorkspaceError('pandoc could not be started '
-                             f'({failure.strerror or type(failure).__name__}), so no Word '
-                             'copy was made.') from None
+        why = failure.strerror or type(failure).__name__
+        raise WorkspaceError(says['start'].format(why=why)) from None
 
 
 # --- skip, checkpoint, pin --------------------------------------------------------

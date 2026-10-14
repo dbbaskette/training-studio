@@ -30,6 +30,15 @@ What a caller needs to know
 - `activity` is called with one short plain line each time the worker does something.
 - `ready()` says whether the agent is installed, signed in and reachable from this network.
   It never starts an agent. Being signed in is not enough: a network can block one agent.
+- `models()` is what the agent offers to choose from: {'models': [{'name', 'label',
+  'levels', 'default_level'}], 'levels'}, where `levels` are the reasoning levels each model
+  takes and the outer `levels` those a model that is not listed may be given: the ones every
+  listed model takes. Claude Code lists nothing, so its aliases are offered. Codex is asked
+  with `codex debug models`, through `companion.run_command` under LIST_SECONDS; a hidden
+  model, or a level `settings` does not know, is left out. It refuses in a sentence when the
+  agent cannot be asked. Nothing here keeps the answer: the engine does.
+- `Job.effort` is the reasoning level, passed as `--effort` to Claude Code and as
+  `-c model_reasoning_effort` to Codex, which reads `-c` even with `--ignore-user-config`.
 - A Claude worker is not passed any environment variable that belongs to another Claude
   session (names starting CLAUDE or ANTHROPIC). The account's email address still reaches
   every Claude worker, and a Codex worker still sees the list of the person's installed
@@ -58,13 +67,17 @@ import runner  # noqa: F401  puts the core on the import path
 import home
 from workspace import WorkspaceError
 
-from runner import companion, worker_tools
+from runner import companion, settings, worker_tools
 
 PROFILES = ('write', 'research')
 REASONS = ('timeout', 'limit', 'failed', 'unavailable', 'stopped')
 SERVER = 'runner'           # the name the worker tools are served under
 CLAUDE_SEARCH = 'WebSearch'
 GUIDANCE_LIMIT = 60_000     # characters; an operating system limits one argument's length
+LIST_SECONDS = 30           # the longest an agent may take to list its models
+# Claude Code has no list of its models. These aliases name the latest of each kind, and
+# Anthropic's documentation gives each of those every level `--effort` takes.
+CLAUDE_MODELS = (('fable', 'Fable'), ('opus', 'Opus'), ('sonnet', 'Sonnet'), ('haiku', 'Haiku'))
 SOMEONE_ELSES = ('CLAUDE', 'ANTHROPIC')
 # Codex features a worker must not have. The last two are its shell.
 CODEX_OFF = ('apps', 'plugins', 'remote_plugin', 'plugin_sharing', 'browser_use',
@@ -100,6 +113,7 @@ class Job:
     tools: Sequence[str]        # the command that starts the worker tools server
     limits: Limits = field(default_factory=Limits)
     model: str | None = None
+    effort: str | None = None   # the reasoning level; None for the agent's own
 
 
 @dataclass(frozen=True)
@@ -534,6 +548,8 @@ class Claude(_Agent):
             command += ['--max-budget-usd', f'{job.limits.dollars:g}']
         if job.model:
             command += ['--model', job.model]
+        if job.effort:
+            command += ['--effort', job.effort]
         return command
 
     def said_to(self, job: Job) -> str:
@@ -557,6 +573,12 @@ class Claude(_Agent):
             found = None
         return (found if isinstance(found, bool) else None if code is None else code == 0,
                 self.host)
+
+    def models(self, **unused) -> dict:
+        """The aliases Claude Code takes, each with every level it takes."""
+        levels = list(settings.EFFORTS[self.name])
+        return offered([{'name': name, 'label': label, 'default_level': None,
+                         'levels': levels} for name, label in CLAUDE_MODELS])
 
 
 class Codex(_Agent):
@@ -582,6 +604,8 @@ class Codex(_Agent):
             command += ['-c', setting]
         if job.model:
             command += ['-m', job.model]
+        if job.effort:
+            command += ['-c', 'model_reasoning_effort=' + _toml(job.effort)]
         return command + ['-']
 
     def said_to(self, job: Job) -> str:
@@ -607,6 +631,60 @@ class Codex(_Agent):
         code, said = run([self.program, 'login', 'status'])
         host = 'api.openai.com' if 'api key' in said.lower() else self.host
         return (None if code is None else code == 0), host
+
+    def models(self, which=shutil.which, run=companion.run_command) -> dict:
+        """The models Codex lists for choosing, as `codex debug models` prints them."""
+        if which(self.program) is None:
+            raise WorkspaceError(f'{self.title} is not installed on this computer.')
+        code, printed, complaint = run([self.program, 'debug', 'models'], None, LIST_SECONDS,
+                                       self.title)
+        if code != 0:
+            said = (complaint.strip().splitlines() or [f'exit code {code}'])[-1]
+            raise WorkspaceError(f'{self.title} could not list its models ({clip(said)}).')
+        return offered(codex_models(printed))
+
+
+def codex_models(printed: str) -> list[dict]:
+    """The models in Codex's catalog that it lists for choosing, each with the levels it
+    takes that `settings` knows, and the one it uses when none is given."""
+    unreadable = WorkspaceError('Codex listed its models in a form this runner cannot read.')
+    try:
+        catalog = json.loads(printed)
+    except ValueError:
+        raise unreadable
+    entries = catalog.get('models') if isinstance(catalog, dict) else None
+    if not isinstance(entries, list):
+        raise unreadable
+    known, found = settings.EFFORTS['codex'], []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get('visibility', 'list') != 'list':
+            continue
+        name = entry.get('slug')
+        try:
+            if not settings.check_model(name):
+                continue
+        except WorkspaceError:
+            continue
+        levels = []
+        for level in entry.get('supported_reasoning_levels') or ():
+            word = level.get('effort') if isinstance(level, dict) else level
+            if isinstance(word, str) and word in known and word not in levels:
+                levels.append(word)
+        label = entry.get('display_name')
+        usual = entry.get('default_reasoning_level')
+        found.append({'name': name,
+                      'label': clip(label, 80) if isinstance(label, str) and label.strip()
+                      else name,
+                      'default_level': usual if usual in levels else None, 'levels': levels})
+    return found
+
+
+def offered(models: list[dict]) -> dict:
+    """The models to choose from, and the levels a model that is not listed may be given:
+    those every listed model takes."""
+    common = [level for level in (models[0]['levels'] if models else [])
+              if all(level in model['levels'] for model in models)]
+    return {'models': models, 'levels': common}
 
 
 def _toml(value) -> str:

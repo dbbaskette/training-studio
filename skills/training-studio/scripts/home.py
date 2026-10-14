@@ -22,6 +22,17 @@ def now() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+def alive(pid: int) -> bool:
+    """True while a process with this number exists on this computer."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # it exists, and belongs to someone else
+        return True
+    return True
+
+
 def read_json(path: Path, default):
     """A JSON file's content, or `default` if it is missing or unreadable."""
     try:

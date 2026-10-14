@@ -595,16 +595,6 @@ def picture(path: Path) -> bytes:
     return data
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
-
-
 @contextmanager
 def one_at_a_time(lock: Path, wait: float = RENDER_WAIT):
     """Hold a computer's one turn at the renderer. Whoever else wants it waits here,
@@ -619,7 +609,7 @@ def one_at_a_time(lock: Path, wait: float = RENDER_WAIT):
                 holder = lock.read_text(encoding='utf-8').strip()
             except OSError:
                 continue  # let go of between the two looks
-            if holder.isdigit() and not _alive(int(holder)):
+            if holder.isdigit() and not home.alive(int(holder)):
                 lock.unlink(missing_ok=True)
             elif time.monotonic() > until:
                 raise Refusal('Another preview has been rendering for a long time, so this '

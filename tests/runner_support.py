@@ -244,7 +244,7 @@ FORM = {'title': 'Rolling restarts', 'topic': 'Rolling restarts on the platform'
         'audience': 'Solutions engineers who deploy apps', 'purpose': 'Field enablement',
         'levels': [], 'brief_kind': 'product', 'time_limit': '25 minutes',
         'source_scope': 'public-web', 'deck_target': None, 'brand': None, 'copies': [],
-        'yoodli': False, 'agent': None, 'model': None}
+        'yoodli': False, 'agent': None, 'model': None, 'effort': None}
 
 
 def fails(detail: str = 'It stopped without finishing: the model gave up.',
@@ -853,9 +853,9 @@ class Index:
     FILE = 'README.md'
 
     def readiness(self, root: Path, copies: list[dict] | None = None) -> dict:
+        import assess
         import desk
-        import training
-        found = training.run_checks(root)
+        found = assess.run_checks(root)
         limited = [desk.plainly(reason) for reason in found['limitations']]
         return {'ready': found['ready'], 'limitations': limited,
                 'blocking': [desk.plainly(reason) for reason in found['blocking']],
@@ -898,7 +898,8 @@ class StudioCase(unittest.TestCase):
     BACKGROUND = False
 
     def setUp(self):
-        from runner import engine as engines, gitstate, research
+        from runner import engine as engines, gitstate
+        from stand_ins import research as research_stand_in
         from runner.agents import Scripted
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
@@ -946,7 +947,7 @@ class StudioCase(unittest.TestCase):
         for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'):
             os.environ.pop(name, None)
         self.engines, self.gitstate = engines, gitstate
-        self.research = research.stand_in()
+        self.research = research_stand_in.stand_in()
         self.workers = Workers()
         self.adapters = {'claude': Scripted(self.workers), 'codex': Scripted(self.workers)}
         self.space = self.set_up()
@@ -963,12 +964,13 @@ class StudioCase(unittest.TestCase):
         return f'/usr/bin/{Path(program).name}' if here.get(Path(program).name) else None
 
     def stand_ins(self) -> tuple:
-        """The two modules' own stand-ins, which keep the rules of the real slides tool
+        """The stand-ins in tests/stand_ins, which keep the rules of the real slides tool
         and of a real brand skill. Give them to `self.slides` and `self.brand`."""
+        from stand_ins import brand as brand_stand_in, slides as slides_stand_in
         tool, skill = self.real
         with mock.patch.object(self.engines.slides_tool, 'Slides', tool), \
                 mock.patch.object(self.engines.brand_skill, 'Brand', skill):
-            return self.engines.slides_tool.stand_in(), self.engines.brand_skill.stand_in()
+            return slides_stand_in.stand_in(), brand_stand_in.stand_in()
 
     def the_slides(self, runtime=None, run=None):
         from workspace import WorkspaceError

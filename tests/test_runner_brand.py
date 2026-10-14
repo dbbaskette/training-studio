@@ -13,6 +13,8 @@ from unittest import mock
 import runner_support  # noqa: F401  puts the runner on the import path
 
 from runner import brand, slides
+from stand_ins import brand as brand_stand_in
+from stand_ins import slides as slides_stand_in
 from test_runner_slides import DIRECTION, OUTLINE, PAIR, STEPS
 from workspace import WorkspaceError
 
@@ -420,7 +422,7 @@ class StandInTests(unittest.TestCase):
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
         self.root = Path(holder.name).resolve()
-        self.brand, self.slides = brand.stand_in(), slides.stand_in()
+        self.brand, self.slides = brand_stand_in.stand_in(), slides_stand_in.stand_in()
         self.skill = self.brand.run
 
     def refusal(self, call, *args, **named) -> list[str]:
@@ -440,7 +442,7 @@ class StandInTests(unittest.TestCase):
         composition = self.root / f'{name}.json'
         composition.write_text(json.dumps({
             'version': 1, 'title': 'Rolling restarts 101', 'direction': DIRECTION,
-            'slides': [slides.sketch(slide, 's1_') for slide in content]}))
+            'slides': [slides_stand_in.sketch(slide, 's1_') for slide in content]}))
         self.slides.compile(composition, contract, self.root / f'{name}-compiled')
         self.slides.render(self.root / f'{name}-compiled', self.root / f'{name}.pptx')
         return self.root / f'{name}.pptx'
@@ -524,15 +526,15 @@ class StandInTests(unittest.TestCase):
                          '^ENOENT: no such file or directory')
 
     def test_a_folder_of_its_own_can_be_given_and_is_then_kept(self):
-        first = brand.StandIn(self.root / 'skill')
+        first = brand_stand_in.StandIn(self.root / 'skill')
         self.assertEqual(first.home, self.root / 'skill')
         tokens = self.root / 'skill' / 'brand' / 'tokens.json'
         tokens.write_text(tokens.read_text().replace('#1F4E8C', '#123456'))
-        again = brand.Brand(runtime=Path('stand-in'), run=brand.StandIn(self.root / 'skill'))
+        again = brand.Brand(runtime=Path('stand-in'), run=brand_stand_in.StandIn(self.root / 'skill'))
         made = again.export(self.root / 'brand', 'example', 'light')
         self.assertEqual(json.loads(Path(made['contract']).read_text())['design']['colors']
                          ['headingPrimary'], '#123456')
-        passing = brand.StandIn()
+        passing = brand_stand_in.StandIn()
         own = passing.home
         self.assertTrue((own / 'assets' / 'template.pptx').is_file())
         del passing
@@ -637,7 +639,7 @@ class StandInTests(unittest.TestCase):
         section = self.root / 'build' / 'section-1.json'
         section.write_text(json.dumps({
             'version': 1, 'title': OUTLINE['title'], 'direction': DIRECTION,
-            'slides': [slides.sketch(slide, 's1_') for slide in content]}))
+            'slides': [slides_stand_in.sketch(slide, 's1_') for slide in content]}))
         self.brand.check(contract)
         self.assertEqual(deck.compile(section, contract)['slides'], 2)
         drawn = deck.compile(section, contract, self.root / 'section-compiled')
