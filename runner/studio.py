@@ -11,6 +11,8 @@ opens the page in the browser itself, so only the person ever holds the key. Wit
 which the installed launcher uses, a person's terminal is given the link and the page is
 opened for them as well. It runs until
 it is interrupted, and picks every training up where its files say it is when started again.
+It fetches a shared workspace when it starts and every few minutes while it serves, and can
+tell the person through the computer's own notifications when no page is open.
 One runner serves on a computer at a time: a second would undo what the first is doing.
 """
 import sys

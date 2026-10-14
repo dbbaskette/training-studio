@@ -26,6 +26,10 @@ What a caller needs to know
   the brand skill that was found and the brands it has, with every brand skill found
   under `skills` as {'name', 'path', 'chosen'}; `brand_skill` names one of those paths to
   use. Both are asked of the engine, which looks at this computer and reuses the look.
+- `notify` is {'on', 'can', 'problem'}: whether the runner tells the person through the
+  computer's own notifications when no page is open, whether this computer has a way to,
+  and a sentence when it has none. It is sent as true or false, and cannot be turned on
+  where there is no way.
 """
 from __future__ import annotations
 
@@ -57,7 +61,9 @@ def describe(engine) -> dict:
         'folder': space.folder, 'branch': space.branch, 'share_when': WHEN[space.share],
         **engine.shared()}
     needs = engine.deck_needs()
+    can, problem = engine.notifier.can()
     return {'configured': space is not None, 'workspace': found,
+            'notify': {'on': chosen.notify, 'can': can, 'problem': problem},
             'agent': {'default': chosen.agent, 'model': chosen.model},
             'limits': chosen.limits,
             'previews': {'how': chosen.previews, 'drive': needs['drive'],
@@ -276,8 +282,9 @@ def chosen(sent: dict) -> settings.Settings:
               for name in ('step_seconds', 'training_dollars', 'parallel')}
     previews = sent['previews'] if sent.get('previews') is not None else kept.previews
     skill = sent['brand_skill'] if sent.get('brand_skill') is not None else kept.brand_skill
+    notify = sent['notify'] if sent.get('notify') is not None else kept.notify
     return settings.check(replace(kept, agent=agent, model=model, previews=previews,
-                                  brand_skill=skill, **wanted))
+                                  brand_skill=skill, notify=notify, **wanted))
 
 
 def read(sent: dict) -> dict:
@@ -308,6 +315,9 @@ def apply(engine, wanted: dict) -> dict:
     named = wanted.get('brand_skill')
     if named is not None and named not in [skill['path'] for skill in engine.brand_skills()]:
         raise WorkspaceError('Choose the brand skill from those found on this computer.')
+    can, problem = engine.notifier.can()
+    if wanted['settings'].notify and not can:
+        raise WorkspaceError(problem)
     before = engine.workspace
     if not repository and not path:
         if share:

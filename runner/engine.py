@@ -18,6 +18,15 @@ What a caller needs to know
     engine.decided(path, outcome)            # commit a decision the page just recorded
     engine.carry_on(path)                    # then share if that is wanted, and wake the run
     engine.share()                           # fetch, replay and push the workspace
+    engine.fetch()                           # fetch and replay; nothing is sent
+    engine.drive(path, 'take')               # take a training, or take it over; 'hand-over'
+    engine.hold(path)                        # refuse, saying who has it, if it is not ours
+    engine.standing()                        # every run here, and those driven elsewhere
+    engine.publish(path)                     # the next revision of a training, as a tag
+    engine.published()                       # each training's latest published revision
+    engine.bring(folder)                     # copy a conversation's training in, and run it
+    engine.serving()                         # fetch on a timer, and notify, while serving
+    engine.seen(); engine.tell()             # a page asked; notify if none has for a while
     engine.close()                           # end every worker; nothing half-made is kept
 
 - The next step is never remembered. Each time, `pipeline.survey` works it out from the
@@ -96,6 +105,30 @@ What a caller needs to know
   each relation its own slides have; the outline's writer is handed the drafting guidance.
 - A deck's workers use the slides tool and the brand skill the engine uses: each job is
   told where they are, from `Slides.runtime` and `Brand.runtime`.
+- In a workspace with a shared repository, a training is run from one computer at a time.
+  Its run record names the driver. Starting a training takes it, and the claim is pushed
+  before any work; `drive` takes one nobody has, takes one over, or hands one over. A
+  claim the shared repository refuses is dropped, and the refusal says who has it. Every
+  change a person asks for goes through `hold` first, and the engine works on nothing
+  that is not this computer's. A finished training has no driver. A workspace that is a
+  folder on this computer has no drivers at all, and nothing here changes for it.
+- `share` and `fetch` both learn first what the shared repository now says. A training
+  this computer drove that someone else has taken is stopped at once: its commits that
+  were never shared are set aside under a ref, nothing more is written to it, and its
+  view says who took it and when, in `taken` and in `notice`, until this computer takes it
+  back; that is remembered in the data folder. When the same file was changed on two computers, the
+  view of that training says that one side must take it over. `take` does that: this
+  computer's unshared commits for it are set aside, and it carries on from what is shared.
+- Trainings take turns in the order they became ready, as many at once as the settings
+  allow. One that waits says how many are ahead of it.
+- A notification is sent only when it is turned on in the settings, no page has asked
+  anything for PAGE_OPEN seconds, and a training of this computer's needs a decision. It
+  is sent once for each thing, and what was sent is remembered in the data folder.
+- A published revision is a tag on the commit where the workspace stands, numbered from
+  1 for each training, never moved, and pushed without force. See `team.publish`.
+- `bring` copies a training's folder into the workspace under the name its title gives,
+  moves its decisions to the page, gives it a run record that takes it, and commits. The
+  folder it came from is only read. The run then carries on from what the files say.
 """
 from __future__ import annotations
 
@@ -108,7 +141,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import runner  # noqa: F401  puts the core on the import path
 import computer
@@ -117,7 +150,7 @@ import hub
 import workspace
 from workspace import WorkspaceError
 
-from runner import agents, deck, gitstate, pipeline, settings, worker_tools
+from runner import agents, deck, gitstate, pipeline, settings, team, worker_tools
 from runner import brand as brand_skill
 from runner import copies as copies_made
 from runner import documents as documents_kept
@@ -136,6 +169,20 @@ READY_FOR = 60          # seconds a look at an agent is reused
 LOOKED_FOR = 300        # seconds a look at what this computer has for a deck is reused
 BUSY_TRIES = 20         # times a finding is offered while another save holds the lock
 ACTIONS = ('pause', 'resume', 'stop', 'retry')
+DRIVING = ('take', 'hand-over')
+FETCH_EVERY = 180       # seconds between fetches while the runner serves
+TICK = 15               # seconds between looks at whether to notify
+PAGE_OPEN = 45          # seconds since a page last asked, while one counts as open
+NO_DRIVERS = ('This workspace is a folder on this computer, so its trainings are not taken '
+              'or handed over.')
+TAKEN = '{name} took this training over on {when}. This computer stopped working on it.'
+SET_ASIDE = ' What it had made and not yet shared is kept in git as {kept}.'
+BROKEN = ('"{title}" was changed on this computer and on another at the same time, so '
+          'nothing here can be shared. One side must take it over. Taking it over here '
+          'carries on from the shared version; what this computer made and never shared is '
+          'set aside and kept.')
+UNREACHED = ('The shared repository could not be reached, so this training cannot be taken '
+             'now. Nothing was changed. Try again when it can be reached.')
 # The steps of a deck, and what the engine does for each. What a deck says is drafted like
 # any other draft, and gate 6 is the core's.
 DECK = {'deck-handoff': '_handoff', 'deck-brand': '_export', 'gate:deck-outline': '_ask',
@@ -199,7 +246,7 @@ def new_record(agent: str, model: str | None, chosen: settings.Settings,
                        'training_dollars': chosen.training_dollars},
             'steps': {}, 'research': None, 'question': None, 'answers': {}, 'halt': None,
             'problem': None, 'cleared': 0.0, 'documents': supplied, 'drafted': [],
-            'copies': {'problems': {}, 'tried': {}}, 'deck': {}}
+            'copies': {'problems': {}, 'tried': {}}, 'deck': {}, 'driver': None}
 
 
 def attempts(record: dict, step: str | None = None) -> list[dict]:
@@ -239,21 +286,43 @@ def folder_name(step: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', step.lower()).strip('-')
 
 
+class Elsewhere(WorkspaceError):
+    """This computer may not change a training: someone else drives it, or nobody does."""
+
+
+class _Gone(WorkspaceError):
+    """A training stopped being this computer's while a step of it was in hand."""
+
+
 class _Slots:
-    """How many trainings may work at once. The limit is asked for each time, so a change
-    of settings is felt without a restart."""
+    """How many trainings may work at once, and whose turn is next: they take turns in
+    the order they asked. The limit is asked for each time, so a change of settings is
+    felt without a restart."""
 
     def __init__(self, limit):
         self.limit, self.used, self.changed = limit, 0, threading.Condition()
+        self.waiting: list = []
 
-    def take(self, closing) -> bool:
+    def take(self, closing, who=None) -> bool:
+        who = object() if who is None else who
         with self.changed:
-            while self.used >= self.limit():
-                if closing():
-                    return False
-                self.changed.wait(0.5)
-            self.used += 1
-            return True
+            self.waiting.append(who)
+            try:
+                while self.used >= self.limit() or self.waiting[0] is not who:
+                    if closing():
+                        return False
+                    self.changed.wait(0.5)
+                self.used += 1
+                return True
+            finally:
+                self.waiting.remove(who)
+                self.changed.notify_all()
+
+    def ahead(self, who) -> int | None:
+        """How many are waiting in front of one that waits. None for one that does not."""
+        with self.changed:
+            return next((place for place, waiting in enumerate(self.waiting)
+                         if waiting is who), None)
 
     def give_back(self) -> None:
         with self.changed:
@@ -268,6 +337,7 @@ class _Run:
     def __init__(self):
         self.thread: threading.Thread | None = None
         self.again = self.queued = self.busy = False
+        self.gone = False   # it stopped being this computer's: nothing more is written
         self.stop = threading.Event()
         self.workers: dict[str, dict] = {}
 
@@ -277,8 +347,15 @@ class Engine:
 
     def __init__(self, adapters=None, research=None, background: bool = True,
                  at_once: int = AT_ONCE, documents=None, copies=None, index=None,
-                 slides=None, brand=None):
+                 slides=None, brand=None, notifier=None):
         self.adapters = dict(adapters or agents.AGENTS)
+        self.notifier = notifier or team.Notifier()
+        self._asked: float | None = None    # when a page last asked anything
+        self._clash: dict[str, str] = {}    # trainings changed on two computers at once
+        self._serving: threading.Thread | None = None
+        self._ending = threading.Event()
+        self._fetched = 0                   # fetches that reached the shared repository
+        self._tags_unsent = True            # a published revision may be waiting to go
         self.research = research or research_cli.Research
         self.slides = slides or slides_tool.Slides
         self.brand = brand or brand_skill.Brand
@@ -375,9 +452,211 @@ class Engine:
         return found.session['settings']['approval'] != 'page'
 
     def _commit(self, root: Path, what: str) -> None:
-        """Commit one training's folder, saying what happened. Call it holding `files`."""
+        """Commit one training's folder, saying what happened. Call it holding `files`.
+        Nothing is committed for a training that stopped being this computer's while a
+        step was in hand: what the step wrote is put back, and the step ends."""
+        if self._run(root).gone:
+            gitstate.discard(self.space(), root)
+            raise _Gone('This training is no longer run from this computer.')
         title = workspace.load(root)['title']
         gitstate.commit(self.space(), f'{title}: {what}', [root])
+
+    # --- one driver for each training ----------------------------------------------------
+
+    def mine(self, path) -> bool:
+        """True when this computer may change a training: always in a workspace with no
+        shared repository, else only while its run record names this computer."""
+        root = self.driven(path)
+        return root is not None and team.ours(self.workspace, self._load(root))
+
+    def hold(self, path) -> None:
+        """Refuse, saying who has it, a change to a training this computer does not
+        drive. A training no run is driving is not the engine's to refuse."""
+        root = self.driven(path)
+        if root is None:
+            return
+        why = team.elsewhere(self.workspace, self._load(root))
+        if why:
+            raise Elsewhere(why)
+
+    def _held(self, path) -> Path:
+        """A training's folder, once a run is driving it and it is this computer's."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        self.hold(root)
+        return root
+
+    def _pushed(self, root: Path, space: gitstate.Workspace) -> dict:
+        """Share a claim just committed. Call it holding `files`."""
+        return self._step(space, push=True)
+
+    def drive(self, path, action: str) -> dict:
+        """Take a training nobody drives, take one over, or hand one over. Returns its
+        view. A claim is pushed before anything else is done; one the shared repository
+        does not take is dropped, and the refusal says who has the training."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        if action not in DRIVING:
+            raise WorkspaceError('A training can be asked to: ' + ', '.join(DRIVING) + '.')
+        space = self.space()
+        if space.address is None:
+            raise WorkspaceError(NO_DRIVERS)
+        if action == 'hand-over':
+            self._hand(root, space)
+            return self.view(root)
+        kept = self._take(root, space)
+        self.wake(root)
+        shown = self.view(root)
+        if kept and not shown.get('notice'):
+            shown['notice'] = ('This training carries on from the shared version.'
+                               + SET_ASIDE.format(kept=kept))
+        return shown
+
+    def _take(self, root: Path, space: gitstate.Workspace) -> str | None:
+        """Make a training this computer's. Returns the ref that keeps what was set
+        aside of this computer's own to do it, when anything was."""
+        run, kept = self._run(root), (team.kept('taken').get(str(root)) or {}).get('kept')
+        with self.files:
+            was = (self._load(root).get('driver') or {}).get('computer')
+            report = self._step(space, push=False)
+            if not report.get('reached'):
+                raise WorkspaceError(UNREACHED)
+            if root.name in self._clash or (
+                    not team.ours(space, self._load(root)) and gitstate.unshared(space, root)):
+                kept = gitstate.set_aside(space, root) or kept
+                report = self._step(space, push=False)
+            if report.get('conflict'):
+                raise WorkspaceError(report['notice'])
+            record = self._load(root)
+            now = record.get('driver') or None
+            if team.ours(space, record):
+                self._ours_again(root, run)
+                return kept
+            if now and now.get('computer') != was:
+                raise Elsewhere(f"{now.get('name') or 'Someone'} took this training on "
+                                f"{team.day(now.get('since'))}, after this page last "
+                                'looked. Take it over from them if you mean to.')
+            mine = team.claim(space)
+            record['driver'] = mine
+            self._store(root, record)
+            run.gone = False
+            self._commit(root, f"{mine['name']} takes this training" + (
+                f" over from {now.get('name') or 'someone'}" if now else ''))
+            report = self._pushed(root, space)
+            record = self._load(root)
+            if not team.ours(space, record):   # someone else's claim got there first
+                self._forget(root, space)
+                raise Elsewhere(self._first(space, record))
+            if not report['shared']:
+                gitstate.undo(space, root)
+                raise WorkspaceError('The shared repository did not take your claim, so '
+                                     'this training was not taken. '
+                                     + (report.get('notice') or ''))
+            self._ours_again(root, run)
+        return kept
+
+    @staticmethod
+    def _first(space: gitstate.Workspace, record: dict) -> str:
+        who = team.driver(space, record)
+        if who is None:
+            return ('Someone else changed this training first, so your claim was dropped. '
+                    + team.NOBODY)
+        return (f"{who['name']} took this training first, on {team.day(who['since'])}, so "
+                'your claim was dropped. It can be read here. Take it over from them if '
+                'you mean to.')
+
+    def _ours_again(self, root: Path, run: _Run) -> None:
+        """A training is this computer's: forget that it was ever taken from it."""
+        run.gone = False
+        run.stop.clear()
+        self._clash.pop(root.name, None)
+        taken = team.kept('taken')
+        if taken.pop(str(root), None) is not None:
+            team.keep('taken', taken)
+
+    def _forget(self, root: Path, space: gitstate.Workspace) -> None:
+        """A claim that lost: nothing was in it to keep, and the refusal says who won."""
+        taken = team.kept('taken')
+        lost = taken.pop(str(root), None)
+        if lost is not None:
+            gitstate.forget(space, lost.get('kept'))
+            team.keep('taken', taken)
+
+    def _hand(self, root: Path, space: gitstate.Workspace) -> None:
+        run = self._run(root)
+        with self.files:
+            record = self._load(root)
+            self.hold(root)
+            name = (record.get('driver') or {}).get('name') or 'Someone'
+            record['driver'] = None
+            self._store(root, record)
+            self._commit(root, f'{name} hands this training over')
+            run.gone = True     # a step in hand ends, and keeps nothing
+            run.stop.set()
+            self._step(space, push=True)
+
+    def _aside(self, root: Path, space: gitstate.Workspace, kept: str | None,
+               name: str | None = None, when: str | None = None) -> None:
+        """Remember what was set aside for a training, and who took it when that is why."""
+        taken = team.kept('taken')
+        before = taken.get(str(root)) or {}
+        taken[str(root)] = {'name': name or before.get('name'),
+                            'at': when or before.get('at'),
+                            'kept': kept or before.get('kept')}
+        team.keep('taken', taken)
+
+    def _learn(self, space: gitstate.Workspace) -> None:
+        """After a fetch, before anything is replayed: stop every training this computer
+        drove that the shared repository now says is someone else's. Its commits that
+        were never shared are set aside, so nothing of this computer's is put on top of
+        theirs. Call it holding `files`."""
+        for root in self.trainings():
+            try:
+                record = read_record(root)
+                if not record or not team.ours(space, record) \
+                        or not gitstate.moved(space, root / RECORD):
+                    continue
+                theirs = json.loads(gitstate.theirs(space, root / RECORD) or 'null')
+            except (WorkspaceError, ValueError):
+                continue
+            if not isinstance(theirs, dict) or team.ours(space, theirs):
+                continue    # changed on both sides under our name: the replay reports it
+            run = self._run(root)
+            run.gone = True
+            run.stop.set()
+            who = team.driver(space, theirs)
+            by = gitstate.last_by(space, root / RECORD) or ('Someone', home.now())
+            self._aside(root, space, gitstate.set_aside(space, root),
+                        who['name'] if who else by[0], who['since'] if who else by[1])
+
+    def _clashed(self, space: gitstate.Workspace, report: dict) -> None:
+        """Note which trainings the same file was changed for on two computers."""
+        found = {}
+        for name in report.get('conflict') or ():
+            parts = PurePosixPath(name).parts
+            if len(parts) > 2 and parts[0] == space.folder:
+                try:
+                    title = workspace.load(space.training(parts[1]))['title']
+                except WorkspaceError:
+                    title = parts[1]
+                found[parts[1]] = BROKEN.format(title=title)
+        if report.get('reached'):
+            self._clash = found
+
+    def _notice(self, root: Path) -> str | None:
+        """What a person should know about who drives a training: that it was taken from
+        this computer, or that it was changed on two at once."""
+        if root.name in self._clash:
+            return self._clash[root.name]
+        lost = team.kept('taken').get(str(root))
+        if not lost or self.mine(root):
+            return None
+        said = TAKEN.format(name=lost.get('name') or 'Someone', when=team.day(lost.get('at'))) \
+            if lost.get('name') else ''
+        return (said + (SET_ASIDE.format(kept=lost['kept']) if lost.get('kept') else '')
+                ).strip() or None
 
     # --- starting and picking up ---------------------------------------------------------
 
@@ -394,6 +673,7 @@ class Engine:
             root = pipeline.create(space, form)
             try:
                 record = new_record(agent, model, chosen, form['source_scope'])
+                record['driver'] = team.claim(space)
                 self._tried(record, 'intake', home.now(), 0.0, 'kept')
                 self._store(root, record)
                 self._commit(root, 'start the training from the form')
@@ -401,9 +681,32 @@ class Engine:
                 shutil.rmtree(root, ignore_errors=True)
                 gitstate.discard(space, root)
                 raise
+            self._claimed(root, space)
         self.wake(root)
         drawn = bool(form['deck_target'] and form['brand']) and not self.deck_needs()['missing']
         return {'path': str(root), 'id': root.name, 'gates': pipeline.gates(form, drawn)}
+
+    def _claimed(self, root: Path, space: gitstate.Workspace) -> None:
+        """Share the claim a new training was committed with, before any work is done
+        for it. Someone else's training of the same name, started at the same moment,
+        stands: this one is taken back and refused. A repository that cannot be reached
+        holds nothing up, since nobody else can know of a training that was never
+        shared. Call it holding `files`."""
+        if space.address is None:
+            return
+        report = self._pushed(root, space)
+        if root.name in self._clash or not team.ours(space, read_record(root) or {}):
+            self._clash.pop(root.name, None)
+            self._forget(root, space)
+            if (root / RECORD).is_file() and team.ours(space, self._load(root)):
+                gitstate.undo(space, root)
+                shutil.rmtree(root, ignore_errors=True)
+            self._step(space, push=False)
+            raise WorkspaceError(
+                f'Someone else started a training in {space.folder}/{root.name} at the same '
+                'moment, and theirs was shared first. Yours was not started. Give it a '
+                'different title, or look at theirs.')
+        self._unshared = None if report['shared'] else report.get('notice')
 
     def adopt(self) -> None:
         """Make every training in the workspace known to this computer's page."""
@@ -427,11 +730,18 @@ class Engine:
         when the runner last ended in the middle of it is discarded first, and so is a
         lock harness-research was left holding. A training that waits for a person, or
         that the runner has finished with, is left exactly as it is, and so is whatever a
-        person changed while no step was in hand."""
+        person changed while no step was in hand. The workspace is fetched first, and a
+        training someone else drives, or nobody does, is left as it is."""
+        try:
+            self.fetch()
+        except (WorkspaceError, OSError):
+            pass    # what is here is still picked up
         self.adopt()
         for root in self.trainings():
             try:
                 record = self._load(root)
+                if not team.ours(self.workspace, record):
+                    continue
                 found = self._survey(root, record)
                 if found.next.kind != 'done':
                     research_cli.unlock(root)
@@ -474,11 +784,12 @@ class Engine:
     def close(self) -> None:
         """End every worker and wait for the runs to notice. Nothing half-made is kept."""
         self._closing = True
+        self._ending.set()
         with self._lock:
             runs = list(self._runs.values())
         for run in runs:
             run.stop.set()
-        for thread in [run.thread for run in runs] + [self._sharing]:
+        for thread in [run.thread for run in runs] + [self._sharing, self._serving]:
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=15)
 
@@ -497,6 +808,8 @@ class Engine:
         try:
             while not self._closing:
                 record = self._load(root)
+                if run.gone or not team.ours(self.workspace, record):
+                    return  # someone else drives it, or nobody does
                 found = self._survey(root, record)
                 step = found.next
                 if self._resting(record) or step.kind not in (*WORK, 'deck'):
@@ -507,7 +820,7 @@ class Engine:
                     return self._hand_on(root, found)
                 if self.background and not held:
                     run.queued = True
-                    held = self._slots.take(lambda: self._closing)
+                    held = self._slots.take(lambda: self._closing, run)
                     run.queued = False
                     continue  # it may have waited a while: look at the files again
                 if step.kind == 'code' and step.step.id == last:
@@ -518,6 +831,8 @@ class Engine:
                 (root / IN_HAND).write_text(f'{step.step.id}\n', encoding='utf-8')
                 self._do(root, run, found, step)
                 (root / IN_HAND).unlink(missing_ok=True)
+        except _Gone:   # it is someone else's now: what the step wrote was put back
+            (root / IN_HAND).unlink(missing_ok=True)
         except Exception as failure:  # whatever a step does, the runner keeps serving
             (root / IN_HAND).unlink(missing_ok=True)
             self._trouble(root, failure)
@@ -659,6 +974,7 @@ class Engine:
             says = pipeline.finished_says(report, self._survey(root, record, copies))
             workspace.checkpoint(root, stage='done', next_step=says)
             self._tried(record, step.id, home.now(), time.monotonic() - clock, 'kept')
+            record['driver'] = None     # a finished training has no driver
             self._store(root, record)
             self._commit(root, 'write the index; ' + (
                 'the training is finished' if report['ready'] else
@@ -1162,9 +1478,7 @@ class Engine:
         """Record what a person decided about what a deck says, as the page heard it:
         `approve`, or `revise` with what should change. Nothing else calls this: the
         engine puts an outline to the person and waits."""
-        root = self.driven(path)
-        if root is None:
-            raise WorkspaceError('No run is driving this training.')
+        root = self._held(path)
         if decision not in DECIDING:
             raise WorkspaceError('What a deck says can be decided as: '
                                  + ', '.join(DECIDING) + '.')
@@ -1558,6 +1872,7 @@ class Engine:
         root = self.driven(path)
         if root is None:
             return False
+        self.hold(root)
         with self.files:
             record = self._load(root)
             target = outcome.get('artifact')
@@ -1587,6 +1902,7 @@ class Engine:
         root = self.driven(path)
         if root is None:
             return False
+        self.hold(root)
         with self.files:
             self._commit(root, what)
         return True
@@ -1600,9 +1916,7 @@ class Engine:
 
     def act(self, path, action: str) -> dict:
         """Pause, resume, stop or try again, as the person asks."""
-        root = self.driven(path)
-        if root is None:
-            raise WorkspaceError('No run is driving this training.')
+        root = self._held(path)
         if action not in ACTIONS:
             raise WorkspaceError('A run can be asked to: ' + ', '.join(ACTIONS) + '.')
         run = self._run(root)
@@ -1648,9 +1962,7 @@ class Engine:
 
     def answer(self, path, ident: str, text: str) -> dict:
         """Record a person's answer to a worker's question. The step runs again with it."""
-        root = self.driven(path)
-        if root is None:
-            raise WorkspaceError('No run is driving this training.')
+        root = self._held(path)
         with self.files:
             record = self._load(root)
             asked = record.get('question')
@@ -1669,9 +1981,7 @@ class Engine:
         """Add one of the person's documents, remove one, or take their word that they are
         all added. `data` is the document as it was sent. Nothing is researched until they
         are all added, and after that they cannot be changed."""
-        root = self.driven(path)
-        if root is None:
-            raise WorkspaceError('No run is driving this training.')
+        root = self._held(path)
         if action not in SUPPLYING:
             raise WorkspaceError('A document can be: ' + ', '.join(SUPPLYING) + '.')
         with self.files:
@@ -1707,9 +2017,7 @@ class Engine:
     def copies_again(self, path) -> dict:
         """Make the copies that are not made, again, as the person asks. One that still
         cannot be made says why."""
-        root = self.driven(path)
-        if root is None:
-            raise WorkspaceError('No run is driving this training.')
+        root = self._held(path)
         with self.files:
             record = self._load(root)
             self._make(root, record)
@@ -1733,18 +2041,48 @@ class Engine:
 
     # --- sharing -------------------------------------------------------------------------
 
+    def _step(self, space: gitstate.Workspace, push: bool) -> dict:
+        """Get in step with the shared repository: fetch, learn which trainings are no
+        longer this computer's, replay, and push if asked. Never raises for the remote's
+        sake. Call it holding `files`."""
+        try:
+            report = gitstate.sync(space, push=push, before=lambda: self._learn(space))
+        except WorkspaceError as refusal:
+            report = {'shared': False, 'reached': False, 'received': 0, 'conflict': [],
+                      'notice': str(refusal)}
+        self._clashed(space, report)
+        if self._clash:
+            report['notice'] = ' '.join(self._clash.values())
+        if report.get('reached'):
+            self._fetched += 1
+            if not push:
+                team.fetch_tags(space)
+            elif self._tags_unsent:
+                self._tags_unsent = team.send_tags(space) is not None
+        return report
+
     def share(self) -> dict:
         """Share the workspace now. Never fails a run: when it cannot share, the work stays
         on this computer and the notice says why."""
         space = self.space()
         with self.files:
-            try:
-                report = gitstate.sync(space)
-            except WorkspaceError as refusal:
-                report = {'shared': False, 'notice': str(refusal)}
+            report = self._step(space, push=True)
         self._unshared = None if report['shared'] else report['notice']
         self.adopt()
         return {'shared': bool(report['shared']), 'notice': report['notice']}
+
+    def fetch(self) -> dict:
+        """Bring in what teammates have shared, and send nothing. A training this computer
+        drives is never changed by it. Says whether the shared repository was reached,
+        how many commits came in, and why not when it could not be done."""
+        space = self.workspace
+        if space is None or space.address is None:
+            return {'reached': None, 'received': 0, 'notice': None}
+        with self.files:
+            report = self._step(space, push=False)
+        self.adopt()
+        return {'reached': bool(report.get('reached')), 'received': report.get('received', 0),
+                'notice': report.get('notice')}
 
     def share_soon(self) -> None:
         """Share without making anyone wait for it."""
@@ -1839,8 +2177,30 @@ class Engine:
         if step.kind == 'documents':
             return 'waiting', self._asking(found.scope)
         if run.queued:
-            return 'working', 'Waiting for its turn. Other trainings are working.'
+            ahead = self._slots.ahead(run) or 0
+            return 'working', 'Waiting for its turn. ' + (
+                'It is next.' if not ahead else '1 training is ahead of it.' if ahead == 1
+                else f'{ahead} trainings are ahead of it.')
         return 'working', self._doing(record, found)
+
+    def _queue(self, run: _Run) -> dict | None:
+        """For a training waiting its turn: how many are ahead of it."""
+        ahead = self._slots.ahead(run) if run.queued else None
+        return None if ahead is None else {'ahead': ahead}
+
+    def _whose(self, record: dict, state: str, sentence: str) -> tuple[bool, dict | None,
+                                                                         str, str]:
+        """Whether a training is this computer's, who drives it, and its state and
+        sentence as someone who can only read it is told them."""
+        space = self.workspace
+        mine, who = team.ours(space, record), team.driver(space, record)
+        if mine:
+            return mine, who, state, sentence
+        if who is None:
+            return mine, who, *((state, sentence) if state == 'done'
+                                else ('stopped', team.NOBODY))
+        return mine, who, state, (f"{who['name']} is running this training from another "
+                                  'computer. What is here is what was last shared.')
 
     def _steps(self, record: dict, found: pipeline.Survey, state: str) -> list[dict]:
         """Every step of the training, with how it stands and what it has taken."""
@@ -1928,13 +2288,15 @@ class Engine:
             found = self._survey(root, record)
         except (WorkspaceError, OSError) as failure:
             return {'state': 'failed', 'sentence': str(failure), 'needs': True,
-                    'question': None}
+                    'question': None, 'mine': True, 'driver': None}
         state, sentence = self._state(record, found, self._run(root))
         asked = record.get('question')
         needs = bool(asked or record.get('problem') or found.next.kind == 'stuck'
                      or (state == 'waiting' and found.next.kind in ('documents', 'outline')))
-        return {'state': state, 'sentence': sentence, 'needs': needs,
-                'question': asked['text'] if asked else None}
+        mine, who, state, sentence = self._whose(record, state, sentence)
+        return {'state': state, 'sentence': sentence, 'needs': needs and mine,
+                'question': asked['text'] if asked and mine else None, 'mine': mine,
+                'driver': who}
 
     @staticmethod
     def _asking(scope: str) -> str:
@@ -1986,6 +2348,7 @@ class Engine:
         resting = self._resting(record)
         report = self.index.readiness(root, copies) if ending == 'done' else None
         state, sentence = self._state(record, found, run, report)
+        mine, who, state, sentence = self._whose(record, state, sentence)
         asked, problem = record.get('question'), record.get('problem')
         if problem is None and found.next.kind == 'stuck':
             problem = {'what': found.next.why, 'action': None, 'label': None,
@@ -1995,6 +2358,8 @@ class Engine:
         level = self._level(drawing) if drawing else None
         return {
             'state': state, 'sentence': sentence, 'agent': record['agent'],
+            'mine': mine, 'driver': who, 'queue': self._queue(run) if mine else None,
+            'notice': self._notice(root), 'taken': None if mine else team.taken(root),
             'model': record.get('model'), 'steps': self._steps(record, found, state),
             'workers': self._workers(run),
             'spent': {'dollars': dollars, 'tokens': tokens},
@@ -2023,3 +2388,209 @@ class Engine:
             listed.append({'path': str(root), 'id': root.name, 'state': found.get('state'),
                            'sentence': found.get('sentence')})
         return {'trainings': listed}
+
+    def standing(self) -> dict:
+        """What the status screen shows: every run on this computer with what it is doing
+        and what it has cost, and apart from those the trainings teammates drive. `limit`
+        is how many trainings work at once."""
+        space, runs, elsewhere = self.workspace, [], []
+        for root in self.trainings():
+            try:
+                record = self._load(root)
+                title = workspace.load(root)['title']
+            except (WorkspaceError, OSError):
+                continue
+            found = self.brief(root) or {}
+            shown = {'path': str(root), 'id': root.name, 'title': title,
+                     'state': found.get('state'), 'sentence': found.get('sentence'),
+                     'driver': found.get('driver')}
+            if found.get('mine'):
+                dollars, tokens = spent(record)
+                runs.append({**shown, 'needs': bool(found.get('needs')),
+                             'queue': self._queue(self._run(root)),
+                             'spent': {'dollars': dollars, 'tokens': tokens},
+                             'notice': self._notice(root)})
+            elif shown['driver'] is not None:
+                elsewhere.append(shown)
+        return {'limit': settings.load().parallel, 'runs': runs, 'elsewhere': elsewhere}
+
+    # --- a notification when no page is open ---------------------------------------------
+
+    def seen(self) -> None:
+        """A page asked something, so one is open."""
+        self._asked = time.monotonic()
+
+    def page_open(self) -> bool:
+        """Whether a page is open, as far as the runner can tell: one asked recently."""
+        return self._asked is not None and time.monotonic() - self._asked < PAGE_OPEN
+
+    @staticmethod
+    def _needs(record: dict, found: pipeline.Survey) -> str | None:
+        """The one thing a training needs its person for now, named so that the same
+        thing is never taken for a new one. None when it needs nothing, or the person
+        halted it themselves."""
+        problem, asked, step = record.get('problem'), record.get('question'), found.next
+        if problem:
+            return f"problem:{problem.get('at')}"
+        if record.get('halt'):
+            return None
+        if asked:
+            return f"question:{asked.get('id')}"
+        if step.kind == 'wait':
+            entry = found.session['artifacts'].get(step.step.artifact) or {}
+            return f"gate:{step.step.artifact}:{entry.get('sha256')}"
+        if step.kind == 'outline':
+            mine = found.decks[workspace.split(step.step.artifact)[1]]
+            return f"outline:{step.step.id}:{(mine.kept.get('waiting') or {}).get('sha256')}"
+        if step.kind == 'documents':
+            return 'documents'
+        return f'stuck:{step.why}' if step.kind == 'stuck' else None
+
+    def tell(self) -> list[str]:
+        """Tell the person, through the computer's own notifications, about each training
+        of this computer's that needs a decision: only when that is turned on and no
+        page is open, and once for each thing. Returns the titles that were told."""
+        if not settings.load().notify or self.page_open():
+            return []
+        space, sent, told = self.workspace, team.kept('notified'), []
+        for root in self.trainings():
+            try:
+                record = self._load(root)
+                if not team.ours(space, record):
+                    continue
+                found = self._survey(root, record)
+            except (WorkspaceError, OSError):
+                continue
+            thing = self._needs(record, found)
+            if thing is None or sent.get(str(root)) == thing:
+                continue
+            if self.notifier.send(found.session['title']):
+                sent[str(root)] = thing
+                told.append(found.session['title'])
+        if told:
+            team.keep('notified', sent)
+        return told
+
+    def serving(self, every: float = FETCH_EVERY, tick: float = TICK) -> None:
+        """While the runner serves: fetch the workspace every few minutes, and look every
+        few seconds at whether to notify. `close` ends it."""
+        with self._lock:
+            if self._serving is not None and self._serving.is_alive():
+                return
+            self._serving = threading.Thread(target=self._serve, args=(every, tick),
+                                             daemon=True, name='in-step')
+            self._serving.start()
+
+    def _serve(self, every: float, tick: float) -> None:
+        last = time.monotonic()
+        while not self._ending.wait(tick):
+            try:
+                if time.monotonic() - last >= every:
+                    last = time.monotonic()
+                    self.fetch()
+                self.tell()
+            except Exception:  # neither ever ends the runner; the next look tries again
+                continue
+
+    # --- publishing inside the workspace -------------------------------------------------
+
+    def publish(self, path) -> dict:
+        """Publish a training as it stands: the next numbered revision, a tag on the
+        commit where the workspace is, pushed with it. One that is not ready is
+        published all the same, and the revision says so."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        space = self.space()
+        with self.files:
+            record = self._load(root)
+            who = team.driver(space, record)
+            if who is not None and not who['here']:
+                raise Elsewhere(team.elsewhere(space, record))
+            by = gitstate.identity(space.repo)
+            if space.address is not None:
+                self._step(space, push=True)
+            ready = bool(self.index.readiness(root, self._wanted(root, record))['ready'])
+            made = team.publish(space, root.name, workspace.load(root)['title'], ready, by)
+        said = []
+        if not ready:
+            said.append(f"Revision {made['revision']} was published before this training "
+                        'was ready, and says so.')
+        if space.address is None:
+            said.append('This workspace has no shared repository, so the revision is kept '
+                        'on this computer.')
+        elif not made['shared']:
+            self._tags_unsent = True
+            said.append('The revision is kept on this computer and is not shared yet '
+                        f"({made['why']}). It goes with the workspace the next time it is "
+                        'shared.')
+        return {'revision': made['revision'], 'ready': ready, 'shared': made['shared'],
+                'notice': ' '.join(said) or None}
+
+    def published(self) -> list[dict]:
+        """What the workspace has published, as far as this copy knows: each training's
+        latest revision."""
+        space = self.workspace
+        return [] if space is None else team.published(space)
+
+    # --- bringing a training in ----------------------------------------------------------
+
+    def bring(self, path) -> dict:
+        """Copy a training that was started in a conversation into the workspace, move
+        its decisions to the page, give it a run record that takes it, and commit. The
+        folder it came from is only read. Returns {'path', 'id'} of the copy, which then
+        carries on from wherever its files say it is."""
+        space, chosen, top = self.space(), settings.load(), Path(path)
+        gitstate.identity(space.repo)
+        if top == space.root or space.root in top.resolve().parents:
+            raise WorkspaceError('This training is already in the workspace.')
+        try:
+            session = workspace.load(top)
+        except WorkspaceError as refusal:
+            raise WorkspaceError("This training's record cannot be read, so it cannot be "
+                                 f'brought into the workspace. {refusal}')
+        root = space.training(workspace.slugify(session['title']))
+        if root.exists():
+            raise WorkspaceError(f'The workspace already has a training in {space.folder}/'
+                                 f'{root.name}. If that is the copy made of this one, work '
+                                 'on it there.')
+        why = team.unacceptable(top)
+        if why:
+            raise WorkspaceError('This training cannot be brought into the workspace. '
+                                 + why)
+        with self.files:
+            try:
+                team.copy_in(top, root)
+                if session['settings']['approval'] != 'page':
+                    workspace.checkpoint(root, approval='page', by='page')
+                self._store(root, self._brought(root, chosen, space))
+                home.remember(root, session['title'], session['levels'])
+                self._commit(root, 'bring the training in from a conversation')
+            except BaseException:  # a training is brought in whole or not at all
+                shutil.rmtree(root, ignore_errors=True)
+                gitstate.discard(space, root)
+                raise
+            self._claimed(root, space)
+        self.wake(root)
+        return {'path': str(root), 'id': root.name}
+
+    def _brought(self, root: Path, chosen: settings.Settings,
+                 space: gitstate.Workspace) -> dict:
+        """A run record for a training made elsewhere, saying what its files cannot:
+        which research run holds its approved plan, and that the documents it was
+        planned from are settled."""
+        session = workspace.load(root)
+        planned = workspace.statuses(root, session).get('research-plan', 'not-started')
+        said = pipeline.answers(root).get('source scope')
+        scope = next((name for name, label in pipeline.SOURCES.items() if label == said),
+                     pipeline.SCOPE)
+        record = new_record(chosen.agent, chosen.model, chosen, scope)
+        if record['documents'] and planned != 'not-started':
+            record['documents'].update(done=home.now(), count=0)
+        research = workspace.research_record(root)
+        if planned == 'approved' and research and research.get('run'):
+            record['research'] = {'run': research['run'],
+                                  'plan': workspace.sha256_file(root / pipeline.PLAN)}
+        record['driver'] = team.claim(space)
+        self._tried(record, 'intake', home.now(), 0.0, 'kept')
+        return record
