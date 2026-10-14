@@ -39,6 +39,8 @@ It installs the skill for Claude Code and Codex, whichever you have, and with it
 
 It then offers to bring each companion skill you do not have. Each is fetched from its own repository at a revision the installer checks, and installed by its own installer. Say yes or no to each.
 
+To make a training without a conversation, open Training Studio: on a Mac, double-click "Open Training Studio" in the Applications folder inside your home folder; on any system, run the line the installer printed. The page opens in your browser. Give it a repository your team shares and several of you can work in the same place, each training run by one person at a time. See [the runner](docs/runner.md).
+
 When it finishes it says how to open Training Studio: on a Mac, double-click "Open Training Studio" in the Applications folder inside your home folder. It also lists anything you still need, such as git, Node or an assistant that is signed in.
 
 See [installation](docs/installation.md) for what is checked and why, and for updating, going back a version and removing it.
@@ -168,7 +170,7 @@ This is the first of five planned phases. The helper that tracks your files is t
 - [Google Docs](docs/google-docs.md): sending the learner guide or the brief to a Google Doc for review, and bringing the edits back.
 - [The page](docs/desk.md): what needs you, every training and this computer's readiness in your browser, and approval that only you can give.
 - [Team hub](docs/team-hub.md): sharing finished trainings with your team, and reusing their scenarios, audiences and research.
-- [The runner](docs/runner.md): early. A program that takes a training from a form to its finished files on its own, the slide deck included, and stops for each of your decisions.
+- [The runner](docs/runner.md): early. A program that takes a training from a form to its finished files on its own, the slide deck included, and stops for each of your decisions. A team can share one workspace: each training is run from one computer at a time, and can be taken over, handed over and published.
 - [Development](docs/development.md): the repository, tests, and how to change the skill.
 - [Design](docs/superpowers/specs/2026-10-12-training-studio-core-pipeline-design.md): the full specification.
 

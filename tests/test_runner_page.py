@@ -35,9 +35,9 @@ GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
          '/api/documents', '/api/copies', '/api/share')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
-RUN_KEYS = ['agent', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'finished', 'mine',
-            'model', 'notice', 'outline', 'problem', 'question', 'queue', 'sentence', 'spent',
-            'state', 'steps', 'taken', 'workers']
+RUN_KEYS = ['agent', 'clash', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'finished',
+            'kept', 'last_shared', 'mine', 'model', 'notice', 'outline', 'problem', 'question',
+            'queue', 'sentence', 'spent', 'state', 'steps', 'taken', 'workers']
 STEP_KEYS = ['attempts', 'dollars', 'error', 'id', 'kind', 'label', 'seconds', 'status']
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -368,8 +368,10 @@ class SetUpTests(FirstTimeCase):
         self.assertEqual(self.get('trainings')['trainings'], [])
         self.post('setup', {'repository': str(remote)})
         listed = self.get('trainings')['trainings']
-        self.assertEqual([(item['title'], item['run']['state']) for item in listed],
-                         [('Rolling restarts', 'waiting')])
+        # It is the other computer's: all that is known here is what was last shared.
+        self.assertEqual([(item['title'], item['run']['state'], item['mine'], item['state'])
+                          for item in listed],
+                         [('Rolling restarts', 'elsewhere', False, 'in-progress')])
         self.assertNotEqual(listed[0]['path'], made['path'])
 
 

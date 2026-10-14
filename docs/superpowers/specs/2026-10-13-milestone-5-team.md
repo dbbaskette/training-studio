@@ -1,7 +1,7 @@
 # Studio Runner, milestone 5: the team
 
 Date: 2026-10-13
-Status: specified. Builds on milestones 2 to 4.
+Status: built. Builds on milestones 2 to 4. Where the code differs from this text, see Deviations at the end.
 
 ## Purpose
 
@@ -86,6 +86,19 @@ It is refused, with a sentence, for a training that is already in the workspace,
 - The installer is run into a temporary home and the runner opened from what it installed.
 - Not claimed without people: two real computers, and a teammate who has never seen it installing and running a training.
 
+## What the first real run showed
+
+Run on 2026-10-13 on one computer, with two runners on two data folders and two git identities standing in for two people, against one stand-in repository, through the page in a browser, on Claude Code.
+
+- The first person started a training; its claim was pushed at once. The second joined the same workspace, where the set-up screen read the folder, branch and name from the team's own file, and saw the training under "Run by your teammates", read-only, with no controls.
+- The second took it over through the confirmation; the take-over is a commit in the shared repository, and their runner carried on from the last shared state. After a fetch the first person's page named who runs it now, and after the fixes below, said when they took it, that this computer stopped, and that what it had not shared is kept on this computer and can be brought back.
+- A training made the conversation way was brought in from the page: copied into the workspace, started at once, and the original folder left exactly as it was.
+- The installer was run, by its builder, into a temporary home against the companions' real repositories: both were fetched at their pinned commits, verified and installed, and the installed command ran.
+
+Put right because of it: the page now shows the runner's own sentence about a take-over, across a reload; a teammate's training says when it was last shared and where it stood then, and no longer claims to know what is happening now; a finished training in a shared workspace can be taken.
+
+Not run for real: two real computers, a notification through the computer's own notifications, publishing to a hosted repository, the double-click launcher, and a teammate who has never seen it.
+
 ## Appendix: what the page asks the runner
 
 - List items and `GET /api/run` gain `driver`: `null` for a training nobody drives, else `{"name", "here": bool, "since"}`. A training driven elsewhere answers `GET /api/run` with `"mine": false` and every changing address answers 409 with who has it.
@@ -95,3 +108,46 @@ It is refused, with a sentence, for a training that is already in the workspace,
 - `POST /api/publish` with `{"path"}` returns `{"revision", "ready": bool, "shared": bool, "notice"}`. `GET /api/published` returns `{"published": [{"path", "id", "title", "revision", "at", "by", "ready"}]}`.
 - `POST /api/adopt` with `{"path"}` returns `{"path", "id"}` of the copy.
 - `GET /api/status` returns every run on this computer and the trainings driven elsewhere, in the shape the status screen shows.
+
+## Deviations
+
+Where what was built differs from the text above, the code is right and this section says how.
+
+**The installer**
+
+- A companion's small entry cannot be installed alone: it points at a runtime that only the companion's own installer lays out. So each companion is fetched from its repository at the one commit `installer/companions.json` pins, checked file for file against the digest pinned with it, and then installed by its own installer. Nothing of a companion is copied into this repository, as specified.
+- Bringing a companion is a step of its own, confirmed for each one. `--yes` agrees to installing Training Studio and does not cover it; `--companions install` does, and `--companions skip` declines. With nobody to ask, none is brought and the report says how to.
+- A companion's installer registers the skill for the agents it chooses, which may be more than the ones Training Studio was installed for. The person is told so before agreeing.
+- Rolling back and removing Training Studio leave the companions in place. They belong to their own installers, and the report names the ones left.
+- The launcher starts the runner in a terminal window of the person's own with `studio serve --open`. That window is given the link whole, as any terminal of theirs is, and the page is opened in their browser. Started from anything that is not a terminal, `--open` changes nothing: the address is printed without its key and only the browser is handed the key.
+
+**One driver for each training**
+
+- A new training started while the shared repository cannot be reached still starts. Nobody else can know of a training that was never shared, so its claim goes with the next share.
+- Starting a training pushes its claim even when sharing is set to only when asked. A push sends the branch, so commits made earlier and not yet shared go with it.
+- A finished training has no driver, and neither has one that was handed over. Either is nobody's until someone takes it: every change to it answers 409 until then. Publishing is the one exception, because it changes nothing in the training; a training nobody drives can be published from any computer, and one that someone else drives cannot. The page offers "Take it" on a finished training for that reason.
+- A finished training that is taken keeps its driver until it is handed over, or finishes again.
+- When a training is taken from a computer, or was changed on two computers and one carries on from the shared version, that computer's commits that were never shared are taken out of the branch and kept under a name of the runner's own in that computer's clone, `refs/training-studio/kept/...`. They are never pushed and never deleted. The page says in plain words that they are kept and can be brought back, and gives the name as a detail.
+- Taking a training refuses once when its driver changed since this computer last fetched, and says who has it now. Asking again takes it over from them.
+- Of a training someone else drives, a computer knows only what was last shared. Its run answers with the state `elsewhere` whatever its files say, with no step shown as working or waiting, and with `last_shared`: when that was, whose commit it was, and where the training stood then. In lists it keeps what was waiting then, to be read, and never counts as needing the person.
+
+**Staying in step, turns and notifications**
+
+- The page can ask for a fetch at any time, and says in a sentence what came back.
+- A notification is not sent for a training the person paused or stopped themselves. One with a problem is still told.
+- Turning the notification on where the computer has no way to notify answers 409 with the reason, and the setting stays off.
+
+**Publishing and bringing a training in**
+
+- A revision published while the shared repository cannot be reached is kept on this computer and goes with the next share. If someone else has published that number meanwhile, theirs stands in the shared repository and this one is not renumbered: it stays on this computer only. Publishing again once the repository can be reached takes the next free number.
+- The list of what is published says, for each training, whether it has changed on this computer since that revision. Its index opens as the training stands now, so the page says when that is not what was published.
+- The page offers publishing on a finished training only. The runner would publish any training this computer may publish, and records whether it was ready.
+- Bringing a training in names the copy's folder from the training's title, as a new training's is. A folder of that name already in the workspace refuses it.
+
+**What the page asks the runner, beyond the appendix**
+
+- List items and `GET /api/run` also carry `mine` (in a list, null for a training no run drives), `notice` and `last_shared` (`{"at", "by", "says"}`, or null). A run also carries `taken` (`{"by", "at", "kept"}` for one taken from this computer, until it is taken back), `kept` (the names git keeps what was set aside under) and `clash` (true while it stands changed on two computers).
+- `POST /api/fetch` with `{}` returns `{"reached", "received", "notice"}` and sends nothing.
+- `GET /api/status` returns `{"limit", "runs", "elsewhere"}`. Each run on this computer also has `needs`, `queue`, `spent` and `notice`; each training driven elsewhere also has `last_shared` and `notice`.
+- `GET /api/setup` gives the workspace a `notice`: why the last share did not share, which is also where a training changed on two computers is named.
+- Each entry of `GET /api/published` also has `current`.

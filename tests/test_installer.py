@@ -396,6 +396,38 @@ class RunnerTests(InstallerCase):
         self.assertEqual(self.core_found_from(staged), staged / 'scripts')
         self.assertEqual(self.core_found_from(helpers.REPO), helpers.SCRIPTS)
 
+    @unittest.skipUnless(NODE, 'a companion installs itself with Node')
+    def test_the_installed_runner_finds_the_helper_the_companions_and_where_a_brand_is(self):
+        self.run_installer('install', '--yes', '--companions', 'install')
+        installed = self.root / 'current'
+        self.assertFalse((installed / 'skills').exists(), 'the installed layout, not a checkout')
+        brand = self.claude / 'example-brand'
+        brand.mkdir()
+        env = {name: value for name, value in os.environ.items()
+               if not name.endswith('_RUNTIME')}
+        asked = subprocess.run(
+            [sys.executable, '-B', '-c', (
+                'import json, runner\n'
+                'from runner import brand, research, slides, studio\n'
+                'print(json.dumps({"core": str(runner.CORE),'
+                ' "research": str(research.find_runtime()),'
+                ' "slides": str(slides.find_runtime()),'
+                ' "brand": [str(place) for place in brand.locations()],'
+                ' "opens": studio.parser().parse_args(["serve", "--open"]).open}))')],
+            cwd=installed, capture_output=True, text=True,
+            env={**env, 'HOME': str(self.home), 'USERPROFILE': str(self.home)})
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        found = json.loads(asked.stdout)
+        shared = self.home / '.local' / 'share'
+        self.assertEqual(found['core'], str(installed.resolve() / 'scripts'))
+        for name, version in zip(COMPANIONS, ('0.8.0', '0.13.1')):
+            self.assertEqual(found[name.removeprefix('harness-')],
+                             str(shared / name / 'versions' / version), name)
+        # A brand skill is looked for among the skills each assistant has, where the
+        # companions were just registered and where an organisation's own would be.
+        self.assertIn(str(brand), found['brand'])
+        self.assertIs(found['opens'], True)
+
     def test_a_runner_that_does_not_start_is_never_made_current(self):
         first = self.run_installer('install', '--yes')
         broken = self.base / 'runner'

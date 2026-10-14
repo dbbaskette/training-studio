@@ -119,6 +119,13 @@ What a caller needs to know
   back; that is remembered in the data folder. When the same file was changed on two computers, the
   view of that training says that one side must take it over. `take` does that: this
   computer's unshared commits for it are set aside, and it carries on from what is shared.
+  `notice` says in plain words that what was set aside is kept on this computer; the names
+  git keeps it under are in the view's `kept`, for someone who brings it back. `clash` is
+  true while the notice is about a training changed on two computers.
+- Of a training someone else drives, this computer knows only what was last shared. Its
+  state is `elsewhere` whatever its files say, no step of it is shown as working, and
+  `last_shared` is {'at', 'by', 'says'}: when that was, whose commit it was, and where the
+  training stood then, said of the past. Its sentence says the same.
 - Trainings take turns in the order they became ready, as many at once as the settings
   allow. One that waits says how many are ahead of it.
 - A notification is sent only when it is turned on in the settings, no page has asked
@@ -140,6 +147,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import replace
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
@@ -176,7 +184,10 @@ PAGE_OPEN = 45          # seconds since a page last asked, while one counts as o
 NO_DRIVERS = ('This workspace is a folder on this computer, so its trainings are not taken '
               'or handed over.')
 TAKEN = '{name} took this training over on {when}. This computer stopped working on it.'
-SET_ASIDE = ' What it had made and not yet shared is kept in git as {kept}.'
+SET_ASIDE = (' What this computer had made and not yet shared is kept on this computer, and '
+             'can be brought back.')
+THEIRS = '{name} is running this training from another computer.'
+LAST = ' What is here is what was last shared{when}. {then} It may have moved on since.'
 BROKEN = ('"{title}" was changed on this computer and on another at the same time, so '
           'nothing here can be shared. One side must take it over. Taking it over here '
           'carries on from the shared version; what this computer made and never shared is '
@@ -355,6 +366,7 @@ class Engine:
         self._serving: threading.Thread | None = None
         self._ending = threading.Event()
         self._fetched = 0                   # fetches that reached the shared repository
+        self._as_of: dict[tuple, tuple[int, object]] = {}   # what was read as of a fetch
         self._tags_unsent = True            # a published revision may be waiting to go
         self.research = research or research_cli.Research
         self.slides = slides or slides_tool.Slides
@@ -510,8 +522,7 @@ class Engine:
         self.wake(root)
         shown = self.view(root)
         if kept and not shown.get('notice'):
-            shown['notice'] = ('This training carries on from the shared version.'
-                               + SET_ASIDE.format(kept=kept))
+            shown['notice'] = 'This training carries on from the shared version.' + SET_ASIDE
         return shown
 
     def _take(self, root: Path, space: gitstate.Workspace) -> str | None:
@@ -526,6 +537,7 @@ class Engine:
             if root.name in self._clash or (
                     not team.ours(space, self._load(root)) and gitstate.unshared(space, root)):
                 kept = gitstate.set_aside(space, root) or kept
+                self._as_of.pop(('kept', str(root)), None)
                 report = self._step(space, push=False)
             if report.get('conflict'):
                 raise WorkspaceError(report['notice'])
@@ -582,6 +594,7 @@ class Engine:
         lost = taken.pop(str(root), None)
         if lost is not None:
             gitstate.forget(space, lost.get('kept'))
+            self._as_of.pop(('kept', str(root)), None)
             team.keep('taken', taken)
 
     def _hand(self, root: Path, space: gitstate.Workspace) -> None:
@@ -600,6 +613,7 @@ class Engine:
     def _aside(self, root: Path, space: gitstate.Workspace, kept: str | None,
                name: str | None = None, when: str | None = None) -> None:
         """Remember what was set aside for a training, and who took it when that is why."""
+        self._as_of.pop(('kept', str(root)), None)
         taken = team.kept('taken')
         before = taken.get(str(root)) or {}
         taken[str(root)] = {'name': name or before.get('name'),
@@ -655,8 +669,7 @@ class Engine:
             return None
         said = TAKEN.format(name=lost.get('name') or 'Someone', when=team.day(lost.get('at'))) \
             if lost.get('name') else ''
-        return (said + (SET_ASIDE.format(kept=lost['kept']) if lost.get('kept') else '')
-                ).strip() or None
+        return (said + (SET_ASIDE if lost.get('kept') else '')).strip() or None
 
     # --- starting and picking up ---------------------------------------------------------
 
@@ -2188,19 +2201,78 @@ class Engine:
         ahead = self._slots.ahead(run) if run.queued else None
         return None if ahead is None else {'ahead': ahead}
 
-    def _whose(self, record: dict, state: str, sentence: str) -> tuple[bool, dict | None,
-                                                                         str, str]:
+    def _since_fetch(self, what: str, root: Path, read):
+        """Something read from the repository that only changes when it is fetched or
+        pushed, read once for each time that happens."""
+        kept = self._as_of.get((what, str(root)))
+        if kept is None or kept[0] != self._fetched:
+            kept = self._as_of[(what, str(root))] = (self._fetched, read())
+        return kept[1]
+
+    def _set_aside(self, root: Path) -> list[str]:
+        """The names git keeps what this computer set aside of a training under."""
+        space = self.workspace
+        if space is None or space.address is None:
+            return []
+        return list(self._since_fetch('kept', root, lambda: gitstate.kept(space, root)))
+
+    def _then(self, record: dict, found: pipeline.Survey) -> str:
+        """Where a training stood when it was last shared, said of the past: nothing here
+        knows what the computer that drives it is doing now."""
+        problem, halt, step = record.get('problem'), record.get('halt'), found.next
+        if problem:
+            return f"Then, it had stopped: {problem['what']}"
+        if halt:
+            return 'Then, it was paused.' if halt == 'paused' else 'Then, it was stopped.'
+        if record.get('question'):
+            return 'Then, a question was waiting for an answer.'
+        if step.kind in ('wait', 'outline'):
+            return f'Then, {pipeline.subject(step.step)} was waiting for a decision.'
+        if step.kind == 'documents':
+            return 'Then, it was waiting for documents to be added.'
+        if step.kind == 'stuck':
+            return f'Then, it could not go on: {step.why}'
+        if step.kind == 'done':
+            return 'Then, it was finished.'
+        if step.kind == 'deck':
+            return f'Then: {pipeline.deck_says(found)}'
+        if self._away(found):
+            return 'Then, its decisions were being made in a conversation.'
+        if step.kind == 'gate':
+            return f'Then, {pipeline.subject(step.step)} was the next thing to be reviewed.'
+        label = step.step.label
+        return f'Then, the next step was to {label[:1].lower() + label[1:]}.'
+
+    def _last_shared(self, root: Path, record: dict, found: pipeline.Survey) -> dict:
+        """What is known of a training someone else drives: when it was last shared, by
+        whom, and where it stood then. {'at', 'by', 'says'}."""
+        space = self.workspace
+        by, at = self._since_fetch('last', root, lambda: gitstate.last_by(space, root)) \
+            or (None, None)
+        try:
+            at = datetime.fromisoformat(at).astimezone(timezone.utc).strftime(
+                '%Y-%m-%dT%H:%M:%SZ') if at else None
+        except ValueError:
+            at = None
+        return {'at': at, 'by': by, 'says': self._then(record, found)}
+
+    def _whose(self, root: Path, record: dict, found: pipeline.Survey, state: str,
+               sentence: str) -> tuple[bool, dict | None, str, str, dict | None]:
         """Whether a training is this computer's, who drives it, and its state and
-        sentence as someone who can only read it is told them."""
+        sentence as someone who can only read it is told them. One that someone else
+        drives is `elsewhere`, whatever its files say: only what was last shared is known
+        here, so the sentence says that and when, and the last item says it apart."""
         space = self.workspace
         mine, who = team.ours(space, record), team.driver(space, record)
         if mine:
-            return mine, who, state, sentence
+            return mine, who, state, sentence, None
         if who is None:
             return mine, who, *((state, sentence) if state == 'done'
-                                else ('stopped', team.NOBODY))
-        return mine, who, state, (f"{who['name']} is running this training from another "
-                                  'computer. What is here is what was last shared.')
+                                else ('stopped', team.NOBODY)), None
+        last = self._last_shared(root, record, found)
+        when = f", on {team.day(last['at'])}" if last['at'] else ''
+        return mine, who, 'elsewhere', (THEIRS.format(name=who['name']) + LAST.format(
+            when=when, then=last['says'])), last
 
     def _steps(self, record: dict, found: pipeline.Survey, state: str) -> list[dict]:
         """Every step of the training, with how it stands and what it has taken."""
@@ -2288,15 +2360,16 @@ class Engine:
             found = self._survey(root, record)
         except (WorkspaceError, OSError) as failure:
             return {'state': 'failed', 'sentence': str(failure), 'needs': True,
-                    'question': None, 'mine': True, 'driver': None}
+                    'question': None, 'mine': True, 'driver': None, 'last_shared': None,
+                    'notice': None}
         state, sentence = self._state(record, found, self._run(root))
         asked = record.get('question')
         needs = bool(asked or record.get('problem') or found.next.kind == 'stuck'
                      or (state == 'waiting' and found.next.kind in ('documents', 'outline')))
-        mine, who, state, sentence = self._whose(record, state, sentence)
+        mine, who, state, sentence, last = self._whose(root, record, found, state, sentence)
         return {'state': state, 'sentence': sentence, 'needs': needs and mine,
                 'question': asked['text'] if asked and mine else None, 'mine': mine,
-                'driver': who}
+                'driver': who, 'last_shared': last, 'notice': self._notice(root)}
 
     @staticmethod
     def _asking(scope: str) -> str:
@@ -2348,7 +2421,7 @@ class Engine:
         resting = self._resting(record)
         report = self.index.readiness(root, copies) if ending == 'done' else None
         state, sentence = self._state(record, found, run, report)
-        mine, who, state, sentence = self._whose(record, state, sentence)
+        mine, who, state, sentence, last = self._whose(root, record, found, state, sentence)
         asked, problem = record.get('question'), record.get('problem')
         if problem is None and found.next.kind == 'stuck':
             problem = {'what': found.next.why, 'action': None, 'label': None,
@@ -2360,6 +2433,8 @@ class Engine:
             'state': state, 'sentence': sentence, 'agent': record['agent'],
             'mine': mine, 'driver': who, 'queue': self._queue(run) if mine else None,
             'notice': self._notice(root), 'taken': None if mine else team.taken(root),
+            'last_shared': last, 'kept': self._set_aside(root),
+            'clash': root.name in self._clash,
             'model': record.get('model'), 'steps': self._steps(record, found, state),
             'workers': self._workers(run),
             'spent': {'dollars': dollars, 'tokens': tokens},
@@ -2411,7 +2486,8 @@ class Engine:
                              'spent': {'dollars': dollars, 'tokens': tokens},
                              'notice': self._notice(root)})
             elif shown['driver'] is not None:
-                elsewhere.append(shown)
+                elsewhere.append({**shown, 'last_shared': found.get('last_shared'),
+                                  'notice': found.get('notice')})
         return {'limit': settings.load().parallel, 'runs': runs, 'elsewhere': elsewhere}
 
     # --- a notification when no page is open ---------------------------------------------

@@ -84,7 +84,7 @@ Drop `--dry-run` to run it. The clone is deleted afterwards; its logs are kept.
 | `tests/test_google.py` | The Google Docs round-trip, against an in-memory transport and a stubbed HTTP layer |
 | `tests/test_desk.py` | The page: what it reads and records, everything it refuses, the command, the check of this computer with its commands stubbed, and the page's scripts and colours |
 | `tests/test_hub.py` | The team hub, against bare git repositories in temporary directories |
-| `tests/test_runner_*.py` | The runner: workers with a scripted agent, the worker tools against a pretend web, the workspace against bare git repositories, research against a stand-in for harness-research, the slide deck against stand-ins for the slides tool and a brand skill, the pipelines, the engine and its server |
+| `tests/test_runner_*.py` | The runner: workers with a scripted agent, the worker tools against a pretend web, the workspace against bare git repositories, research against a stand-in for harness-research, the slide deck against stand-ins for the slides tool and a brand skill, the pipelines, the engine and its server, and two people sharing one workspace |
 
 The page's scripts are tested in a document that has no HTML parser, so a script that wrote markup would fail. That checks what the scripts build, name and send. It does not replace looking at the page in a browser.
 
@@ -150,6 +150,7 @@ runner/
   deck.py                   the runner's own rules for a deck, and what its workers are told
   slides.py                 the harness-slides command line, called from Python
   brand.py                  a brand skill on this computer, called from Python
+  team.py                   sharing a workspace: the driver, notifications, publishing, bringing in
   briefs/                   what a worker is told for each kind of job
 ```
 
@@ -170,6 +171,16 @@ No test starts a real agent, the real harness-research, the slides tool or a bra
 - **One tool, one brand skill.** The engine tells each deck job where the slides tool and the brand skill are, from `Slides.runtime` and `Brand.runtime`, so the worker tools' server uses the same two.
 - **Previews are taken one at a time** on a computer, whoever is drawing, through one lock file in the runner's own data folder.
 - **The tool's guidance is read, never copied here.** `Slides.reading()` reads the installed tool's own design and drafting guidance and its gallery, and the engine hands a worker the parts its job needs.
+
+### The team
+
+- **One driver, kept in the run record.** `team.ours` is the one question asked before anything is written to a training: in a shared workspace, does its record name this computer? Every change a person asks for goes through `engine.hold` first, and the engine works on nothing that is not this computer's. A workspace with no shared repository has no drivers, and `ours` is always true there.
+- **A claim is pushed before any work.** `engine._take` and `engine._claimed` commit the claim and push it; a claim the shared repository does not take is dropped, and the refusal says who has the training.
+- **What was never shared is set aside, never lost and never pushed.** `gitstate.set_aside` takes one training's unshared commits out of the branch and keeps them under `refs/training-studio/kept/`, in that computer's clone only. `gitstate.kept` lists them for the page.
+- **A training someone else drives is `elsewhere`.** The engine says when it was last shared and where it stood then (`last_shared`), and never that it is working. Its commits tell it that; nothing asks the other computer.
+- **A sentence a person reads is the runner's.** That a training was taken, or was changed on two computers, is `notice` on the run, the list and the status. The page shows it and keeps nothing of its own about it, so it is the same after a reload.
+- **Two people are two data folders.** `TeamCase` in `tests/runner_support.py` gives each person a data folder and a git identity against one bare repository, and `tests/test_runner_team.py` drives two engines through it. `TeamScreenTests` in `tests/test_desk.py` drives the page against answers written out in the runner's shapes; when a shape changes, both change.
+- **The installer brings the runner.** `installer/install.py` copies `runner/` beside the helper's scripts in each installed version, where `runner/__init__.py` finds them, and writes the launchers. Each companion is fetched at the commit `installer/companions.json` pins and installed by its own installer; `install.py pin` moves a pin.
 
 ## What is not yet verified
 

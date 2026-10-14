@@ -14,6 +14,8 @@ On a Mac you can instead double-click `Install Training Studio.command` in the `
 
 It tells you what it is about to do and asks before changing anything. It then asks about each companion skill separately. When it finishes it lists where the skill was linked, how to open Training Studio, and anything you still need.
 
+A teammate who only wants to make trainings needs nothing else: install, open Training Studio, and give it the address of the repository your team shares. [The runner](runner.md#with-a-team) says how several people work in one workspace.
+
 ## What it does
 
 1. Checks that the skill package is whole.
@@ -44,7 +46,7 @@ On any system, the installer prints one line that does the same. With the usual 
 sh ~/.local/share/training-studio/studio
 ```
 
-The page works only with its key, which the runner makes each time it starts. The key goes to your own terminal and your own browser and is never written to a file. That is why the runner is started by you, in a window of yours, and not in the background.
+The page works only with its key, which the runner makes each time it starts. The key goes to your own terminal and your own browser and is never written to a file. That is why the runner is started by you, in a window of yours, and not in the background. If the same line is run by something that is not a terminal, such as an assistant, the address is printed without the key and only your browser is given it.
 
 Both launchers open whichever version is current, so updating or going back a version needs no change to them. A file of your own with the same name is never overwritten.
 

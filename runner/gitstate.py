@@ -17,6 +17,7 @@ What a caller needs to know
     gitstate.theirs(workspace, 'rolling-restarts/intake.md')   # as the remote last had it
     gitstate.moved(workspace, 'rolling-restarts')    # the remote changed it since we parted
     gitstate.set_aside(workspace, 'rolling-restarts')   # unshared commits, out of the branch
+    gitstate.kept(workspace, 'rolling-restarts')     # the refs that keep what was set aside
     gitstate.undo(workspace, 'rolling-restarts')     # take back the last, unshared commit
 
 - A workspace is a repository, a folder in it (`trainings` unless named or found) and a
@@ -549,6 +550,15 @@ def set_aside(workspace: Workspace, path) -> str | None:
             hub.run(repo, 'update-ref', '-d', kept)
             raise hub.GitError(hub.reason(picked))
     return kept
+
+
+def kept(workspace: Workspace, path) -> list[str]:
+    """The refs under which `set_aside` keeps what it took out of the branch for one path
+    under the folder, oldest name first. They are in this clone only."""
+    name = re.escape(PurePosixPath(inside(workspace, path)).name)
+    done = hub.run(workspace.repo, 'for-each-ref', '--format=%(refname)', f'refs/{TOOL}/kept/')
+    return [ref for ref in done.stdout.split() if done.returncode == 0
+            and re.fullmatch(rf'refs/{TOOL}/kept/{name}-[0-9a-f]{{12}}', ref)]
 
 
 def forget(workspace: Workspace, kept: str | None) -> None:

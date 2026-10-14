@@ -214,7 +214,20 @@ class DriverTests(Team):
         self.assertEqual(self.git('rev-parse', view['taken']['kept'], repo=self.alex.space.repo),
                          unshared, 'what this computer had made is kept')
         self.assertIn('Blake took this training over on', view['notice'])
-        self.assertIn(view['taken']['kept'], view['notice'])
+        # The sentence is for a person: kept here, and can be brought back. The name git
+        # keeps it under is a detail, given apart.
+        self.assertIn('What this computer had made and not yet shared is kept on this '
+                      'computer, and can be brought back.', view['notice'])
+        self.assertNotIn('refs/', view['notice'])
+        self.assertEqual(view['kept'], [view['taken']['kept']])
+        with self.be(self.alex):
+            listed = page.RunnerPage(1, self.alex.engine).trainings()[0]
+            status = self.alex.engine.standing()
+            again = self.make().view(root)
+        self.assertEqual((listed['notice'], listed['mine']), (view['notice'], False))
+        self.assertEqual(status['elsewhere'][0]['notice'], view['notice'])
+        self.assertEqual((again['notice'], again['taken']), (view['notice'], view['taken']),
+                         'a runner started again still says so')
         with self.assertRaisesRegex(engines.Elsewhere, 'Blake has been running'):
             self.approve(self.alex, root, 'research-plan')
         jobs = len(self.workers.jobs)
@@ -231,6 +244,87 @@ class DriverTests(Team):
         self.approve(self.blake, root, 'research-plan')
         self.fetch(self.alex)
         self.assertEqual(self.drive(self.alex, root)['taken'], None, 'taking it back clears it')
+
+    def test_a_teammates_training_says_what_was_last_shared_and_never_what_it_does_now(self):
+        with self.be(self.alex):
+            gitstate.share_when('asked')
+        root = self.started()   # the claim is shared; the plan drafted since is not
+        self.fetch(self.blake)
+        theirs = self.theirs(self.blake, root)
+        view = self.seen(self.blake, root)
+        # Its files say an agent's step is next. That is not this computer's to call
+        # working: all it knows is what was shared, and when.
+        self.assertEqual((view['state'], view['mine'], view['workers'], view['queue']),
+                         ('elsewhere', False, [], None))
+        self.assertNotIn('working', [step['status'] for step in view['steps']])
+        last = view['last_shared']
+        self.assertEqual((sorted(last), last['by']), (['at', 'by', 'says'], 'Alex'))
+        self.assertRegex(last['at'], STAMP)
+        self.assertEqual(last['says'], 'Then, the next step was to draft the research plan.')
+        self.assertEqual(view['sentence'], (
+            'Alex is running this training from another computer. What is here is what was '
+            f"last shared, on {team.day(last['at'])}. {last['says']} It may have moved on "
+            'since.'))
+        with self.be(self.blake):
+            listed = page.RunnerPage(1, self.blake.engine).trainings()[0]
+            brief = self.blake.engine.brief(theirs)
+        self.assertEqual((listed['run'], listed['mine'], listed['last_shared'], listed['state']),
+                         ({'state': 'elsewhere', 'sentence': view['sentence']}, False, last,
+                          'in-progress'))
+        self.assertEqual((brief['state'], brief['needs']), ('elsewhere', False))
+        self.assertEqual(self.seen(self.alex, root)['last_shared'], None,
+                         'the computer that drives it knows what it is doing')
+
+        # A gate of theirs was waiting for a decision when it was shared: not for this
+        # person, and not known to be waiting still.
+        self.as_(self.alex, self.engine.share)
+        self.fetch(self.blake)
+        view = self.seen(self.blake, root)
+        self.assertEqual((view['state'], view['last_shared']['says']),
+                         ('elsewhere', 'Then, the research plan was waiting for a decision.'))
+        self.assertNotIn('waiting', [step['status'] for step in view['steps']])
+        self.assertNotIn('your review', view['sentence'])
+        listed = self.ask(self.blake, 'trainings')
+        self.assertEqual((listed['needs'], listed['trainings'][0]['state'],
+                          listed['trainings'][0]['waiting']['artifact']),
+                         (0, 'in-progress', 'research-plan'),
+                         'what was waiting can be read, and needs nobody here')
+
+    def test_a_training_nobody_drives_is_published_as_it_is_and_changed_once_taken(self):
+        root = self.started()
+        self.drive(self.alex, root, 'hand-over')
+        path = str(root)
+        # Publishing changes nothing in a training, so it is the one thing that needs no
+        # driver. Everything else is refused until someone takes it.
+        self.assertEqual(self.ask(self.alex, 'publish', {'path': path})['revision'], 1)
+        for endpoint, sent in (
+                ('run', {'action': 'resume'}), ('copies', {}), ('approval', {'mode': 'chat'}),
+                ('decide', {'artifact': 'research-plan', 'decision': 'approve',
+                            'seen': 'abc'})):
+            said = self.ask(self.alex, endpoint, {'path': path, **sent}, 409)['error']
+            self.assertEqual(said, team.NOBODY, endpoint)
+        self.fetch(self.blake)
+        theirs = str(self.theirs(self.blake, root))
+        self.assertEqual(self.ask(self.blake, 'publish', {'path': theirs})['revision'], 2)
+        taken = self.ask(self.blake, 'drive', {'path': theirs, 'action': 'take'})
+        self.assertEqual((taken['mine'], taken['state']), (True, 'waiting'))
+        self.approve(self.blake, root, 'research-plan')
+
+    def test_a_finished_training_is_published_by_anyone_and_taken_to_change_it(self):
+        root = self.started()
+        with self.be(self.alex):
+            self.to_end(root)
+        self.fetch(self.blake)
+        theirs = str(self.theirs(self.blake, root))
+        view = self.ask(self.blake, 'run', path=theirs)
+        self.assertEqual((view['state'], view['mine'], view['driver'], view['last_shared'],
+                          bool(view['finished'])), ('done', False, None, None, True))
+        self.assertEqual(self.ask(self.blake, 'copies', {'path': theirs}, 409)['error'],
+                         team.NOBODY)
+        self.assertEqual(self.ask(self.blake, 'publish', {'path': theirs})['revision'], 1)
+        taken = self.ask(self.blake, 'drive', {'path': theirs, 'action': 'take'})
+        self.assertEqual((taken['mine'], taken['driver']['name']), (True, 'Blake'))
+        self.ask(self.blake, 'copies', {'path': theirs})
 
     def test_handing_over_leaves_a_training_for_anyone_to_take(self):
         root = self.started()
@@ -304,6 +398,9 @@ class DriverTests(Team):
         taken = self.drive(self.alex, root)
         self.assertEqual(taken['mine'], True)
         self.assertIn('carries on from the shared version', taken['notice'])
+        self.assertIn('kept on this computer, and can be brought back', taken['notice'])
+        self.assertNotIn('refs/', taken['notice'])
+        self.assertEqual(taken['kept'], self.kept(self.alex))
         self.assertEqual([self.git('rev-parse', ref, repo=self.alex.space.repo)
                           for ref in self.kept(self.alex)], [mine])
         self.assertEqual(self.as_(self.alex, self.engine.share)['shared'], True)
@@ -342,8 +439,10 @@ class InStepTests(Team):
         self.assertEqual(listed['Rolling restarts']['state'], 'finished')
         self.assertIsNone(listed['Rolling restarts']['driver'])
         theirs = listed['Health checks']
-        self.assertEqual((theirs['state'], theirs['waiting'], theirs['driver']['name'],
-                          theirs['driver']['here']), ('in-progress', None, 'Alex', False))
+        self.assertEqual((theirs['state'], theirs['driver']['name'], theirs['driver']['here'],
+                          theirs['mine'], theirs['run']['state']),
+                         ('in-progress', 'Alex', False, False, 'elsewhere'))
+        self.assertIsNone(theirs['waiting'], 'nothing was waiting when it was last shared')
         self.assertIn('Alex is running this training', theirs['sentence'])
         mine = {item['title']: item for item in self.ask(self.alex, 'trainings')['trainings']}
         self.assertEqual((mine['Health checks']['state'], mine['Health checks']['driver']['here']),
@@ -470,12 +569,17 @@ class StatusTests(Team):
         self.assertEqual(found['runs'][0]['path'], str(mine))
         self.assertEqual(found['elsewhere'], [{
             'path': str(self.theirs(self.alex, theirs)), 'id': 'health-checks',
-            'title': 'Health checks', 'state': 'working',
-            'sentence': 'Blake is running this training from another computer. What is here '
-                        'is what was last shared.',
+            'title': 'Health checks', 'state': 'elsewhere',
+            'sentence': found['elsewhere'][0]['sentence'],
             'driver': {'name': 'Blake', 'here': False,
-                       'since': found['elsewhere'][0]['driver']['since']}}])
+                       'since': found['elsewhere'][0]['driver']['since']},
+            'last_shared': found['elsewhere'][0]['last_shared'], 'notice': None}])
         self.assertRegex(found['elsewhere'][0]['driver']['since'], STAMP)
+        self.assertRegex(found['elsewhere'][0]['sentence'],
+                         r'^Blake is running this training from another computer\. What is '
+                         r'here is what was last shared, on \d{4}-\d\d-\d\d at \d\d:\d\d UTC\. ')
+        self.assertEqual(found['limit'], settings.load().parallel)
+        self.assertEqual(found['runs'][0]['notice'], None)
 
 
 class NotifierTests(unittest.TestCase):

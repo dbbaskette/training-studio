@@ -2130,7 +2130,7 @@ def ok(body) -> dict:
 # The runner's answers, written out field for field from the appendices of the milestone 2,
 # milestone 3 and milestone 4 specifications ("What the page asks the runner"). Its server is
 # built apart from the page.
-RUNNER = ok({'runner': True, 'version': '0.11.0'})
+RUNNER = ok({'runner': True, 'version': '0.12.0'})
 LIMITS = {'step_seconds': 900, 'training_dollars': 20, 'parallel': 2}
 # A computer with a brand skill and no way yet to make previews: what every screen but the
 # deck's own is tried on. The tests of previews say what their computer can do.
@@ -4420,11 +4420,20 @@ class RunnerScreenTests(ScriptedPage, PageCase):
 
 
 # What a team adds, written out field for field from the appendix of the milestone 5
-# specification. A run gains `driver`, `mine` and `queue`; so does each item of the list,
-# its `driver`. What `GET /api/status` answers is not spelled out there: this is the shape
-# the page reads.
+# specification and from what the runner's server documents beyond it (the top of
+# runner/page.py). A run gains `driver`, `mine` and `queue`, and `notice`, `taken`,
+# `last_shared`, `kept` and `clash`; each item of the list gains `driver`, `mine`, `notice`
+# and `last_shared`. A training someone else drives is `elsewhere`, whatever its files say.
 DRIVER_FIELDS = {'name', 'here', 'since'}
-PUBLISHED_FIELDS = {'path', 'id', 'title', 'revision', 'at', 'by', 'ready'}
+PUBLISHED_FIELDS = {'path', 'id', 'title', 'revision', 'at', 'by', 'ready', 'current'}
+TEAM_RUN_FIELDS = {'notice': None, 'taken': None, 'last_shared': None, 'kept': [],
+                   'clash': False}
+LAST_FIELDS = {'at', 'by', 'says'}
+KEPT = 'refs/training-studio/kept/rolling-restarts-0123456789ab'
+TOOK = ('Pat took this training over on {day}. This computer stopped working on it. What '
+        'this computer had made and not yet shared is kept on this computer, and can be '
+        'brought back.')
+MOVED_ON = 'It may have moved on since: this computer knows only what was shared.'
 READ_ONLY = ('You can read everything here: the steps, the files and the reviews. Nothing '
              'here can be paused, stopped, decided or answered from this computer.')
 
@@ -4441,13 +4450,37 @@ def a_driver(name: str, here: bool, **ago) -> dict:
     return driver
 
 
+def day(stamp: str) -> str:
+    """A moment as the runner writes it in a sentence."""
+    return f'{stamp[:10]} at {stamp[11:16]} UTC'
+
+
+def last_shared(says: str, by: str = 'Pat', **ago) -> dict:
+    """What is known of a training someone else drives: when it was last shared, by whom,
+    and where it stood then."""
+    last = {'at': earlier(**ago), 'by': by, 'says': says}
+    assert set(last) == LAST_FIELDS, last
+    return last
+
+
+def their_says(name: str, last: dict) -> str:
+    """The runner's sentence for a training someone else drives."""
+    return (f'{name} is running this training from another computer. What is here is what '
+            f"was last shared, on {day(last['at'])}. {last['says']} It may have moved on "
+            'since.')
+
+
 def a_team_run(state: str, sentence: str, driver: dict | None, mine: bool,
                queue: dict | None = None, **more) -> dict:
     """A run in a shared workspace: who drives it, and whether that is this computer."""
+    team = {name: more.pop(name, value) for name, value in TEAM_RUN_FIELDS.items()}
     run = a_run(state, sentence, **more)
-    run['body'].update({'driver': driver, 'mine': mine})
-    if queue is not None:
-        run['body']['queue'] = queue
+    run['body'].update({'driver': driver, 'mine': mine, 'queue': queue, **team})
+    if driver and not driver['here']:
+        # Only what was last shared is known: never working, and no step in hand.
+        assert (state, mine) == ('elsewhere', False), (state, mine)
+        assert set(run['body']['last_shared']) == LAST_FIELDS, run['body']
+        assert not {'working', 'waiting'} & {step['status'] for step in run['body']['steps']}
     return run
 
 
@@ -4469,26 +4502,60 @@ class TeamScreenTests(ScriptedPage, PageCase):
     listed = RunnerScreenTests.listed
     detail = RunnerScreenTests.detail
 
+    def as_the_runner_lists_it(self, item: dict, state: str | None, driver: dict | None,
+                               mine: bool | None, notice: str | None,
+                               last: dict | None) -> bool:
+        """Add to one training what the runner's lists do: who drives it, whether this
+        computer may change it, and what it says about that. One that is not this
+        computer's never needs the person here; true when it had been counted as one."""
+        ours = item['path'] == str(self.root) and bool(state)
+        item.update(driver=driver if ours else None, mine=None, notice=None, last_shared=None)
+        if not ours:
+            return False
+        item['mine'] = bool(driver and driver['here']) if mine is None else mine
+        item['notice'] = notice
+        if item['mine']:
+            return False
+        counted = item['state'] == 'needs-you'
+        if item['state'] != 'finished':
+            item.update(state='in-progress', sentence=item['run']['sentence'])
+        if driver:
+            self.assertEqual(item['run']['state'], 'elsewhere')
+            item['last_shared'] = last
+        return counted
+
     def driven(self, state: str | None, sentence: str, driver: dict | None,
-               needs: bool = False) -> dict:
+               needs: bool = False, mine: bool | None = None, notice: str | None = None,
+               last: dict | None = None) -> dict:
         """The list, with who drives this training."""
         found = self.listed(state, sentence, needs)
         for item in found['body']['trainings']:
-            item['driver'] = driver if item['path'] == str(self.root) else None
+            if self.as_the_runner_lists_it(item, state, driver, mine, notice, last):
+                found['body']['needs'] -= 1
+        return found
+
+    def shown(self, state: str, sentence: str, driver: dict | None, mine: bool | None = None,
+              notice: str | None = None, last: dict | None = None) -> dict:
+        """One training's detail, with who drives it."""
+        found = self.detail(state, sentence)
+        self.as_the_runner_lists_it(found['body'], state, driver, mine, notice, last)
         return found
 
     def test_a_training_a_teammate_runs_is_read_and_cannot_be_changed(self):
         self.at_the_blueprint_gate()
         pat = a_driver('Pat', False, hours=3)
-        says = 'The blueprint is waiting for a decision.'
+        last = last_shared('Then, the blueprint was waiting for a decision.', hours=1)
+        says = their_says('Pat', last)
+        known = 'Last shared 1 hour ago. ' + last['says'] + ' ' + MOVED_ON
         took = 'Pat runs it from another computer, and took it 3 hours ago.'
         question = {'id': 'q1', 'text': 'Which platform version?', 'from': 'The research'}
         gate = {'path': str(self.root), 'artifact': 'blueprint'}
         answers = self.answers(**{
-            'GET /api/trainings': [self.driven('waiting', says, pat)],
-            'GET /api/training': [self.detail('waiting', says)],
-            'GET /api/run': [a_team_run('waiting', says, pat, False, question=question,
-                                        steps=steps(*['done'] * 6, 'waiting'))],
+            'GET /api/trainings': [self.driven('elsewhere', says, pat, last=last)],
+            'GET /api/training': [self.shown('elsewhere', says, pat, last=last)],
+            'GET /api/run': [a_team_run('elsewhere', says, pat, False, question=question,
+                                        last_shared=last,
+                                        steps=steps(*['done'] * 6, 'to-do'))],
             'GET /api/gate': [self.read('gate', **gate)]})
         result = self.run_page(answers, [
             {'snapshot': 'home'},
@@ -4509,9 +4576,12 @@ class TeamScreenTests(ScriptedPage, PageCase):
                          ('Training Studio', '', ['New training']))
         self.assertRegex(home['text'], r'Nothing needs you right now\.')
         self.assertNotIn('Needs you', home['text'])
-        for shown in ('Run by your teammates', took,
-                      'The blueprint is waiting for Pat’s review.'):
+        for shown in ('Run by your teammates', took, known):
             self.assertIn(shown, home['text'])
+        # Nothing here knows what Pat's computer is doing now, so nothing says it does.
+        for name in ('home', 'run', 'training', 'trainings'):
+            for absent in ('Working on its own', 'Waiting for you', 'In progress'):
+                self.assertNotIn(absent, shots[name]['text'], name)
         self.assertIn('Open Rolling restarts, which Pat runs', home['buttons'])
         self.assertEqual(result['notifications'], [])
 
@@ -4519,7 +4589,8 @@ class TeamScreenTests(ScriptedPage, PageCase):
         run = shots['run']
         self.assertEqual((run['heading'], run['filled'], run['fields']),
                          ('Rolling restarts', [], {}))
-        for shown in ('Run by Pat', 'Pat is running this training', took, READ_ONLY,
+        for shown in ('Run by Pat', 'Run from another computer', says,
+                      'Pat is running this training', took, known, READ_ONLY,
                       'Steps', 'Your review of the blueprint', 'Made so far',
                       'A question is waiting', 'The research asks:', 'Which platform version?',
                       'Only Pat can answer it, on the computer that runs this training.'):
@@ -4549,9 +4620,8 @@ class TeamScreenTests(ScriptedPage, PageCase):
         for absent in ('Copy the folder', 'Review the blueprint', 'Run this from here'):
             self.assertNotIn(absent, detail['buttons'])
         self.assertIn('Read the blueprint', detail['buttons'])
-        for shown in ('Waiting for Pat', took):
+        for shown in ('Run by Pat', took, known):
             self.assertIn(shown, shots['trainings']['text'])
-        self.assertNotIn('Waiting for you', shots['trainings']['text'])
         # It is decided where it runs, so Settings offers no choice about it.
         self.assertIn('Every training here is run by a teammate, and is decided where it '
                       'runs.', shots['settings']['text'])
@@ -4560,12 +4630,14 @@ class TeamScreenTests(ScriptedPage, PageCase):
     def test_what_a_teammates_deck_says_is_read_and_has_nothing_to_decide(self):
         self.started()
         pat = a_driver('Pat', False, hours=3)
-        says = 'What the deck says is waiting for a decision.'
+        last = last_shared('Then, what the deck says was waiting for a decision.', hours=2)
+        says = their_says('Pat', last)
         answers = self.answers(**{
-            'GET /api/trainings': [self.driven('waiting', says, pat)],
-            'GET /api/training': [self.detail('waiting', says)],
-            'GET /api/run': [a_team_run('waiting', says, pat, False, outline=an_outline(),
-                                        steps=deck_steps('done', 'done', 'waiting'))]})
+            'GET /api/trainings': [self.driven('elsewhere', says, pat, last=last)],
+            'GET /api/training': [self.shown('elsewhere', says, pat, last=last)],
+            'GET /api/run': [a_team_run('elsewhere', says, pat, False, outline=an_outline(),
+                                        last_shared=last,
+                                        steps=deck_steps('done', 'done', 'to-do'))]})
         result = self.run_page(answers, [
             {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
             {'click': 'Read what the deck says'}, {'snapshot': 'outline'},
@@ -4587,13 +4659,16 @@ class TeamScreenTests(ScriptedPage, PageCase):
         pat, here = a_driver('Pat', False, days=2), a_driver('Dana', True, minutes=0)
         going = 'Doing the research.'
         doing = steps('done', 'done', 'done', 'working')
-        theirs = a_team_run('working', going, pat, False, steps=doing)
+        last = last_shared('Then, the next step was to do the research.', hours=5)
+        theirs = a_team_run('elsewhere', their_says('Pat', last), pat, False, last_shared=last,
+                            steps=steps('done', 'done', 'done', 'to-do'))
         mine = a_team_run('working', going, here, True, steps=doing)
         free = a_team_run('stopped', 'Stopped at the research.', None, False,
                           steps=steps('done', 'done', 'done', 'to-do'))
         gone = 'Pat handed this training over a moment ago. Open it again to see who has it.'
         answers = self.answers(**{
-            'GET /api/trainings': [self.driven('working', going, pat),
+            'GET /api/trainings': [self.driven('elsewhere', their_says('Pat', last), pat,
+                                               last=last),
                                    self.driven('working', going, here),
                                    self.driven('stopped', 'Stopped at the research.', None),
                                    self.driven('working', going, here)],
@@ -4668,16 +4743,20 @@ class TeamScreenTests(ScriptedPage, PageCase):
     def test_a_training_taken_from_this_computer_says_who_took_it_and_what_was_kept(self):
         self.started()
         here, pat = a_driver('Dana', True, days=1), a_driver('Pat', False, minutes=2)
-        going, ended = 'Doing the research.', 'Pat took this training over.'
+        going = 'Doing the research.'
         has = 'Pat has this training, since a moment ago.'
+        last = last_shared('Then, the next step was to do the research.', minutes=2)
+        ended, took = their_says('Pat', last), TOOK.format(day=day(pat['since']))
+        taken = {'by': 'Pat', 'at': pat['since'], 'kept': KEPT}
         doing = steps('done', 'done', 'done', 'working')
+        gone = a_team_run('elsewhere', ended, pat, False, notice=took, taken=taken,
+                          last_shared=last, kept=[KEPT],
+                          steps=steps('done', 'done', 'done', 'to-do'))
+        theirs = self.driven('elsewhere', ended, pat, notice=took, last=last)
         answers = self.answers(**{
-            'GET /api/trainings': [self.driven('working', going, here),
-                                   self.driven('stopped', ended, pat)],
+            'GET /api/trainings': [self.driven('working', going, here), theirs],
             'GET /api/training': [self.detail('working', going)],
-            'GET /api/run': [a_team_run('working', going, here, True, steps=doing),
-                             a_team_run('stopped', ended, pat, False,
-                                        steps=steps('done', 'done', 'done', 'to-do'))],
+            'GET /api/run': [a_team_run('working', going, here, True, steps=doing), gone],
             'POST /api/run': [refused(has)]})
         result = self.run_page(answers, [
             {'snapshot': 'home'},
@@ -4689,20 +4768,166 @@ class TeamScreenTests(ScriptedPage, PageCase):
         self.assertIn('This computer runs it, and took it 1 day ago.', shots['home']['text'])
         self.assertNotIn('Run by your teammates', shots['home']['text'])
         self.assertIn('Pause', shots['mine']['buttons'])
-        # The change is refused with who has it; then the run says who took it, when, and
-        # what was kept, and has nothing left to press but the way to take it back.
+
+        # The change is refused with who has it. Then the run says, in the runner's own
+        # sentence, who took it, when, that this computer stopped, and that what it had
+        # not shared is kept and can be brought back. Where git keeps it is a detail.
+        detail = ('A detail for whoever brings it back: it is in this computer’s copy of the '
+                  f"workspace ({WORKSPACE['path']}), where git keeps it under the name {KEPT}. "
+                  'It is on this computer only, and is never sent to your team.')
+
+        def says_so(shot: dict) -> None:
+            text = shot['text'].replace('\n', '')
+            for shown in ('Pat took this training over', took, detail,
+                          'Pat runs it from another computer, and took it 2 minutes ago.',
+                          'Last shared 2 minutes ago. ' + last['says'] + ' ' + MOVED_ON,
+                          READ_ONLY):
+                self.assertIn(shown, text)
+            self.assertLess(text.index(took), text.index(detail))
+            self.assertNotIn('refs/', took, 'the sentence a person reads names no git name')
+            for absent in ('Pause', 'Stop', 'Resume', 'Hand over'):
+                self.assertNotIn(absent, shot['buttons'])
+            self.assertIn('Take it over', shot['buttons'])
+            self.assertEqual(shot['filled'], [])
+
+        says_so(shots['taken'])
+        self.assertIn(has + ' Nothing was changed.', shots['taken']['text'])
+        # It is told once, as it is learnt, in the runner's words.
+        self.assertEqual([toast for toast in shots['taken']['toasts'] if 'took' in toast],
+                         ['Rolling restarts: ' + took])
+        self.assertEqual(shots['taken']['focus'], 'title')
+
+        # None of that is remembered by the page. Opened afresh, as after a reload, the
+        # list and the run still say it, because the runner does.
+        answers = self.answers(**{
+            'GET /api/trainings': [theirs],
+            'GET /api/training': [self.shown('elsewhere', ended, pat, notice=took, last=last)],
+            'GET /api/run': [gone]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'click': 'Trainings'}, {'snapshot': 'trainings'},
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'run'}, {'poll': True},
+            {'snapshot': 'later'},
+        ])
+        shots = result['snapshots']
+        for name in ('home', 'trainings'):
+            self.assertIn(took, shots[name]['text'], name)
+        says_so(shots['run'])
+        says_so(shots['later'])
+        self.assertEqual(shots['later']['toasts'], [], 'what was already so is not announced')
+        self.assertEqual(self.posts(result), [])
+
+    def test_a_training_changed_on_two_computers_is_put_right_from_its_run(self):
+        self.started()
+        here = a_driver('Dana', True, days=1)
+        broken = ('"Rolling restarts" was changed on this computer and on another at the same '
+                  'time, so nothing here can be shared. One side must take it over. Taking '
+                  'it over here carries on from the shared version; what this computer made '
+                  'and never shared is set aside and kept.')
+        carried = ('This training carries on from the shared version. What this computer had '
+                   'made and not yet shared is kept on this computer, and can be brought back.')
+        waits = 'The research plan is waiting for your review.'
+        stuck = {**SET_UP, 'workspace': {**WORKSPACE, 'shared': False, 'notice': broken}}
+        clashed = a_team_run('waiting', waits, here, True, notice=broken, clash=True,
+                             steps=steps('done', 'waiting'))
+        answers = self.answers(**{
+            'GET /api/setup': [ok(stuck), ok(stuck), ok(SET_UP)],
+            'GET /api/trainings': [self.driven('waiting', waits, here, notice=broken),
+                                   self.driven('waiting', waits, here, notice=broken),
+                                   self.driven('waiting', waits, here)],
+            'GET /api/training': [self.detail('waiting', waits)],
+            'GET /api/run': [clashed,
+                             a_team_run('waiting', waits, here, True, kept=[KEPT],
+                                        steps=steps('done', 'waiting'))],
+            'POST /api/drive': [a_team_run('waiting', waits, here, True, notice=carried,
+                                           kept=[KEPT], steps=steps('done', 'waiting'))]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'click': 'Settings'}, {'snapshot': 'settings'},
+            {'click': 'Trainings'}, {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
+            {'click': 'Carry on from the shared version'}, {'snapshot': 'asked'},
+            {'click': 'Carry on from it'}, {'snapshot': 'carried'},
+            {'poll': True}, {'snapshot': 'after'},
+        ])
+        shots = result['snapshots']
+        # The broken rule is said where the workspace is shown, on Home and in Settings,
+        # and on the training's own row.
+        for name in ('home', 'settings'):
+            self.assertIn('Not shared with your team yet. ' + broken, shots[name]['text'], name)
+        self.assertEqual(shots['home']['text'].count(broken), 2, 'the row says which training')
+        run = shots['run']
+        for shown in ('Changed on two computers at once', broken):
+            self.assertIn(shown, run['text'])
+        self.assertEqual(run['filled'], [], 'it can still be worked on, so nothing is urged')
+        asked = shots['asked']
+        for shown in ('Carry on with Rolling restarts from the shared version?',
+                      'What this computer made and never shared is set aside. It is kept on '
+                      'this computer and can be brought back; nothing is deleted.'):
+            self.assertIn(shown, asked['sheet'])
+        self.assertEqual((asked['filled'], asked['posts']), (['Carry on from it'], 0))
+        self.assertEqual(self.posts(result),
+                         [('/api/drive', {'path': str(self.root), 'action': 'take'})])
+        # That it was done, and that what was set aside is kept, is told once. Where it is
+        # kept stays on the run for as long as the runner says it is.
+        self.assertIn(carried, shots['carried']['toasts'])
+        self.assertNotIn('Carry on from the shared version', shots['carried']['buttons'])
+        later = shots['after']
+        self.assertNotIn('Changed on two computers', later['text'])
+        for shown in ('Some of what this computer made for this training was set aside',
+                      'It is kept on this computer, and can be brought back.',
+                      'where git keeps it under the name ' + KEPT):
+            self.assertIn(shown, later['text'])
+
+    def test_a_finished_training_nobody_runs_is_published_and_is_taken_to_change_it(self):
+        self.started()
+        over = 'Finished, but not ready to use: 1 thing is in the way.'
+        blocking = ['The brief is not approved yet. Open it from the training and decide.']
+        made = [a_copy('document', 'the learner guide', 'google', 'out-of-date')]
+        done = a_team_run('done', over, None, False, steps=steps(*['done'] * 7), copies=made,
+                          finished={'ready': False, 'limitations': [], 'blocking': blocking,
+                                    'index': 'README.md'})
+        here = a_driver('Dana', True, minutes=0)
+        mine = a_team_run('done', over, here, True, copies=made, steps=steps(*['done'] * 7),
+                          finished=done['body']['finished'])
+        answers = self.answers(**{
+            'GET /api/trainings': [self.driven('done', over, None)],
+            'GET /api/training': [self.shown('done', over, None)],
+            'POST /api/publish': [ok({'revision': 1, 'ready': False, 'shared': True,
+                                      'notice': None})],
+            'POST /api/drive': [mine],
+            # Read on opening, after publishing, and after taking it.
+            'GET /api/run': [done, done, mine]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'finished'},
+            {'click': 'Publish'}, {'click': 'Publish it'}, {'snapshot': 'published'},
+            {'click': 'Take it'}, {'snapshot': 'asked'},
+            {'click': 'Take it'}, {'snapshot': 'taken'},
+        ])
+        shots = result['snapshots']
+        # Nobody runs a finished training. Publishing changes nothing in it, so it is
+        # offered as it is; everything that would be refused is not offered, and the way
+        # to make it this computer's is.
+        free = shots['finished']
+        for shown in ('Finished', 'Publish it', 'Nobody is running this training',
+                      'It is finished, so no computer runs it. It can be read, and published '
+                      'as it stands, from any computer on your team.',
+                      'To change anything in it, such as a decision that is in the way or a '
+                      'copy to make again, take it first.'):
+            self.assertIn(shown, free['text'])
+        for offered in ('Publish', 'Take it', 'See what is in the way'):
+            self.assertIn(offered, free['buttons'])
+        for absent in ('Pause', 'Stop', 'Resume', 'Hand over', 'Take it over',
+                       'Try the copies again'):
+            self.assertNotIn(absent, free['buttons'])
+        self.assertIn('Published as revision 1.', shots['published']['text'])
+        self.assertIn('Take Rolling restarts?', shots['asked']['sheet'])
+        self.assertIn('It is finished, so nothing more is made until you change something.',
+                      shots['asked']['sheet'])
+        self.assertEqual(self.posts(result), [
+            ('/api/publish', {'path': str(self.root)}),
+            ('/api/drive', {'path': str(self.root), 'action': 'take'})])
         taken = shots['taken']
-        for shown in (has + ' Nothing was changed.', 'Pat took this training over',
-                      'Pat runs it from another computer, and took it 2 minutes ago.',
-                      'What was kept: everything this computer had made up to then. It has '
-                      'stopped working on this training, and nothing was deleted.', READ_ONLY):
-            self.assertIn(shown, taken['text'])
-        self.assertIn('Pat took Rolling restarts over. This computer has stopped working on '
-                      'it, and kept what it had.', taken['toasts'])
-        for absent in ('Pause', 'Stop', 'Resume', 'Hand over'):
-            self.assertNotIn(absent, taken['buttons'])
-        self.assertIn('Take it over', taken['buttons'])
-        self.assertEqual((taken['filled'], taken['focus']), ([], 'title'))
+        self.assertNotIn('Nobody is running this training', taken['text'])
+        for offered in ('Publish again', 'Hand over', 'Try the copies again'):
+            self.assertIn(offered, taken['buttons'])
 
     def test_a_training_waiting_its_turn_says_how_many_are_ahead(self):
         self.started()
@@ -4743,59 +4968,98 @@ class TeamScreenTests(ScriptedPage, PageCase):
         going = 'Doing the research.'
         theirs = '/Users/pat/Library/Training Studio/workspace/trainings/blue-green'
         second = '/Users/pat/Library/Training Studio/workspace/trainings/canaries'
+        third = '/Users/pat/Library/Training Studio/workspace/trainings/failover'
+        asks, last = 'A question is waiting for you: Which platform version?', last_shared(
+            'Then, the blueprint was waiting for a decision.', hours=2)
+        broken = ('"Canary releases" was changed on this computer and on another at the same '
+                  'time, so nothing here can be shared. One side must take it over.')
+        pat = a_driver('Pat', False, hours=3)
         found = ok({
+            'limit': 2,
             'runs': [
                 {'path': str(self.root), 'id': 'rolling-restarts', 'title': 'Rolling restarts',
-                 'state': 'working', 'sentence': going, 'queue': None,
-                 'spent': {'dollars': 1.25, 'tokens': 48000},
+                 'state': 'working', 'sentence': going, 'queue': None, 'needs': False,
+                 'spent': {'dollars': 1.25, 'tokens': 48000}, 'notice': None,
                  'driver': a_driver('Dana', True, hours=1)},
                 {'path': second, 'id': 'canaries', 'title': 'Canary releases',
-                 'state': 'working', 'sentence': 'Waiting for its turn.',
+                 'state': 'working', 'sentence': 'Waiting for its turn.', 'needs': False,
                  'queue': {'ahead': 1}, 'spent': {'dollars': None, 'tokens': 5200},
-                 'driver': a_driver('Dana', True, minutes=5)}],
+                 'notice': broken, 'driver': a_driver('Dana', True, minutes=5)},
+                {'path': third, 'id': 'failover', 'title': 'Failover drills',
+                 'state': 'waiting', 'sentence': asks, 'needs': True, 'queue': None,
+                 'spent': {'dollars': 0.4, 'tokens': 9000}, 'notice': None,
+                 'driver': a_driver('Dana', True, hours=6)}],
             'elsewhere': [
                 {'path': theirs, 'id': 'blue-green', 'title': 'Blue-green deploys',
-                 'state': 'waiting', 'sentence': 'The blueprint is waiting for a decision.',
-                 'driver': a_driver('Pat', False, hours=3)}]})
+                 'state': 'elsewhere', 'sentence': their_says('Pat', last),
+                 'driver': pat, 'last_shared': last, 'notice': None}]})
+        fetched = [ok({'reached': True, 'received': 3, 'notice': None}),
+                   ok({'reached': True, 'received': 0, 'notice': None}),
+                   ok({'reached': False, 'received': 0,
+                       'notice': 'The shared repository could not be reached (timed out).'}),
+                   refused('A step is being saved.')]
         answers = self.answers(**{
             'GET /api/trainings': [self.driven('working', going, a_driver('Dana', True,
                                                                           hours=1))],
             'GET /api/status': [found],
-            'GET /api/run': [a_team_run('waiting', 'The blueprint is waiting for a decision.',
-                                        a_driver('Pat', False, hours=3), False)]})
+            'POST /api/fetch': fetched,
+            'GET /api/run': [a_team_run('elsewhere', their_says('Pat', last), pat, False,
+                                        last_shared=last)]})
+        look = 'Look now for what your teammates shared'
         result = self.run_page(answers, [
             {'click': 'Status'}, {'snapshot': 'status'}, {'poll': True},
+            {'click': look}, {'snapshot': 'brought'}, {'click': look}, {'snapshot': 'nothing'},
+            {'click': look}, {'snapshot': 'unreached'}, {'click': look}, {'snapshot': 'no'},
             {'click': 'Open Blue-green deploys, to read it'}, {'snapshot': 'theirs'},
         ])
         shots = result['snapshots']
         status = shots['status']
         text = status['text'].replace('\n', '')
-        for shown in ('Running on this computer', 'Rolling restartsWorking on its own' + going
+        for shown in ('Running on this computer', 'Up to 2 trainings work at once on this '
+                      'computer. Any more wait their turn.',
+                      'Rolling restartsWorking on its own' + going
                       + '$1.25', 'Canary releasesWaiting its turnWaiting for its turn.'
                       'It is waiting its turn: 1 training is ahead of it.',
-                      '5,200 tokens', 'Run by your teammates',
+                      'when its turn comes.' + broken + '5,200 tokens', 'Failover drillsWaiting for youIt needs you.' + asks,
+                      'Run by your teammates',
                       'Blue-green deploysPat runs it from another computer, and took it '
-                      '3 hours ago.The blueprint is waiting for a decision.',
+                      '3 hours ago.Last shared 2 hours ago. Then, the blueprint was waiting '
+                      'for a decision. ' + MOVED_ON,
                       'Each can be opened and read here. Only the computer that runs a '
-                      'training can change it.'):
+                      'training can change it.',
+                      'What your teammates share is looked for every few minutes.'):
             self.assertIn(shown, text)
+        self.assertEqual(text.count('It needs you.'), 1)
+        # Looking for teammates' work now says, in a sentence, what came back.
+        for name, said in (
+                ('brought', 'Brought in 3 changes your team shared.'),
+                ('nothing', 'Nothing new from your team since the last look.'),
+                ('unreached', 'Nothing new could be brought in. The shared repository could '
+                              'not be reached (timed out).'),
+                ('no', 'A step is being saved. Nothing was changed.')):
+            self.assertIn(said, shots[name]['text'], name)
+            self.assertEqual(shots[name]['focus'], look, name)
+        self.assertEqual(self.posts(result), [('/api/fetch', {})] * 4)
         # This computer's own are first, the team's apart, and the check stays where it was.
         self.assertLess(text.index('Running on this computer'),
                         text.index('Run by your teammates'))
         self.assertLess(text.index('Run by your teammates'),
                         text.index('See whether this computer has what a training needs'))
         self.assertEqual(status['filled'], ['Check this computer'])
-        self.assertEqual(self.asked(result, 'status'), ['/api/status', '/api/status'])
+        self.assertEqual(self.asked(result, 'status')[:2], ['/api/status', '/api/status'])
         self.assertEqual((shots['theirs']['heading'], shots['theirs']['filled']),
                          ('Untitled', []))
         self.assertIn('Pat is running this training', shots['theirs']['text'])
         self.assertEqual(self.asked(result, 'run'), [f'/api/run?{urlencode({"path": theirs})}'])
 
         # A team with nothing running says so, and never leaves a gap.
-        answers = self.answers(**{'GET /api/status': [ok({'runs': [], 'elsewhere': []})]})
+        answers = self.answers(**{'GET /api/status': [ok({'limit': 1, 'runs': [],
+                                                          'elsewhere': []})]})
         result = self.run_page(answers, [{'click': 'Status'}, {'snapshot': 'quiet'}])
         for shown in ('Nothing is running on this computer right now.',
-                      'No teammate is running a training right now.'):
+                      'Up to 1 training works at once on this computer.',
+                      'No teammate is running a training right now, as far as this computer '
+                      'has been told.'):
             self.assertIn(shown, result['snapshots']['quiet']['text'])
 
     def test_the_computers_own_notification_is_switched_in_settings(self):
@@ -4869,9 +5133,11 @@ class TeamScreenTests(ScriptedPage, PageCase):
         other = '/Users/pat/Library/Training Studio/workspace/trainings/blue-green'
         entries = [
             {'path': str(self.root), 'id': 'rolling-restarts', 'title': 'Rolling restarts',
-             'revision': 3, 'at': earlier(minutes=0), 'by': 'Dana', 'ready': False},
+             'revision': 3, 'at': earlier(minutes=0), 'by': 'Dana', 'ready': False,
+             'current': True},
             {'path': other, 'id': 'blue-green', 'title': 'Blue-green deploys',
-             'revision': 1, 'at': earlier(days=4), 'by': 'Pat', 'ready': True}]
+             'revision': 1, 'at': earlier(days=4), 'by': 'Pat', 'ready': True,
+             'current': False}]
         for entry in entries:
             self.assertEqual(set(entry), PUBLISHED_FIELDS)
         index = '# Rolling restarts\n\n## Who it is for\n\nPlatform engineers new to it.\n'
@@ -4936,8 +5202,13 @@ class TeamScreenTests(ScriptedPage, PageCase):
                       'Rolling restartsRevision 3, published just now by Dana.'
                       'Not ready to use when it was published',
                       'Blue-green deploysRevision 1, published 4 days ago by Pat.'
-                      'Ready to use when it was published'):
+                      'Ready to use when it was published'
+                      # Its index is the training as it is here now, which is said.
+                      'It has changed on this computer since revision 1 was published, so '
+                      'the index here is the training as it stands now, not as it was '
+                      'published. Publish it again to make that the next revision.'):
             self.assertIn(shown, text)
+        self.assertEqual(text.count('It has changed on this computer since'), 1)
         for offered in ('Open the index of Rolling restarts',
                         'Open the index of Blue-green deploys', 'Back'):
             self.assertIn(offered, listing['buttons'])
@@ -5075,7 +5346,7 @@ class TeamScreenTests(ScriptedPage, PageCase):
         said = 'The blueprint is waiting for your review.'
         local = {**SET_UP, 'workspace': {**WORKSPACE, 'repository': None, 'shared': False}}
         folder = self.answers(local, **{
-            'GET /api/trainings': [self.driven('waiting', said, None)],
+            'GET /api/trainings': [self.driven('waiting', said, None, mine=True)],
             'GET /api/training': [self.detail('waiting', said)],
             'GET /api/run': [a_team_run('waiting', said, None, True,
                                         steps=steps(*['done'] * 6, 'waiting'))]})

@@ -16,11 +16,16 @@ What a caller needs to know
   the decision about what a deck says, a slide's picture, who drives a training, the
   status of every run, publishing, and bringing a training in.
 - A training in a shared workspace is run from one computer. List items and `GET /api/run`
-  carry `driver`: null when nobody drives it, else {"name", "here", "since"}. A run also
-  carries `mine`, whether this computer may change it; `queue`, {"ahead": n} while it
-  waits its turn; `taken`, {"by", "at", "kept"} for one that was taken from this computer,
-  until it is taken back; and `notice`, a sentence saying that, or that the training was
-  changed on two computers at once. Every address that changes a training someone else drives, or
+  carry `driver`: null when nobody drives it, else {"name", "here", "since"}; `mine`,
+  whether this computer may change it (null in a list for a training no run drives);
+  `notice`, a sentence saying that it was taken from this computer and that what this
+  computer had not shared is kept here, or that the training was changed on two computers
+  at once; and `last_shared`, {"at", "by", "says"} for a training someone else drives,
+  whose state is `elsewhere`: only what was last shared is known here. A run also carries
+  `queue`, {"ahead": n} while it waits its turn; `taken`, {"by", "at", "kept"} for one
+  that was taken from this computer, until it is taken back; `kept`, the names git
+  keeps under, in this computer's copy, whatever this computer set aside of the
+  training; and `clash`, true while it stands changed on two computers. Every address that changes a training someone else drives, or
   nobody does, answers 409 with who has it: a decision, a move of its decisions, a run's
   actions, an answer, its documents, its copies, and what its deck says. A training
   driven elsewhere never counts as needing the person here.
@@ -29,7 +34,8 @@ What a caller needs to know
   in what teammates shared and sends nothing: {"reached", "received", "notice"}.
 - `GET /api/status` answers {"limit", "runs", "elsewhere"}: each run on this computer as
   {"path", "id", "title", "state", "sentence", "driver", "needs", "queue", "spent",
-  "notice"}, and each training a teammate drives as the first six of those.
+  "notice"}, and each training a teammate drives as the first six of those with
+  `last_shared` and `notice`. `limit` is how many trainings work at once.
 - `POST /api/publish` with {"path"} answers {"revision", "ready", "shared", "notice"}.
   `GET /api/published` answers {"published": [{"path", "id", "title", "revision", "at",
   "by", "ready", "current"}]}, each training's latest revision; `current` is false when
@@ -63,7 +69,9 @@ What a caller needs to know
   is 400, a training this computer does not know is 403, a training no run is driving is
   404, and something that cannot be done as things stand is 409.
 - The desk's lists gain `run`, and a training whose run has a question or a problem
-  counts as needing the person. A decision made through the desk's own `decide` is
+  counts as needing the person. One that someone else drives, or nobody does, never
+  does: it is `in-progress` here, and keeps `waiting` only so that what was waiting when
+  it was last shared can be read. A decision made through the desk's own `decide` is
   committed and wakes that training's run, and what the page is told then says what the
   runner does next, not what an assistant in a conversation would.
 - Reading never starts or wakes a run: `GET /api/run` can be asked for as often as the
@@ -265,12 +273,16 @@ class RunnerPage(desk.Page):
         found = self.engine.brief(item['path'])
         item['run'] = found and {'state': found['state'], 'sentence': found['sentence']}
         item['driver'] = found and found['driver']
+        item['mine'] = None if found is None else found['mine']
+        item['notice'] = found and found['notice']
+        item['last_shared'] = found and found['last_shared']
         if found is None or 'error' in item:
             return item
         if not found['mine']:   # it waits for whoever drives it, not for the person here
             if item.get('state') == 'needs-you' or (item.get('state') == 'in-progress'
                                                     and found['state'] != 'done'):
-                item.update(state='in-progress', sentence=found['sentence'], waiting=None)
+                # What was waiting when it was last shared is kept, to be read.
+                item.update(state='in-progress', sentence=found['sentence'])
         elif found['needs'] and item.get('state') != 'needs-you':
             item.update(state='needs-you', sentence=found['sentence'],
                         waiting={'artifact': None, 'label': None,

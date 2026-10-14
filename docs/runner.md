@@ -87,7 +87,7 @@ On a computer that cannot make a deck, everything else is made and the run says 
 
 **Copies.** A Google Doc is made with the Google access this computer already has, and a Word file with `pandoc` when it is installed. A copy that cannot be made never stops the run: the run shows which, and why, and offers to try again.
 
-You can close the page while it works. Home, and the browser if you turned notifications on, say when something needs you.
+You can close the page while it works. Home, and the browser if you turned notifications on, say when something needs you. With the page closed altogether, this computer can tell you itself: see [When the page is closed](#when-the-page-is-closed).
 
 ## Your own documents
 
@@ -108,6 +108,50 @@ A training's run shows every step, how long each took and what it cost, and what
 
 A training that has spent what it may stops and asks before it spends more. Claude Code says what each step cost. Codex reports tokens and not dollars, so the money limit cannot stop it: the page says so, and the limit on time still applies.
 
+## With a team
+
+When your trainings are kept in a repository your team shares, several people can work in the same workspace. One rule keeps them from treading on each other: **each training is run from one computer at a time.** None of this applies to a folder on one computer, where nothing changes.
+
+**Who runs a training.** Starting a training makes it yours: your name and this computer are recorded in it, and that is shared before any work is done. If a teammate started one with the same name at the same moment, the first to be shared stands and the other is told.
+
+On every other computer the training is listed apart, under "Run by your teammates", with who runs it and since when. It can be opened and read there: the steps, the files, the reviews. Nothing there can pause it, stop it, decide a gate or answer a question.
+
+A computer knows only what was last shared about a teammate's training. So the page does not say it is working or waiting. It says when it was last shared, where it stood then, and that it may have moved on since.
+
+**Taking over.** "Take it over" on a teammate's training makes it yours. The page first says whose it is, since when, and that their runner will stop working on it. Their runner learns of it the next time it shares or looks for teammates' work. It stops that training and says who took it and when. Anything it had made and not yet shared is kept on that computer, out of the way, and can be brought back with git; the page says where. If someone else took the training since you last looked, the page says who has it now and asks again.
+
+**Handing over.** "Hand over" lets go of a training, so that anyone on your team may take it. Until someone does, nothing more happens to it. A finished training is handed over by itself: nobody runs it. It can be read and published from any computer, and "Take it" makes it yours again when something in it should change.
+
+A runner that is closed still holds its trainings. Nothing passes to someone else on its own: a person takes over when they mean to.
+
+**If the rule is broken.** If the same training is changed on two computers anyway, for instance by hand, sharing stops and nothing is overwritten. Home, Settings and the training's own run say which training it is. "Carry on from the shared version" puts it right on one side: what that computer made and never shared is set aside and kept, and the training carries on from what the team has.
+
+**Staying in step.** The runner looks for what teammates shared when it starts, every few minutes while it is open, and when you press "Look now". Looking never changes a training this computer runs. Sharing after each decision, or only when you ask, is as you set it. Starting, taking and handing over a training are always shared at once, and anything not yet shared goes with them.
+
+**Several at once.** Settings says how many trainings may work at once on this computer. One that waits says how many are ahead of it, and they take turns in the order they became ready. The Status screen shows every run on this computer with what it is doing and what it has cost, and your teammates' trainings apart.
+
+### When the page is closed
+
+In Settings, "Tell me when no page is open" lets this computer notify you through its own notifications when a training needs your decision and no page is open. It is off until you turn it on. It says the training's title and that it needs a decision, once for each thing. It says nothing about a training you paused or stopped yourself, or one a teammate runs. Where the computer has no way to notify, the setting says so and stays off.
+
+### Publishing
+
+A finished training has a "Publish" button. Publishing marks the training, exactly as it stands, as its next numbered revision in the workspace. Nothing is copied and no second repository is used. A revision is never moved afterwards: publish again, and that is the next one.
+
+A training that is not ready can still be published, and the revision says that it was not. Documents you supplied and saved pages are not part of a revision, because the workspace never shares them.
+
+"Published", on the Trainings screen, lists each training at its latest revision: when, by whom, whether it was ready, and its index to read. Where a training has changed on this computer since, the list says so, because the index it opens is the training as it stands now.
+
+Published while your team's repository cannot be reached, a revision is kept on this computer and goes with the next share.
+
+This is separate from the older [team hub](team-hub.md), which is used from a conversation and is unchanged.
+
+### Bringing a training in
+
+A training you started in a conversation lives in a folder of its own. Open it on the page and press "Run this from here". It is copied into the workspace as a new training, named from its title. The copy's decisions are made on the page, and it carries on from wherever the training had got to, including a gate that was waiting.
+
+The original folder is left exactly as it was, with nothing deleted. From then on the copy is the one to work on, and the page says where both are. It is refused, with the reason, when the workspace already has a training of that name, when the training's record cannot be read, or when the folder holds something a workspace does not take.
+
 ## What the runner guarantees
 
 - **Only you approve.** A training the runner drives is decided on the page, and nowhere else. The runner has no way to approve a draft, and neither has an agent.
@@ -122,8 +166,9 @@ A training that has spent what it may stops and asks before it spends more. Clau
 - The brand's own check warns on every slide with a caveat or a source line, because those lines are set smaller than the check allows. The warning is shown at the deck's gate. It is not something the runner can put right.
 - A deck is drawn in the default look. Choosing between looks, editing a deck by hand and bringing the edits back, and pictures made by a model are not in the runner.
 - What a deck is built from stays on the computer that built it and is not shared: the drawings, the previews and the pictures. Your team gets the deck, what it says, and what its gate showed. On another computer the deck's gate shows no pictures.
-- Bringing edits back from a Google Doc, and publishing to a team hub, are not in the runner yet.
-- A training made in a conversation is not picked up by the runner, and a training the runner drives should not also be driven from a conversation while it runs.
+- Bringing edits back from a Google Doc, and reusing a teammate's scenarios or audiences in a new training, are not in the runner yet. The [team hub](team-hub.md) does the second from a conversation.
+- A training made in a conversation is not picked up by the runner until you bring it in, and a training the runner drives should not also be driven from a conversation while it runs.
+- Working as a team has been tried with two people's data on one computer against one repository. Two real computers, and a teammate installing it for the first time, have not been tried yet.
 - `sh ~/.local/share/training-studio/studio status` prints what is set up and where every run is, as JSON. From a copy of the repository it is `python3 runner/studio.py status`.
 
-The design is in [the runner's specification](superpowers/specs/2026-10-13-studio-runner-design.md).
+The design is in [the runner's specification](superpowers/specs/2026-10-13-studio-runner-design.md). Working as a team is specified in [milestone 5](superpowers/specs/2026-10-13-milestone-5-team.md).

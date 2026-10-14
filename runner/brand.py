@@ -32,6 +32,9 @@ Added to the above
 ------------------
 - `found()` returns [{'name', 'runtime', 'brands'}], `runtime` being the skill's folder as
   text, with links followed. Give one to `Brand(runtime=...)` to use that skill.
+- `found(home=...)` and `locations(home)` look in that folder in place of the person's
+  home folder, which is how the installer asks about the home it installs into. The
+  override, when set, is still the only place looked.
 - Every brand `brands()` lists has at least one variant. `export` and `audit` take None
   for the variant all the same, and then leave the choice to the skill.
 - `brand.runtime` is the folder of the skill a Brand uses. Give it to `Brand(runtime=...)`
