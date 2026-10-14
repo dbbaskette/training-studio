@@ -753,6 +753,28 @@ class SlowRemoteTests(Team):
                 self.assertFalse(behind.is_alive())
         self.assertEqual(self.as_(self.alex, self.engine.share)['shared'], True)
 
+    def test_nothing_is_changed_on_the_page_until_the_first_look_after_starting(self):
+        root = self.started()
+        path, gate = str(root), workspace.status(root)['gate']
+        with self.be(self.alex):
+            self.engine.close()
+            self.alex.engine = self.make(background=True)
+        with self.be(self.alex), self.held_up('fetch') as (reached, go):
+            self.alex.engine.resume(wait=False)
+            self.assertTrue(reached.wait(30), 'the first look was never asked for')
+            seen = workspace.sha256_file(
+                root / workspace.artifact(root, workspace.load(root), gate)['file'])
+            for endpoint, sent in (
+                    ('decide', {'artifact': gate, 'decision': 'approve', 'seen': seen}),
+                    ('copies', {}), ('run', {'action': 'pause'})):
+                said = self.ask(self.alex, endpoint, {'path': path, **sent}, 409)['error']
+                self.assertEqual(said, engines.CHECKING, endpoint)
+            go.set()
+            for thread in threading.enumerate():
+                if thread.name == 'resuming':
+                    thread.join(30)
+        self.assertEqual(self.approve(self.alex, root, gate)['decided']['decision'], 'approve')
+
     def test_learning_who_drives_what_asks_git_once_for_every_training(self):
         mine = [self.started(), self.started(title='Health checks')]
         self.fetch(self.blake)

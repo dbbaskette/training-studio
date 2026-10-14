@@ -725,6 +725,23 @@ class SyncTests(WorkspaceCase):
         (self.base / 'unplugged.git').rename(self.remote)
         self.assertTrue(gitstate.sync(workspace)['shared'])
 
+    @unittest.skipIf(os.name == 'nt', 'an ssh on PATH is POSIX here')
+    def test_a_host_ssh_does_not_know_yet_says_how_to_trust_it(self):
+        workspace = self.join()
+        tools = self.base / 'bin'
+        tools.mkdir()
+        ssh = tools / 'ssh'
+        ssh.write_text('#!/bin/sh\necho "Host key verification failed." >&2\nexit 255\n')
+        ssh.chmod(0o755)
+        os.environ['PATH'] = f"{tools}{os.pathsep}{os.environ['PATH']}"
+        for name in ('GIT_SSH_COMMAND', 'GIT_SSH'):
+            os.environ.pop(name, None)
+        git(workspace.repo, 'remote', 'set-url', 'origin', 'ssh://example.invalid/team.git')
+        report = gitstate.sync(workspace)
+        self.assertEqual((report['shared'], report['reached']), (False, False))
+        self.assertIn('could not be reached', report['notice'])
+        self.assertTrue(report['notice'].endswith(gitstate.TRUST), report['notice'])
+
     def test_a_remote_that_refuses_keeps_the_work_here_and_says_so(self):
         workspace = self.join()
         hook = self.remote / 'hooks' / 'pre-receive'
@@ -768,7 +785,7 @@ class SyncTests(WorkspaceCase):
         gitstate.commit(alex, 'Alex: keep the intake')
         held, learned = Held(), []
         with asked(held) as ran:
-            report = gitstate.sync(alex, before=lambda: learned.append(held.depth), held=held)
+            report = gitstate.sync(alex, before=lambda at: learned.append(held.depth), held=held)
         self.assertEqual((report['shared'], report['received']), (True, 1))
         self.assertEqual(learned, [1], 'what came in is learned while the lock is held')
         holding = {}
@@ -779,6 +796,30 @@ class SyncTests(WorkspaceCase):
         self.assertEqual(holding['rev-list'], {True})
         self.assertEqual(held.depth, 0)
 
+    def test_what_is_replayed_on_is_what_was_learned_from_whatever_fetch_comes_between(self):
+        """Another share's fetch can move the remote's ref while this one holds the lock.
+        The replay stays on the commit `before` was shown, so nothing comes in unlearned."""
+        workspace = self.join()
+        gitstate.sync(workspace)
+        self.other_tool({'first.md': b'First.\n'}, 'First')
+        first = self.remote_head()
+        self.write(workspace, 'rolling-restarts/intake.md')
+        gitstate.commit(workspace, 'Keep the intake')
+        shown, second = [], []
+
+        def before(*at):
+            shown.append(at[0] if at else None)
+            if len(shown) == 1:   # meanwhile a teammate pushes, and another share fetches it
+                self.other_tool({'second.md': b'Second.\n'}, 'Second')
+                second.append(self.remote_head())
+                git(workspace.repo, 'fetch', '--quiet', 'origin')
+
+        report = gitstate.sync(workspace, before=before)
+        self.assertEqual((report['shared'], report['received']), (True, 2))
+        self.assertEqual(shown, [first, *second],
+                         'the second commit was learned from before it was replayed on')
+        self.assertEqual(git(workspace.repo, 'log', '-1', '--format=%s'), 'Keep the intake')
+
     def test_a_share_counts_the_commits_once_and_learns_only_when_something_came_in(self):
         workspace = self.join()
         gitstate.sync(workspace)
@@ -786,7 +827,7 @@ class SyncTests(WorkspaceCase):
         gitstate.commit(workspace, 'Keep the intake')
         learned = []
         with asked() as ran:
-            report = gitstate.sync(workspace, before=lambda: learned.append(True))
+            report = gitstate.sync(workspace, before=lambda at: learned.append(True))
         self.assertEqual((report['shared'], report['unshared']), (True, 0))
         names = [name for name, _ in ran]
         self.assertEqual((names.count('rev-list'), names.count('push')), (1, 1))
@@ -796,7 +837,7 @@ class SyncTests(WorkspaceCase):
         names = [name for name, _ in ran]
         self.assertEqual((names.count('rev-list'), names.count('push')), (1, 0))
         self.other_tool({'notes.md': b'Theirs.\n'})
-        self.assertEqual(gitstate.sync(workspace, before=lambda: learned.append(True))
+        self.assertEqual(gitstate.sync(workspace, before=lambda at: learned.append(True))
                          ['received'], 1)
         self.assertEqual(learned, [True])
 

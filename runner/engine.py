@@ -195,6 +195,10 @@ BROKEN = ('"{title}" was changed on this computer and on another at the same tim
           'set aside and kept.')
 UNREACHED = ('The shared repository could not be reached, so this training cannot be taken '
              'now. Nothing was changed. Try again when it can be reached.')
+CHECKING = ('The runner has just started and is still looking at what your team shared while '
+            'it was closed. Nothing was changed. Try again in a moment.')
+STALLED = ('Something went wrong while the runner picked its trainings up ({failure}), so this '
+           'one may not carry on by itself. Close the runner and start it again.')
 # The steps of a deck, and what the engine does for each. What a deck says is drafted like
 # any other draft, and gate 6 is the core's.
 DECK = {'deck-handoff': '_handoff', 'deck-brand': '_export', 'gate:deck-outline': '_ask',
@@ -383,6 +387,8 @@ class Engine:
         self._slots = _Slots(lambda: settings.load().parallel)
         self._closing = False
         self._unshared: str | None = None   # why the last try at sharing did not share
+        self._checking = False              # the first fetch after starting is not done yet
+        self._stalled: str | None = None    # what went wrong picking the trainings up
         self._sharing: threading.Thread | None = None
         self._share_again = False
         self._ready: dict[str, tuple[float, agents.Readiness]] = {}
@@ -484,10 +490,13 @@ class Engine:
 
     def hold(self, path) -> None:
         """Refuse, saying who has it, a change to a training this computer does not
-        drive. A training no run is driving is not the engine's to refuse."""
+        drive, and any change while the runner that just started is still looking at what
+        was shared. A training no run is driving is not the engine's to refuse."""
         root = self.driven(path)
         if root is None:
             return
+        if self._checking:  # who drives it may have changed while the runner was closed
+            raise WorkspaceError(CHECKING)
         why = team.elsewhere(self.workspace, self._load(root))
         if why:
             raise Elsewhere(why)
@@ -622,19 +631,20 @@ class Engine:
                             'kept': kept or before.get('kept')}
         team.keep('taken', taken)
 
-    def _learn(self, space: gitstate.Workspace) -> None:
+    def _learn(self, space: gitstate.Workspace, at: str | None = None) -> None:
         """After a fetch, before anything is replayed: stop every training this computer
         drove that the shared repository now says is someone else's. Its commits that
         were never shared are set aside, so nothing of this computer's is put on top of
-        theirs. Call it holding `files`."""
-        arrived = gitstate.arrived(space)
+        theirs. `at` is the remote's commit about to be replayed on, which is what is
+        read. Call it holding `files`."""
+        arrived = gitstate.arrived(space, at)
         for root in self.trainings():
             try:
                 record = read_record(root)
                 if not record or not team.ours(space, record) \
                         or gitstate.inside(space, root / RECORD) not in arrived:
                     continue
-                theirs = json.loads(gitstate.theirs(space, root / RECORD) or 'null')
+                theirs = json.loads(gitstate.theirs(space, root / RECORD, at) or 'null')
             except (WorkspaceError, ValueError):
                 continue
             if not isinstance(theirs, dict) or team.ours(space, theirs):
@@ -643,8 +653,8 @@ class Engine:
             run.gone = True
             run.stop.set()
             who = team.driver(space, theirs)
-            by = gitstate.last_by(space, root / RECORD) or ('Someone', home.now())
-            self._aside(root, space, gitstate.set_aside(space, root),
+            by = gitstate.last_by(space, root / RECORD, at) or ('Someone', home.now())
+            self._aside(root, space, gitstate.set_aside(space, root, at),
                         who['name'] if who else by[0], who['since'] if who else by[1])
 
     def _clashed(self, space: gitstate.Workspace, report: dict) -> None:
@@ -666,8 +676,10 @@ class Engine:
         this computer, or that it was changed on two at once."""
         if root.name in self._clash:
             return self._clash[root.name]
+        if self.mine(root):
+            return self._stalled
         lost = team.kept('taken').get(str(root))
-        if not lost or self.mine(root):
+        if not lost:
             return None
         said = TAKEN.format(name=lost.get('name') or 'Someone', when=team.day(lost.get('at'))) \
             if lost.get('name') else ''
@@ -753,6 +765,8 @@ class Engine:
         if wait or not self.background:
             self._pick_up(ours)
             return
+        space = self.workspace
+        self._checking = space is not None and space.address is not None
         threading.Thread(target=self._pick_up, args=(ours,), daemon=True,
                          name='resuming').start()
 
@@ -779,18 +793,28 @@ class Engine:
         return ours
 
     def _pick_up(self, ours: list[Path]) -> None:
-        """Fetch, then wake each of `ours` that is still this computer's."""
+        """Fetch, then wake each of `ours` that is still this computer's. Nothing that
+        goes wrong stops the rest: it is said on this computer's trainings instead."""
         try:
             self.fetch()
         except (WorkspaceError, OSError):
             pass    # what is here is still picked up
-        self.adopt()
+        except Exception as failure:  # the runner keeps serving, and says so
+            self._stalled = STALLED.format(failure=failure)
+        finally:
+            self._checking = False
+        try:
+            self.adopt()
+        except Exception as failure:
+            self._stalled = STALLED.format(failure=failure)
         for root in ours:
             try:
                 if self.mine(root):
                     self.wake(root)
             except (WorkspaceError, OSError):
                 continue
+            except Exception as failure:
+                self._stalled = STALLED.format(failure=failure)
 
     def wake(self, path) -> None:
         """Have a training's run look at its files again and carry on if it can."""
@@ -2086,7 +2110,7 @@ class Engine:
         shared repository is asked, so a decision never waits for a slow remote. A caller
         that must keep the files still until a claim is shared holds `files` itself."""
         try:
-            report = gitstate.sync(space, push=push, before=lambda: self._learn(space),
+            report = gitstate.sync(space, push=push, before=lambda at: self._learn(space, at),
                                    held=self.files)
         except WorkspaceError as refusal:
             report = {'shared': False, 'reached': False, 'received': 0, 'conflict': [],

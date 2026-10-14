@@ -44,9 +44,11 @@ What a caller needs to know
   commits stay here and the report says the work is not shared yet. Do not call it while a
   step is writing files: it sets unfinished changes aside and puts them back. `before` is
   called after a fetch that brought something and before anything is replayed, so a caller
-  can act on what the remote now says while this copy is still as it was. `held` is the
-  caller's lock on this copy: it is held for all of that, and never while the remote is
-  asked. One fetch or push runs at a time in a process.
+  can act on what the remote now says while this copy is still as it was. It is given the
+  remote's commit that is then replayed on: read with that, through the `at` that
+  `theirs`, `arrived`, `last_by` and `set_aside` take, a fetch made meanwhile changes
+  nothing it sees. `held` is the caller's lock on this copy: it is held for all of that,
+  and never while the remote is asked. One fetch or push runs at a time in a process.
 - `theirs`, `moved` and `arrived` read what the last fetch brought and change nothing.
   `set_aside` takes the commits that were never shared and touch one path out of the
   branch, and keeps them under a ref of the runner's own, `refs/training-studio/kept/...`,
@@ -83,6 +85,9 @@ NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 IGNORED = ('work/', 'sources/', '**/.harness-research/guidance/',
            '**/.harness-slides/guidance/', '*.lock', '**/.training-studio/lock')
 ASKING = threading.Lock()       # one fetch or push at a time in this process
+# ssh is never let ask, so a host it has not met is refused until a person trusts it.
+TRUST = ('This computer has not been told to trust that host yet. Run git ls-remote with the '
+         "repository's address once in a terminal and answer yes, then share again.")
 IGNORE_NOTE = '# Kept on each computer and never shared. Written by Training Studio.'
 README = """# Trainings
 
@@ -479,21 +484,25 @@ def tracking(workspace: Workspace) -> str:
     return f'refs/remotes/origin/{workspace.branch}'
 
 
-def _parted(workspace: Workspace) -> str | None:
+def _parted(workspace: Workspace, at: str | None = None) -> str | None:
     """The last commit this copy and the shared repository both have, as of the last
-    fetch. None when the remote has no such branch, or the workspace no remote."""
+    fetch. None when the remote has no such branch, or the workspace no remote.
+
+    Here and below, `at` is the remote's commit to read instead of the last fetch: the
+    one `sync` hands to `before`, which a fetch started since cannot move."""
     if workspace.address is None:
         return None
-    done = hub.run(workspace.repo, 'merge-base', 'HEAD', tracking(workspace))
+    done = hub.run(workspace.repo, 'merge-base', 'HEAD', at or tracking(workspace))
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
-def theirs(workspace: Workspace, path) -> str | None:
+def theirs(workspace: Workspace, path, at: str | None = None) -> str | None:
     """A file under the folder as the shared repository had it when last fetched. None
     when it has none there. Nothing is fetched and nothing here is changed."""
     if workspace.address is None:
         return None
-    done = hub.run(workspace.repo, 'show', f'{tracking(workspace)}:{inside(workspace, path)}')
+    done = hub.run(workspace.repo, 'show',
+                   f'{at or tracking(workspace)}:{inside(workspace, path)}')
     return done.stdout if done.returncode == 0 else None
 
 
@@ -507,39 +516,39 @@ def moved(workspace: Workspace, path) -> bool:
                    inside(workspace, path)).returncode == 1
 
 
-def arrived(workspace: Workspace) -> set[str]:
+def arrived(workspace: Workspace, at: str | None = None) -> set[str]:
     """Every path under the folder the shared repository changed after this copy and it
     parted, as of the last fetch, from the repository's root. Two git commands, however
     many trainings there are."""
-    base = _parted(workspace)
+    base = _parted(workspace, at)
     if base is None:
         return set()
     done = hub.run(workspace.repo, 'diff', '-z', '--name-only', '--no-renames', base,
-                   tracking(workspace), '--', workspace.folder)
+                   at or tracking(workspace), '--', workspace.folder)
     return set(hub.names(done.stdout)) if done.returncode == 0 else set()
 
 
-def unshared(workspace: Workspace, path) -> list[str]:
+def unshared(workspace: Workspace, path, at: str | None = None) -> list[str]:
     """The commits that touch a path under the folder and were never shared, oldest
     first, as of the last fetch."""
-    base = _parted(workspace)
+    base = _parted(workspace, at)
     if base is None:
         return []
     return hub.git(workspace.repo, 'rev-list', '--reverse', f'{base}..HEAD', '--',
                    inside(workspace, path)).split()
 
 
-def last_by(workspace: Workspace, path) -> tuple[str, str] | None:
+def last_by(workspace: Workspace, path, at: str | None = None) -> tuple[str, str] | None:
     """Who last changed a path in the shared repository, and when, as of the last fetch."""
     if workspace.address is None:
         return None
-    done = hub.run(workspace.repo, 'log', '-1', '--format=%an%x00%cI', tracking(workspace),
-                   '--', inside(workspace, path))
+    done = hub.run(workspace.repo, 'log', '-1', '--format=%an%x00%cI',
+                   at or tracking(workspace), '--', inside(workspace, path))
     name, _, when = done.stdout.strip().partition('\0')
     return (name, when) if done.returncode == 0 and name else None
 
 
-def set_aside(workspace: Workspace, path) -> str | None:
+def set_aside(workspace: Workspace, path, at: str | None = None) -> str | None:
     """Take the commits that were never shared and touch one path under the folder out of
     the branch. They are kept under a ref of the runner's own, which is returned; None
     when there were none. The path is then as the last commit left without them has it.
@@ -548,7 +557,7 @@ def set_aside(workspace: Workspace, path) -> str | None:
     folder differ from the last commit.
     """
     repo, scope = workspace.repo, inside(workspace, path)
-    touching, base = set(unshared(workspace, path)), _parted(workspace)
+    touching, base = set(unshared(workspace, path, at)), _parted(workspace, at)
     if not touching:
         return None
     if changed(workspace):
@@ -609,8 +618,9 @@ def sync(workspace: Workspace, push: bool = True, before=None, held=None) -> dic
     commits came in, how many local commits are still waiting (`unshared`), any files in
     conflict, and in `notice` a sentence for the person when the work is not shared.
     With `push` false nothing is sent: the remote's commits come in, and the notice is
-    only about what stopped that. `before()` is called after a fetch that reached the
+    only about what stopped that. `before(at)` is called after a fetch that reached the
     remote, when the remote has commits this copy does not, before anything is replayed.
+    `at` is the remote's commit that is then replayed on, whatever fetch comes after.
 
     `held` is a lock held while this copy is read or changed, and never while the remote
     is asked, so a slow remote holds up nothing that waits for the lock. The branch is
@@ -639,17 +649,20 @@ def sync(workspace: Workspace, push: bool = True, before=None, held=None) -> dic
             report['reached'] = False
             break
         with held:
-            waiting, theirs = hub.apart(repo, track) or (hub.ahead(repo, track), 0)
+            # Another fetch may move the ref at any moment, so the commit it names now is
+            # the one learned from and replayed on; what came after is the next round's.
+            at = _tip(repo, track)
+            waiting, theirs = (at and hub.apart(repo, at)) or (hub.ahead(repo, track), 0)
             if refused and not theirs:
                 break  # nobody pushed in between: the remote refused for a reason of its own
             if theirs:
                 if before is not None:
-                    before()
+                    before(at)
                 report['received'] += theirs
-                stuck = _replay(repo, track, report)
+                stuck = _replay(repo, at, report)
                 if stuck:
                     break
-                waiting = hub.ahead(repo, track)    # a replay drops what the remote has
+                waiting = hub.ahead(repo, at)    # a replay drops what the remote has
         if not push or not waiting:
             refused = None
             break
@@ -669,10 +682,16 @@ def sync(workspace: Workspace, push: bool = True, before=None, held=None) -> dic
     return report
 
 
-def _replay(repo: Path, tracking: str, report: dict) -> str | None:
-    """Replay local commits on top of the remote's. On failure put everything back as it
-    was and return why; the files in conflict go in the report."""
-    done = hub.run(repo, 'rebase', '--autostash', tracking)
+def _tip(repo: Path, tracking: str) -> str | None:
+    """The commit a remote-tracking ref names now. None while there is no such ref."""
+    done = hub.run(repo, 'rev-parse', '--verify', '--quiet', tracking)
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def _replay(repo: Path, onto: str, report: dict) -> str | None:
+    """Replay local commits on top of the remote's commit `onto`. On failure put
+    everything back as it was and return why; the files in conflict go in the report."""
+    done = hub.run(repo, 'rebase', '--autostash', onto)
     if done.returncode == 0:
         return None
     report['conflict'] = hub.names(
@@ -688,8 +707,10 @@ def _notice(repo: Path, report: dict, fetched, stuck: str | None,
                if report['unshared'] else 'Nothing here is waiting to be shared, but this '
                'copy may be out of date.')
     if not report['reached']:
+        then = TRUST if 'Host key verification failed' in fetched.stderr \
+            else 'Share again when it can be reached.'
         return (f'The shared repository could not be reached ({hub.reason(fetched)}). '
-                f'{waiting} Share again when it can be reached.')
+                f'{waiting} {then}')
     if report['conflict']:
         return ('The same files were changed here and in the shared repository ('
                 + ', '.join(report['conflict']) + '), and the runner will not choose between '

@@ -154,6 +154,31 @@ class ServeTests(StudioCase):
                     thread.join(30)
         self.assertEqual(woken, [root], 'picked up once the fetch is done')
 
+    def test_what_goes_wrong_picking_trainings_up_is_said_and_the_rest_still_carry_on(self):
+        first, second = self.start(), self.start(title='Health checks')
+        self.engine.close()
+        self.engine = self.make(background=True)
+        woken = []
+
+        def broken():
+            raise RuntimeError('the fetch broke')
+
+        def wake(root):
+            if root == first:
+                raise RuntimeError('the run would not start')
+            woken.append(root)
+
+        with mock.patch.object(self.engine, 'fetch', broken), \
+                mock.patch.object(self.engine, 'wake', wake):
+            self.engine.resume(wait=False)
+            for thread in threading.enumerate():
+                if thread.name == 'resuming':
+                    thread.join(30)
+        self.assertEqual(woken, [second], 'the others are still picked up')
+        self.assertIn('Something went wrong while the runner picked its trainings up (the '
+                      'run would not start)', self.view(first)['notice'])
+        self.assertEqual(self.view(second)['notice'], self.view(first)['notice'])
+
     def test_it_refuses_to_start_without_a_git_identity_and_says_the_fix(self):
         helpers.gitconfig(self.base / 'nobody.gitconfig', '[user]\n\tuseConfigOnly = true\n')
         out = io.StringIO()
