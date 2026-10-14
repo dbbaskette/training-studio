@@ -45,7 +45,7 @@ Never use `--built` or `--from` to clear a stale flag: they claim a rebuild agai
 `settings.copies` in `status` is what the user chose: `google`, `word`, both or neither. Change it with `training.py checkpoint --copies google word`; `--copies` alone is none. Each wanted copy is `current`, `outdated`, `missing` or, for Word, `unavailable`.
 
 - **Google Docs.** `google_docs` lists each document and brief. `training.py google push <artifact>` makes or updates one; see the google reference.
-- **Word.** `exports` lists each artifact that needs a `.docx` beside its source. Make one with `pandoc <source> -o <export>`, or the harness's own document capability. Then `training.py export <artifact>` (`--file <path>` for another name or format), or `--unavailable "<why>"`.
+- **Word.** `exports` lists each artifact that needs a `.docx` beside its source. `training.py export <artifact>` makes it with pandoc and records it. If it answers `unavailable`, tell the user why. A copy made another way is recorded with `--file <path>`.
 - **With Yoodli on,** the user uploads the brief's copy: its Google Doc when `google` is kept, otherwise a Word copy, which `exports` then lists with each `yoodli:<id>` whatever was chosen. Without one, tell the user the Yoodli handoff is incomplete. If a Google Doc cannot be made, ask whether to drop `google`.
 
 Redo a copy after every change to its source. Never tell the user to share or upload one that is not `current`. For a one-off Word copy while `word` is off, make it and record nothing.

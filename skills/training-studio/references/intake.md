@@ -32,7 +32,7 @@ List the files, ignoring dot-directories.
 
 ## Record it
 
-1. `training.py init --title "<title>"`, adding `--levels 101,301`, `--brief-kind competitive`, `--deck-target pptx` or `google`, `--brand "<brand>"`, `--yoodli` and `--copies google word` as they apply. If it refuses, show the user why and stop.
+1. `training.py init --title "<title>"`, adding `--levels 101 301`, `--brief-kind competitive`, `--deck-target pptx` or `google`, `--brand "<brand>"`, `--yoodli` and `--copies google word` as they apply. If it refuses, show the user why and stop.
 2. Write `intake.md` with these `##` headings and nothing else: Topic, Levels, Brief, Audience, Purpose, Source scope, Time limit. Settings such as the deck target stay out of it, so changing them later does not mark the research stale.
 3. `training.py save intake --built`, then `training.py approve intake`. The user's answers are the approval for this stage, and the training moves on to `research-plan`.
 4. For each stage they do not want: `training.py skip <stage> --reason "<their words>"`.

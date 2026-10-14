@@ -7,6 +7,9 @@ import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
+import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +20,8 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 # In a checkout the guidance sits beside the scripts; an installed copy keeps it in guidance/.
 GUIDANCE_DIR = SKILL_DIR if (SKILL_DIR / 'references').is_dir() else SKILL_DIR / 'guidance'
 PROFILE = GUIDANCE_DIR / 'assets' / 'profiles' / 'yoodli.json'
+# What only a copy of this repository has: the skill at the path it is kept in.
+CHECKOUT_MARK = Path('skills') / 'training-studio' / 'SKILL.md'
 
 STAGES = ('intake', 'research-plan', 'research', 'blueprint', 'document', 'brief',
           'deck', 'scenario', 'yoodli', 'package', 'done')
@@ -233,6 +238,28 @@ def prefix(level: str | None) -> str:
     return '' if level is None else f'{level}/'
 
 
+def home_folder() -> Path | None:
+    try:
+        return Path.home().resolve()
+    except (RuntimeError, KeyError):  # no home folder can be found
+        return None
+
+
+def refuse_the_wrong_place(root: Path) -> None:
+    """Refuse a folder no training is started in: the home folder, the skill the helper runs
+    from or a folder holding it, and a copy of this repository or any folder inside one."""
+    root = root.resolve()
+    if root == home_folder():
+        raise WorkspaceError('This is your home folder. A training needs a folder of its own: '
+                             'make a folder for this training, and start it there.')
+    if root == SKILL_DIR or root in SKILL_DIR.parents:
+        raise WorkspaceError('This directory holds the Training Studio skill itself. '
+                             'Launch in a directory made for the training.')
+    if any((folder / CHECKOUT_MARK).is_file() for folder in (root, *root.parents)):
+        raise WorkspaceError('This directory is in a copy of the Training Studio repository. '
+                             'Make a folder for this training outside it, and start it there.')
+
+
 def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
          deck_target: str | None = None, brand: str | None = None,
          yoodli: bool = False, copies=(), approval: str = 'chat') -> dict:
@@ -243,9 +270,7 @@ def init(root: Path, title: str, levels=(), brief_kind: str = 'product',
     check_choice(approval, APPROVAL, 'Approval')
     check_choice(brief_kind, BRIEF_KINDS, 'The brief kind')
     check_choice(deck_target, DECK_TARGETS, 'The deck target')
-    if root == SKILL_DIR or root in SKILL_DIR.parents:
-        raise WorkspaceError('This directory holds the Training Studio skill itself. '
-                             'Launch in a directory made for the training.')
+    refuse_the_wrong_place(root)
     if session_path(root).exists():
         raise WorkspaceError('A training already exists in this directory.')
     names = list(SHARED_DELIVERABLES)
@@ -708,6 +733,19 @@ def on_the_page_only(session: dict, by: str, what: str) -> None:
                              f'on the command line. {OPEN_THE_PAGE}')
 
 
+def input_label(key: str) -> str:
+    """One of the things an artifact is built from, in plain words: "the blueprint"."""
+    if key.startswith('setting:'):
+        return f"the {key.partition(':')[2].replace('_', ' ')} setting"
+    return 'the Yoodli profile' if key == 'profile' else label(key)
+
+
+def give_a_reason(by: str, what: str = '') -> str:
+    """The refusal for a missing reason, naming the flag on the command line."""
+    return (f'Give a reason{what}.' if by == 'page'
+            else f'Give a reason{what}: add `--reason "<the reason>"`.')
+
+
 def close_requests(session: dict, name: str) -> None:
     session['requests'] = [request for request in session['requests']
                            if request.get('artifact') != name]
@@ -728,14 +766,21 @@ def _approve(root: Path, session: dict, name: str, accept_stale: str | None,
         raise WorkspaceError(f"Cannot approve {name}: {spec['file']} does not exist.")
     for upstream in spec['upstream']:
         if state[upstream] not in ('approved', 'skipped'):
-            raise WorkspaceError(f'Cannot approve {name}: {upstream} is {state[upstream]}.')
+            raise WorkspaceError(f'Cannot approve {name}: {upstream} is {state[upstream]}. '
+                                 + (f'Rebuild {upstream}, or accept it as it is, first.'
+                                    if state[upstream] == 'stale'
+                                    else f'Approve {upstream} first.'))
     entry = record(root, session, name, built=False)
     current = pinned_inputs(root, session, name)
     if entry['built_from'] != current:
         if not accept_stale:
-            raise WorkspaceError(
-                f'{name} was built from an older version of what it depends on. '
-                'Rebuild it, or approve with a reason to accept it as it is.')
+            changed = [input_label(key) for key in dict.fromkeys([*entry['built_from'], *current])
+                       if entry['built_from'].get(key) != current.get(key)]
+            fix = ('accept it as it is with a reason.' if by == 'page' else
+                   'if the user accepts it as it is, run `approve '
+                   f'{name} --accept-stale --reason "<their reason>"`.')
+            raise WorkspaceError(f'{name} was built from an older version of '
+                                 f'{" and ".join(changed)}. Rebuild it, or {fix}')
         session['decisions'].append({'at': now(), 'artifact': name,
                                      'decision': 'accepted-stale', 'from': entry['built_from'],
                                      'to': current, 'reason': accept_stale, 'by': by})
@@ -927,7 +972,7 @@ def decide(root: Path, target: str, decision: str, note: str | None = None,
         outcome['artifact'] = target
         if decision in ('approve', 'accept'):
             if decision == 'accept' and not note:
-                raise WorkspaceError('Give a reason for accepting it as it is.')
+                raise WorkspaceError(give_a_reason(by, ' for accepting it as it is'))
             file = managed(root, artifact(root, session, target)['file'])
             if seen is not None and seen != sha256_file(file):
                 raise WorkspaceError(f'{sentence(subject)} has changed since it was opened. '
@@ -964,11 +1009,14 @@ def decide(root: Path, target: str, decision: str, note: str | None = None,
 
 # --- exports --------------------------------------------------------------------
 
-@mutating
-def export(root: Path, name: str, file: str | None = None,
-           unavailable: str | None = None) -> dict:
-    """Record a converted copy of an artifact, or that one could not be produced."""
-    session = load(root)
+PANDOC_TIMEOUT = 120  # seconds for one conversion
+NO_PANDOC = ('pandoc, which makes Word copies, is not installed on this computer. Install it '
+             'from pandoc.org, then make the copy again.')
+PICTURE = ('![', '<img')  # how a Markdown file names a picture for pandoc to fetch
+
+
+def export_spec(root: Path, session: dict, name: str) -> dict:
+    """The artifact an export is of, once it is one this training keeps a Word copy of."""
     spec = artifact(root, session, name)
     if not exportable(name):
         raise WorkspaceError(f'{name} is not exported; only the document, the brief and '
@@ -978,24 +1026,116 @@ def export(root: Path, name: str, file: str | None = None,
             f'Word copies are off for this training, so no export of {name} is kept. To '
             'turn them on: checkpoint --copies '
             + ' '.join(sorted({*session['settings']['copies'], 'word'})) + '.')
-    if unavailable:
-        made = {'unavailable': unavailable, 'at': now()}
-    else:
+    return spec
+
+
+def export(root: Path, name: str, file: str | None = None, unavailable: str | None = None,
+           convert=None) -> dict:
+    """Record a converted copy of an artifact, or that one could not be produced.
+
+    `convert`, a callable (source, target) such as `pandoc`, makes the copy first, beside
+    its source, unless a file or a reason is given. It runs outside the lock, into a
+    scratch folder, so a slow or failed conversion holds up nothing and leaves nothing
+    behind. A conversion that fails is recorded as unavailable, with its reason, unless a
+    copy made another way is already there.
+    """
+    if convert is None or file is not None or unavailable:
+        return _export(root, name, file, unavailable)
+    spec = export_spec(root, load(root), name)
+    source = managed(root, spec['file'])
+    digest = sha256_file(source)
+    if digest is None:
+        raise WorkspaceError(f"Cannot export {name}: {spec['file']} does not exist.")
+    with tempfile.TemporaryDirectory() as scratch:
+        draft = Path(scratch) / Path(spec['file']).with_suffix('.docx').name
+        try:
+            convert(source, draft)
+            if not draft.is_file() or not draft.stat().st_size:
+                raise WorkspaceError('The converter made no Word file.')
+            made, reason = draft.read_bytes(), None
+        except WorkspaceError as failure:
+            made, reason = None, str(failure)
+    return _export(root, name, made=made, made_from=digest, failed=reason)
+
+
+@mutating
+def _export(root: Path, name: str, file: str | None = None, unavailable: str | None = None,
+            made: bytes | None = None, made_from: str | None = None,
+            failed: str | None = None) -> dict:
+    """Record an export: the file named, the copy just `made` from the source whose hash is
+    `made_from`, or that none could be. `failed` says why a conversion made nothing."""
+    session = load(root)
+    spec = export_spec(root, session, name)
+    if not unavailable:
         relative = file or str(Path(spec['file']).with_suffix('.docx'))
         path = (root / relative).resolve()
         if root not in path.parents:
             raise WorkspaceError('An export must be inside the training directory.')
-        if not path.is_file():
-            raise WorkspaceError(f'{relative} does not exist.')
         source = sha256_file(managed(root, spec['file']))
         if source is None:
             raise WorkspaceError(f"Cannot export {name}: {spec['file']} does not exist.")
-        made = {'file': path.relative_to(root).as_posix(), 'source_sha256': source,
-                'sha256': sha256_file(path), 'at': now()}
-    session['exports'][name] = made
+        if made is not None:
+            write_atomic(managed(root, relative), made)
+            source = made_from
+        elif failed is not None:
+            # A copy made another way still counts, but not one already recorded against
+            # an older version of the source.
+            before = session['exports'].get(name) or {}
+            old = (before.get('sha256') == sha256_file(path)
+                   and before.get('source_sha256') != source)
+            if not path.is_file() or old:
+                unavailable = failed
+        elif not path.is_file():
+            raise WorkspaceError(f'{relative} does not exist.')
+    if unavailable:
+        record = {'unavailable': unavailable, 'at': now()}
+    else:
+        record = {'file': path.relative_to(root).as_posix(), 'source_sha256': source,
+                  'sha256': sha256_file(path), 'at': now()}
+    session['exports'][name] = record
     log(session, 'export', artifact=name)
     store(root, session)
-    return made
+    return record
+
+
+def pandoc(source: Path, target: Path) -> None:
+    """Convert a Markdown file to Word with pandoc, or refuse with a plain reason.
+
+    pandoc is kept to the one file it is given: `--sandbox` stops it reading any other file
+    or fetching anything from the web. A pandoc too old for `--sandbox` is used without it
+    only for a file that names no picture, since a picture is what it would fetch.
+    """
+    program = shutil.which('pandoc')
+    if program is None:
+        raise WorkspaceError(NO_PANDOC)
+    command = [program, '--from', 'markdown-raw_attribute', '--to', 'docx',
+               '--output', str(target), str(source)]
+    done = _pandoc([program, '--sandbox', *command[1:]])
+    if done.returncode != 0:
+        text = source.read_text(encoding='utf-8', errors='replace').lower()
+        if not any(mark in text for mark in PICTURE):
+            done = _pandoc(command)
+    if done.returncode != 0 or not target.is_file():
+        # Its first line that is not a warning says what went wrong.
+        lines = [line.strip() for line in (done.stderr or '').splitlines()
+                 if line.strip() and not line.lstrip().startswith('[')]
+        said = lines[0] if lines else f'it ended with exit code {done.returncode}'
+        for folder in (str(source.parent), str(target.parent)):
+            said = said.replace(folder + os.sep, '').replace(folder, '')
+        raise WorkspaceError(f"pandoc could not make the Word copy ({said[:200].rstrip('.')}).")
+
+
+def _pandoc(command: list[str]) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
+                              timeout=PANDOC_TIMEOUT, encoding='utf-8', errors='replace')
+    except subprocess.TimeoutExpired:
+        raise WorkspaceError(f'pandoc did not finish in {PANDOC_TIMEOUT} seconds, so no Word '
+                             'copy was made.') from None
+    except OSError as failure:
+        raise WorkspaceError('pandoc could not be started '
+                             f'({failure.strerror or type(failure).__name__}), so no Word '
+                             'copy was made.') from None
 
 
 # --- skip, checkpoint, pin --------------------------------------------------------
@@ -1020,7 +1160,7 @@ def _skip(session: dict, stage: str, reason: str | None = None, unavailable: boo
         session['unavailable'].pop(stage, None)
         log(session, 'restore', stage=stage, by=by)
     elif not reason:
-        raise WorkspaceError('Give a reason.')
+        raise WorkspaceError(give_a_reason(by))
     elif unavailable:
         session['unavailable'][stage] = reason
         log(session, 'unavailable', stage=stage, reason=reason)

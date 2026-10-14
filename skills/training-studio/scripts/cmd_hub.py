@@ -3,6 +3,7 @@ from pathlib import Path
 
 import hub
 import sync_guidance
+from workspace import WorkspaceError
 
 
 def join(args, root: Path) -> dict:
@@ -29,7 +30,10 @@ def status(args, root: Path) -> dict:
 
 
 def sync(args, root: Path) -> dict:
-    return hub.sync(hub.resolve(root, args.name))
+    # `hub sync NAME` came before --hub, and guidance already fetched may still use it.
+    if args.name and args.hub and args.name != args.hub:
+        raise WorkspaceError('Name the hub once, with --hub NAME.')
+    return hub.sync(hub.resolve(root, args.hub or args.name))
 
 
 def find(args, root: Path) -> dict:
@@ -70,23 +74,25 @@ def register(commands) -> None:
         return parser
 
     joining = add(actions, 'join', join, 'clone a hub and remember it')
-    joining.add_argument('url', metavar='URL')
+    joining.add_argument('url', metavar='URL', help="the hub repository's address")
     joining.add_argument('--name', help='what to call it on this computer')
     joining.add_argument('--init', action='store_true',
                          help='lay out a new hub in an empty repository')
 
     add(actions, 'list', listing, 'joined hubs, and whether each has changes not yet pushed')
     add(actions, 'use', use, 'make a joined hub the one this training publishes to'
-        ).add_argument('name', metavar='NAME')
+        ).add_argument('name', metavar='NAME', help='the name of a joined hub')
     add(actions, 'publish', publish, "publish this training's approved deliverables"
         ).add_argument('--message', metavar='TEXT', help='a line about this revision')
     add(actions, 'status', status, "this training's hub, its latest revision, and changes since")
-    add(actions, 'sync', sync, 'fetch, rebase local commits and push'
-        ).add_argument('name', metavar='NAME', nargs='?')
+    add(actions, 'sync', sync, 'fetch, rebase local commits and push', hub_option=True
+        ).add_argument('name', metavar='NAME', nargs='?',
+                       help='the same as --hub NAME, kept for older guidance')
 
     finding = add(actions, 'find', find, 'search titles, IDs and text', hub_option=True)
-    finding.add_argument('query', metavar='QUERY', nargs='*')
-    finding.add_argument('--kind', choices=('training', 'scenario', 'audience'))
+    finding.add_argument('query', metavar='QUERY', nargs='*', help='the words to look for')
+    finding.add_argument('--kind', choices=('training', 'scenario', 'audience'),
+                         help='look only for this kind of thing')
 
     getting = actions.add_parser('get', help='take something from a hub').add_subparsers(
         dest='what', required=True, metavar='WHAT')
@@ -98,20 +104,22 @@ def register(commands) -> None:
             (sharing, share_scenario, "put one of this training's scenario files into its hub",
              False)):
         scenario = add(group, 'scenario', handler, text, hub_option)
-        scenario.add_argument('id', metavar='ID')
+        scenario.add_argument('id', metavar='ID', help="the scenario's ID")
         scenario.add_argument('--as', dest='rename', metavar='NAME',
                               help='the name to give the copy')
         scenario.add_argument('--level', help='the level, when this training has levels')
 
     add(getting, 'audience', get_audience, 'print an audience description, for intake',
-        hub_option=True).add_argument('id', metavar='ID')
+        hub_option=True).add_argument('id', metavar='ID', help="the audience's ID")
     audience = add(sharing, 'audience', share_audience, 'put an audience description into a hub',
                    hub_option=True)
-    audience.add_argument('id', metavar='ID')
-    audience.add_argument('--file', required=True, metavar='FILE')
+    audience.add_argument('id', metavar='ID', help='the ID to share it under')
+    audience.add_argument('--file', required=True, metavar='FILE',
+                          help='the description, a Markdown file the user wrote')
 
     research = add(getting, 'research', get_research,
                    "copy a published research report into this training's sources/",
                    hub_option=True)
-    research.add_argument('training', metavar='TRAINING')
-    research.add_argument('--revision', type=int, metavar='N')
+    research.add_argument('training', metavar='TRAINING', help="the published training's ID")
+    research.add_argument('--revision', type=int, metavar='N',
+                          help='an older revision (default: the latest)')

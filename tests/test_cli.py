@@ -1,9 +1,13 @@
 """The command line, including the check aggregation and readiness (matrix rows that name check)."""
+import argparse
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
+import unittest
+from unittest import mock
 
 import helpers
 from helpers import TrainingCase
@@ -80,8 +84,9 @@ class Flow(TrainingCase):
         self.make(f'brief{at}', f'{folder}product-brief.md', example('product-brief.md'))
         for name in ('document', 'product-brief'):
             self.write(f'{folder}{name}.docx', f'exported {name}')
-        self.cli('export', f'document{at}')
-        self.cli('export', f'brief{at}')
+        # Named, so pandoc on this computer, or its absence, makes no difference.
+        self.cli('export', f'document{at}', '--file', f'{folder}document.docx')
+        self.cli('export', f'brief{at}', '--file', f'{folder}product-brief.docx')
 
     def deck(self, level: str | None = None, objectives=('O1', 'O2', 'O3')) -> None:
         at = f'@{level}' if level else ''
@@ -877,3 +882,134 @@ class LevelCheckTests(Flow):
         failed = self.by_name(report)['blueprint.structure@301']
         self.assertEqual(failed['problems'],
                          ['The frame must say "Level: 301", the level of its folder.'])
+
+
+class FlagTests(Flow):
+    """One spelling for each kind of flag, with the old spellings kept for guidance already
+    fetched."""
+
+    def stale_document(self) -> None:
+        self.research()
+        self.content()
+        revised = self.root.parent / 'revised.md'
+        revised.write_text(example('blueprint.md') + '\nRevised.\n')
+        self.cli('save', 'blueprint', '--from', str(revised))
+        self.cli('approve', 'blueprint')
+
+    def test_a_reason_is_given_with_reason(self):
+        self.stale_document()
+        refusal = self.cli('approve', 'document', expect=2)['error']
+        self.assertIn('older version of the blueprint', refusal)
+        self.assertIn('approve document --accept-stale --reason', refusal)
+        self.assertIn('--reason', self.cli('approve', 'document', '--accept-stale',
+                                           expect=2)['error'])
+        accepted = self.cli('approve', 'document', '--accept-stale', '--reason', 'A note only')
+        self.assertEqual(accepted['decision'], 'accept')
+        self.assertEqual(self.cli('status')['artifacts']['document'], 'approved')
+        self.cli('export', 'document', '--unavailable', '--reason', 'No converter')
+        self.assertEqual(self.cli('status')['exports']['document'], 'unavailable')
+        self.cli('skip', 'deck', '--unavailable', '--reason', 'No slides tool')
+        self.assertEqual(self.cli('status')['unavailable_stages'], {'deck': 'No slides tool'})
+
+    def test_the_old_spellings_of_a_reason_still_work(self):
+        self.stale_document()
+        self.cli('approve', 'document', '--accept-stale', 'A note only')
+        self.cli('export', 'brief', '--unavailable', 'No converter')
+        self.cli('skip', 'deck', '--unavailable', 'No slides tool')
+        report = self.cli('status')
+        self.assertEqual((report['artifacts']['document'], report['exports']['brief'],
+                          report['unavailable_stages']),
+                         ('approved', 'unavailable', {'deck': 'No slides tool'}))
+
+    def test_a_reason_is_given_once_and_only_where_it_belongs(self):
+        self.stale_document()
+        self.assertIn('Give the reason once', self.cli(
+            'approve', 'document', '--accept-stale', 'One', '--reason', 'Two',
+            expect=2)['error'])
+        self.assertIn('--reason goes with --accept-stale', self.cli(
+            'approve', 'document', '--reason', 'Why', expect=2)['error'])
+        self.assertIn('--reason goes with --unavailable', self.cli(
+            'export', 'document', '--reason', 'Why', expect=2)['error'])
+        self.assertIn('Give a reason: add `--reason', self.cli(
+            'export', 'document', '--unavailable', expect=2)['error'])
+        self.assertEqual(self.cli('status')['artifacts']['document'], 'stale')
+
+    def test_lists_are_space_separated_and_commas_still_work(self):
+        report = self.cli('init', '--title', 'Topic', '--levels', '301', '101',
+                          '--copies', 'word', 'google')
+        self.assertEqual((report['levels'], report['settings']['copies']),
+                         (['101', '301'], ['google', 'word']))
+        self.assertEqual(self.cli('checkpoint', '--add-level', '201', '401')['levels'],
+                         ['101', '201', '301', '401'])
+        self.assertEqual(self.cli('checkpoint', '--levels', '101,201')['levels'],
+                         ['101', '201'])
+        self.assertEqual(self.cli('checkpoint', '--copies', 'google,word')['settings']['copies'],
+                         ['google', 'word'])
+        self.assertEqual(self.cli('checkpoint', '--add-level', '301,401')['levels'],
+                         ['101', '201', '301', '401'])
+        self.assertIn("invalid choice: '501'", self.cli('checkpoint', '--add-level', '501',
+                                                        expect=2)['error'])
+
+    def test_a_word_copy_is_one_command(self):
+        self.research()
+        self.make('blueprint', 'blueprint.md', example('blueprint.md'))
+        self.make('document', 'document.md', example('document.md'))
+        self.make('brief', 'product-brief.md', example('product-brief.md'))
+        tools = self.root.parent / 'tools'
+        helpers.fake_pandoc(tools)
+        with mock.patch.dict(os.environ, {'PATH': str(tools)}):
+            made = self.cli('export', 'document')
+        self.assertEqual(made['file'], 'document.docx')
+        self.assertEqual(self.cli('status')['exports']['document'], 'current')
+        with mock.patch.dict(os.environ, {'PATH': str(self.root.parent / 'nothing')}):
+            missing = self.cli('export', 'brief')
+        self.assertIn('pandoc', missing['unavailable'])
+        self.assertEqual(self.cli('status')['exports']['brief'], 'unavailable')
+
+
+class HelpTests(unittest.TestCase):
+    """--help lists every value a flag takes and says what every flag is for."""
+
+    def everything(self, parser, path=('training.py',)):
+        """Every argument of every command, plug-ins included, with the command it is in."""
+        for action in parser._actions:
+            if isinstance(action, argparse._HelpAction):
+                continue
+            if isinstance(action, argparse._SubParsersAction):
+                helped = {choice.dest: choice.help for choice in action._choices_actions}
+                for name, sub in action.choices.items():
+                    yield (*path, name), f'the {name} command', helped.get(name)
+                    yield from self.everything(sub, (*path, name))
+                continue
+            yield path, '/'.join(action.option_strings) or action.dest, action.help
+
+    def test_every_flag_and_command_has_one_line_of_help(self):
+        found = list(self.everything(training.parser()))
+        self.assertGreater(len(found), 100)
+        for path, name, text in found:
+            with self.subTest(command=' '.join(path), argument=name):
+                self.assertTrue(text and text.strip(), 'no help')
+                self.assertNotIn('\n', text)
+
+    def help_of(self, *command) -> str:
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit):
+            training.main([*command, '--help'])
+        return ' '.join(printed.getvalue().split())
+
+    def test_help_lists_the_values_each_flag_takes(self):
+        import workspace
+        for command in (('init',), ('checkpoint',)):
+            text = self.help_of(*command)
+            for values in (workspace.BRIEF_KINDS, workspace.DECK_TARGETS, workspace.COPIES,
+                           workspace.LEVELS, workspace.APPROVAL):
+                self.assertIn('{' + ','.join(values) + '}', text)
+        self.assertIn('{' + ','.join(workspace.STAGES) + '}', self.help_of('checkpoint'))
+        self.assertIn('{' + ','.join(workspace.PINNABLE) + '}', self.help_of('pin'))
+
+    def test_an_unknown_value_is_refused_by_the_command_line(self):
+        for flag, value in (('--brief-kind', 'battlecard'), ('--deck-target', 'keynote')):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit):
+                training.main(['init', '--title', 'Topic', flag, value])
+            self.assertIn('invalid choice', json.loads(printed.getvalue())['error'])
