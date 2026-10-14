@@ -1249,7 +1249,14 @@ class WireTests(WireCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)['documents']['added'][0]['bytes'], 27 * 2_000)
         for target in ('/api/answer', '/api/copies', '/api/decide', '/api/run'):
-            status, _, body = self.ask(target, {'path': path, 'id': over, 'answer': over})
+            # An over-long body is never read: the server refuses and closes the line. A
+            # client still sending may see the line reset before it reads the refusal.
+            try:
+                status, _, body = self.ask(target, {'path': path, 'id': over, 'answer': over})
+            except urllib.error.URLError as reset:
+                self.assertIsInstance(reset.reason, (ConnectionResetError, BrokenPipeError),
+                                      target)
+                continue
             self.assertEqual((status, json.loads(body)['error']), (413, 'A change is at most '
                              '64,000 bytes, with its length stated.'), target)
         large = base64.b64encode(b'A line of a long handbook.\n' * 150_000).decode('ascii')
