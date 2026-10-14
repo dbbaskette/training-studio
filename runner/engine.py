@@ -140,6 +140,7 @@ What a caller needs to know
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import secrets
@@ -159,7 +160,7 @@ import hub
 import workspace
 from workspace import WorkspaceError
 
-from runner import agents, deck, gitstate, pipeline, settings, team, worker_tools
+from runner import agents, companion, deck, gitstate, pipeline, settings, team, worker_tools
 from runner import brand as brand_skill
 from runner import copies as copies_made
 from runner import documents as documents_kept
@@ -929,10 +930,13 @@ class Engine:
                         'Everything kept so far is still here.')
                 last = step.step.id if step.kind == 'code' else None
                 (root / IN_HAND).write_text(f'{step.step.id}\n', encoding='utf-8')
-                self._do(root, run, found, step)
+                with companion.stopping(run.stop):  # a command a step runs ends on Stop
+                    self._do(root, run, found, step)
                 (root / IN_HAND).unlink(missing_ok=True)
         except _Gone:   # it is someone else's now: what the step wrote was put back
             (root / IN_HAND).unlink(missing_ok=True)
+        except companion.Stopped:   # ended on purpose; IN_HAND stays for the next start
+            pass
         except Exception as failure:  # whatever a step does, the runner keeps serving
             (root / IN_HAND).unlink(missing_ok=True)
             self._trouble(root, failure)
@@ -1420,7 +1424,8 @@ class Engine:
                 one(section)
             return
         with ThreadPoolExecutor(max_workers=self.at_once) as pool:
-            for pending in [pool.submit(one, section) for section in step.questions]:
+            for pending in [pool.submit(contextvars.copy_context().run, one, section)
+                            for section in step.questions]:
                 pending.result()
 
     def _section(self, root: Path, run: _Run, found: pipeline.Survey, whole: pipeline.Step,
@@ -1896,7 +1901,8 @@ class Engine:
                 one(ident)
             return
         with ThreadPoolExecutor(max_workers=self.at_once) as pool:
-            for pending in [pool.submit(one, ident) for ident in step.questions]:
+            for pending in [pool.submit(contextvars.copy_context().run, one, ident)
+                            for ident in step.questions]:
                 pending.result()
 
     def _question(self, root: Path, run: _Run, found: pipeline.Survey, ident: str,

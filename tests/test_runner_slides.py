@@ -5,7 +5,6 @@ import copy
 import json
 import os
 import struct
-import subprocess
 import sys
 import tempfile
 import threading
@@ -343,10 +342,10 @@ class CommandTests(unittest.TestCase):
     def test_a_command_that_hangs_or_cannot_start_is_a_refusal(self):
         self.assertEqual(slides.run_command([sys.executable, '-c', 'print("ok")']),
                          (0, 'ok\n', ''))
-        slow = subprocess.TimeoutExpired(['node'], slides.TIMEOUT)
-        with mock.patch.object(slides.subprocess, 'run', side_effect=slow):
-            with self.assertRaisesRegex(WorkspaceError, 'did not answer in 300 seconds'):
-                slides.run_command(['node'])
+        with mock.patch.object(slides, 'TIMEOUT', 1):
+            with self.assertRaisesRegex(WorkspaceError,
+                                        '^The slides tool did not answer in 1 seconds.$'):
+                slides.run_command([sys.executable, '-c', 'import time; time.sleep(30)'])
         with self.assertRaisesRegex(WorkspaceError, 'could not be started'):
             slides.run_command(['no-such-program-anywhere'])
 

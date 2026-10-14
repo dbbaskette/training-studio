@@ -91,7 +91,6 @@ import os
 import re
 import shutil
 import struct
-import subprocess
 import threading
 import time
 import zipfile
@@ -101,6 +100,8 @@ from xml.sax.saxutils import escape
 
 import runner  # noqa: F401  puts the core on the import path
 from workspace import WorkspaceError
+
+from runner import companion
 
 VARIABLE = 'HARNESS_SLIDES_RUNTIME'
 MINIMUM = '0.13.1'
@@ -141,40 +142,19 @@ class Refused(WorkspaceError):
 def locations() -> list[Path]:
     """Where an installed harness-slides may be. The override, when set, is the only place
     looked."""
-    override = os.environ.get(VARIABLE)
-    if override:
-        return [Path(override).expanduser()]
-    user = Path.home()
-    return [user / 'Library' / 'Application Support' / 'Harness Slides' / 'current',
-            user / '.local' / 'share' / 'harness-slides' / 'current',
-            user / '.claude' / 'skills' / 'harness-slides',
-            user / '.agents' / 'skills' / 'harness-slides',
-            user / '.cursor' / 'skills' / 'harness-slides']
+    return companion.locations(VARIABLE, 'harness-slides', 'Harness Slides')
 
 
 def find_runtime() -> Path:
     """The installed harness-slides, with links followed so one version is used throughout.
     Refuses when there is none."""
-    for place in locations():
-        if (place / SCRIPT).is_file():
-            return place.resolve()
-    if os.environ.get(VARIABLE):
-        raise WorkspaceError(f'{VARIABLE} names {os.environ[VARIABLE]}, which does not hold '
-                             'harness-slides. Point it at the installed skill, or unset it.')
-    raise WorkspaceError('The harness-slides skill is not installed on this computer, so a '
-                         'deck cannot be made. Install it, then try again.')
+    return companion.find_runtime(locations(), SCRIPT, VARIABLE, 'harness-slides',
+                                  'a deck cannot be made')
 
 
 def run_command(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
     """Run the command line once: (exit code, standard output, standard error)."""
-    try:
-        done = subprocess.run(command, cwd=cwd, capture_output=True, timeout=TIMEOUT,
-                              stdin=subprocess.DEVNULL, encoding='utf-8', errors='replace')
-    except subprocess.TimeoutExpired:
-        raise WorkspaceError(f'The slides tool did not answer in {TIMEOUT} seconds.')
-    except OSError as failure:
-        raise WorkspaceError(f'The slides tool could not be started ({failure}).')
-    return done.returncode, done.stdout, done.stderr
+    return companion.run_command(command, cwd, TIMEOUT, 'The slides tool')
 
 
 def _numbers(version: str) -> tuple:

@@ -4,7 +4,6 @@ nor an installed skill is needed, and nothing touches the network.
 import gc
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -406,10 +405,10 @@ class CommandTests(unittest.TestCase):
     def test_a_command_that_hangs_or_cannot_start_is_a_refusal(self):
         self.assertEqual(brand.run_command([sys.executable, '-c', 'print("ok")']),
                          (0, 'ok\n', ''))
-        slow = subprocess.TimeoutExpired(['node'], brand.TIMEOUT)
-        with mock.patch.object(brand.subprocess, 'run', side_effect=slow):
-            with self.assertRaisesRegex(WorkspaceError, 'did not answer in 120 seconds'):
-                brand.run_command(['node'])
+        with mock.patch.object(brand, 'TIMEOUT', 1):
+            with self.assertRaisesRegex(WorkspaceError,
+                                        '^The brand skill did not answer in 1 seconds.$'):
+                brand.run_command([sys.executable, '-c', 'import time; time.sleep(30)'])
         with self.assertRaisesRegex(WorkspaceError, 'could not be started'):
             brand.run_command(['no-such-program-anywhere'])
 

@@ -160,6 +160,7 @@ runner/
   agents.py                 starts Claude Code or Codex as a confined worker for one job
   worker_tools.py           the only tools a worker has, and the checks on what it hands back
   gitstate.py               the workspace: one folder in a git repository
+  companion.py              finds a companion skill, and runs a command so Stop ends all of it
   research.py               the harness-research command line, called from Python
   documents.py              the documents a person supplies for research
   copies.py                 the Google Docs and Word files a training asked for
