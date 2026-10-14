@@ -19,7 +19,7 @@ A teammate who only wants to make trainings needs nothing else: install, open Tr
 ## What it does
 
 1. Checks that the skill package is whole.
-2. Copies it, and the runner with it, to `~/.local/share/training-studio/versions/<version>`.
+2. Copies it, the runner with it, and this installer with the companion pins it used, to `~/.local/share/training-studio/versions/<version>`. The runner uses that copy of the installer to [keep things current](runner.md#keeping-it-current).
 3. Runs the copy's own checks, and starts the copied runner far enough to see that it loads.
 4. Points `~/.local/share/training-studio/current` at that copy.
 5. Links the skill into each assistant it finds:
@@ -89,6 +89,8 @@ A companion you said no to, skipped, or were not there to be asked about is name
 sh installer/install.sh --companions install
 ```
 
+To bring only the companions and change nothing else, use `companions` in place of `install`. Each is still offered one at a time. The runner's "Update the skills" runs this from the installed version, once you have said yes on the page. It is the one change the installer makes while the runner is open, and the runner refuses it while a training is working.
+
 ### Why this is safe, and where it stops
 
 - **Nothing is run without your yes.** The question is asked for each companion. `--yes` answers only the first question, about Training Studio itself. When no one is there to answer, no companion is fetched. `--companions install` is the way to say yes in advance, on the command line.
@@ -139,7 +141,7 @@ sh installer/install.sh install --dry-run
 
 ## Update
 
-Close Training Studio if it is open. Get the newer version of this repository and run the installer again. The new copy is installed beside the old one, the runner with it, and the links move to it. Trainings you have already made are not touched; they live in your own folders.
+Once a day the runner checks whether a newer Training Studio is out. If one is, Home says so, with the command to run; see [keeping it current](runner.md#keeping-it-current). Close Training Studio if it is open. Get the newer version of this repository and run the installer again. The new copy is installed beside the old one, the runner with it, and the links move to it. Trainings you have already made are not touched; they live in your own folders.
 
 The installer never changes anything while the runner is working. It says so and stops. Close the runner's window, or press Ctrl-C in it, and run the installer again. This holds for going back a version and for removing too.
 
@@ -182,6 +184,7 @@ Nothing is copied, the launchers open the checkout's own runner, the helper's co
 | Option | Does |
 | --- | --- |
 | `install`, `check`, `rollback`, `uninstall` | The action. `install` is the default |
+| `companions` | Bring the companion skills that are missing or older than their pins, and nothing else |
 | `--target claude`, `codex` or `both` | Which assistant to install for |
 | `--companions ask`, `install` or `skip` | The companion skills. `ask` is the default: each is offered, and none is brought when no one is there to answer. `install` says yes in advance. `skip` brings none |
 | `--link` | Link to this checkout; copy nothing |

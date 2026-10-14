@@ -572,7 +572,7 @@ class TurnTests(StudioCase):
         found = self.engine.standing()
         self.assertEqual((sorted(found), found['limit'], found['elsewhere'],
                           found['background']),
-                         (['background', 'elsewhere', 'limit', 'runs'], 1, [], None))
+                         (['background', 'elsewhere', 'limit', 'runs', 'upkeep'], 1, [], None))
         runs = {run['id']: run for run in found['runs']}
         self.assertEqual(sorted(runs['blue-green']), ['driver', 'id', 'needs', 'notice', 'path',
                                                       'queue', 'sentence', 'spent', 'state',

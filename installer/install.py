@@ -75,12 +75,15 @@ def package_key(folder: Path) -> str:
     return f'{version}-{digest.hexdigest()[:12]}'
 
 
-def assemble(source: Path, bootstrap: Path, destination: Path, runner: Path = RUNNER) -> None:
+def assemble(source: Path, bootstrap: Path, destination: Path, runner: Path = RUNNER,
+             pins: Path | None = None) -> None:
     """Lay out an installed copy: a small entry, the scripts, the guidance beside them, and
     the runner beside the scripts, where it finds them.
 
     The entry fetches newer guidance when it can. The guidance copied here is what it falls
-    back to when it cannot.
+    back to when it cannot. This installer and the pins it installed with go beside the
+    runner too, as they are beside it in a checkout: the runner asks them, when it starts,
+    whether the skills are still in place, and brings a companion with them when asked.
     """
     ignore = shutil.ignore_patterns(*IGNORED)
     destination.mkdir(parents=True)
@@ -91,6 +94,9 @@ def assemble(source: Path, bootstrap: Path, destination: Path, runner: Path = RU
     for folder in ('scripts', 'agents'):
         shutil.copytree(source / folder, destination / folder, ignore=ignore)
     shutil.copytree(runner, destination / 'runner', ignore=ignore)
+    (destination / 'installer').mkdir()
+    shutil.copy2(Path(__file__).resolve(), destination / 'installer' / 'install.py')
+    shutil.copy2(pins or PINS, destination / 'installer' / 'companions.json')
     for part in GUIDANCE_PARTS:
         target = destination / 'guidance' / part
         if (source / part).is_dir():
@@ -358,15 +364,18 @@ def ours(path: Path) -> bool:
         return False
 
 
-def write_launchers(home: Path, root: Path, studio: Path, scripts: Path) -> dict[str, str]:
-    """Write the ways to open the runner, and the helper's command. A file of someone's own
-    in the way is left alone."""
+def write_launchers(home: Path, root: Path, studio: Path, scripts: Path,
+                    kinds: tuple | None = None) -> dict[str, str]:
+    """Write the ways to open the runner, and the helper's command: every one, or only the
+    `kinds` named. A file of someone's own in the way is left alone."""
     places = launcher_places(home, root)
     texts = {'command': lambda: opener_text(studio),
              'helper': lambda: helper_text(scripts, places['helper']),
              'double_click': lambda: launcher_text(places['command'])}
     written = {}
     for kind, path in places.items():
+        if kinds is not None and kind not in kinds:
+            continue
         if (path.exists() or path.is_symlink()) and not ours(path):
             continue
         text = texts[kind]()
@@ -612,6 +621,24 @@ def bring_companions(home: Path, root: Path, harnesses: list[str], pins: dict, a
     return outcomes
 
 
+def companions(home: Path, root: Path, target: str | None, pins: dict, agree,
+               declined: str | None = None) -> dict:
+    """Bring each companion skill that is missing or older than its pin, and nothing else.
+    It is brought for the assistants named, else those Training Studio was installed for,
+    else every one found. What was brought is recorded with the installation, when there is
+    one. The runner's Update asks for this."""
+    state = read_state(root)
+    named = list(SKILL_ROOTS) if target == 'both' else [target] if target else None
+    harnesses = named or list((state or {}).get('links', {})) or chosen_harnesses(home, None)
+    outcomes = bring_companions(home, root, harnesses, pins, agree,
+                                state if state is not None else {}, declined)
+    if state is not None:
+        write_state(root, state)
+    notes = [said_of(name, pins[name], outcome, harnesses) for name, outcome in outcomes.items()]
+    return {'action': 'companions', 'harnesses': harnesses, 'companions': outcomes,
+            'notes': [note for note in notes if note]}
+
+
 def pin(path: Path, name: str, revision: str) -> dict:
     """For whoever keeps this repository: pin a companion to a tag or commit of its own
     repository, and write what that revision holds into companions.json."""
@@ -650,9 +677,11 @@ def pin(path: Path, name: str, revision: str) -> dict:
 
 def install(source: Path, home: Path, root: Path, harnesses: list[str], link_only: bool,
             replace: bool, bootstrap: Path = BOOTSTRAP, runner: Path = RUNNER,
-            pins: dict | None = None, agree=None, declined: str | None = None) -> dict:
+            pins: dict | None = None, agree=None, declined: str | None = None,
+            pins_file: Path | None = None) -> dict:
     """Install the skill and the runner, link the skill into each assistant's skill folder,
-    write the ways to open the runner, and bring the companion skills the person agrees to."""
+    write the ways to open the runner, and bring the companion skills the person agrees to.
+    `pins_file` is where `pins` were read from, which the installed copy keeps."""
     verify(source)
     if not (runner / 'studio.py').is_file():
         raise InstallError(f'The runner is missing: {runner}')
@@ -673,7 +702,7 @@ def install(source: Path, home: Path, root: Path, harnesses: list[str], link_onl
         pending = root / 'versions' / f'.pending-{secrets.token_hex(4)}'
         pending.parent.mkdir(parents=True, exist_ok=True)
         try:
-            assemble(source, bootstrap, pending, runner)
+            assemble(source, bootstrap, pending, runner, pins_file)
             key = package_key(pending)
             staged = root / 'versions' / key
             if not staged.exists():
@@ -1000,6 +1029,15 @@ def describe(result: dict) -> str:
                 f"would be offered, from {companion['from']} at revision "
                 f"{companion['commit'][:12]}" if companion['would_offer']
                 else 'already there; would be left alone'))
+    elif action == 'companions':
+        for name, outcome in result['companions'].items():
+            if outcome['state'] == 'installed':
+                lines.append(f"{name} {outcome['wanted']} was installed by its own installer.")
+            elif outcome['state'] == 'left alone' and not wanting(outcome['found'],
+                                                                 outcome['wanted']):
+                lines.append(f"{name} is already as new as {outcome['wanted']}, and was left "
+                             'alone.')
+        lines = lines or ['No companion skill was brought.']
     elif action == 'pin':
         lines.append(f"{result['companion']} is now pinned to {result['version']} "
                      f"({result['commit'][:12]}); it was {result['was']['version']} "
@@ -1039,10 +1077,19 @@ def offer(name: str, pin: dict, found: dict) -> bool:
     return input(f'Fetch {name} and run its installer? [y/N]: ').strip().lower() in ('y', 'yes')
 
 
+def agreement(choice: str) -> tuple:
+    """How each companion is agreed to for --companions, and why one is not."""
+    return {'install': (lambda *asked: True, None),
+            'skip': (lambda *asked: False, 'skipped'),
+            'ask': (offer, 'declined') if sys.stdin.isatty()
+            else (lambda *asked: False, 'nobody to ask')}[choice]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', default='install',
-                        choices=('install', 'check', 'rollback', 'uninstall', 'pin'))
+                        choices=('install', 'check', 'rollback', 'uninstall', 'companions',
+                                 'pin'))
     parser.add_argument('companion', nargs='?', help=argparse.SUPPRESS)
     parser.add_argument('--target', choices=('claude', 'codex', 'both'),
                         help='which assistant to install for (default: every one found)')
@@ -1058,6 +1105,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='say what an install would do; change nothing')
     parser.add_argument('--json', action='store_true', help='print the result as JSON')
     parser.add_argument('--revision', help=argparse.SUPPRESS)   # with pin: a tag or commit
+    # With companions: the runner asks, while it is open, having seen no training working.
+    parser.add_argument('--while-open', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--home', type=Path, default=Path.home(), help=argparse.SUPPRESS)
     parser.add_argument('--root', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--source', type=Path, default=SOURCE, help=argparse.SUPPRESS)
@@ -1084,6 +1133,11 @@ def main(argv: list[str] | None = None) -> int:
             verify(source)
             result = plan(source, home, root, chosen_harnesses(home, args.target), args.link,
                           pins)
+        elif args.action == 'companions':
+            # Each companion is its own question, so there is no question before them.
+            if not args.while_open:
+                not_while_serving(home)
+            result = companions(home, root, args.target, pins, *agreement(args.companions))
         else:
             harnesses = chosen_harnesses(home, args.target) if args.action == 'install' else []
             if not args.yes:
@@ -1096,14 +1150,10 @@ def main(argv: list[str] | None = None) -> int:
                     print('Nothing was changed.')
                     return 0
             if args.action == 'install':
-                # How each companion is agreed to, and why one is not.
-                agree, declined = {
-                    'install': (lambda *asked: True, None),
-                    'skip': (lambda *asked: False, 'skipped'),
-                    'ask': (offer, 'declined') if sys.stdin.isatty()
-                    else (lambda *asked: False, 'nobody to ask')}[args.companions]
+                agree, declined = agreement(args.companions)
                 result = install(source, home, root, harnesses, args.link, args.replace,
-                                 pins=pins, agree=agree, declined=declined)
+                                 pins=pins, agree=agree, declined=declined,
+                                 pins_file=pins_path)
             elif args.action == 'rollback':
                 result = rollback(root, home)
             elif args.action == 'pin':

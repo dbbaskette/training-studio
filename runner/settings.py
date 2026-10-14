@@ -22,6 +22,8 @@ What a caller needs to know
 - `notify` is whether the runner tells the person, through the computer's own
   notifications, that a training needs a decision while no page is open. Off until they
   turn it on.
+- `look_for_updates` is whether the runner asks, at most once a day, which releases of
+  Training Studio and its companion skills exist. On until they turn it off. See `upkeep`.
 - A value that makes no sense is refused with a sentence, not corrected silently.
 """
 from __future__ import annotations
@@ -57,6 +59,7 @@ class Settings:
     previews: str | None = None
     brand_skill: str | None = None
     notify: bool = False
+    look_for_updates: bool = True
 
     @property
     def limits(self) -> dict:
@@ -117,6 +120,13 @@ def check_notify(wanted) -> bool:
     return wanted
 
 
+def check_look(wanted) -> bool:
+    if not isinstance(wanted, bool):
+        raise WorkspaceError('Looking for updates is on or off: give look_for_updates as true '
+                             'or false.')
+    return wanted
+
+
 def number(value, label: str, least: float, most: float, whole: bool):
     """A limit a person typed, which must be a number in a sensible range."""
     plain = isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -138,7 +148,8 @@ def check(chosen: Settings) -> Settings:
                                 'What a training may spend, in dollars,', 0.01, DOLLARS, False),
         parallel=number(chosen.parallel, 'How many trainings run at once', *PARALLEL, True),
         previews=check_previews(chosen.previews), brand_skill=check_place(chosen.brand_skill),
-        notify=check_notify(chosen.notify))
+        notify=check_notify(chosen.notify),
+        look_for_updates=check_look(chosen.look_for_updates))
 
 
 def load() -> Settings:

@@ -21,7 +21,7 @@ from runner_support import StudioCase, fails
 
 import cmd_desk
 from runner import engine as engines
-from runner import gitstate, page, studio
+from runner import gitstate, page, settings, studio, upkeep
 
 VERSION = (helpers.SKILL / 'VERSION').read_text().strip()
 STUDIO = helpers.REPO / 'runner' / 'studio.py'
@@ -57,13 +57,37 @@ class Server:
         self.did.append('stop')
 
 
+class Keeper:
+    """A stand-in for what looks after the skills on this computer: it records what it is
+    asked, and looks at nothing."""
+    made = []
+
+    def __init__(self, after=None):
+        self.after, self.did = after, []
+        Keeper.made.append(self)
+
+    def start(self):
+        self.did.append('start')
+
+    def check(self, repair=True):
+        self.did.append(('check', repair))
+        return {}
+
+    def report(self):
+        return {'stand_in': True}
+
+    def close(self):
+        self.did.append('close')
+
+
 class ServeTests(StudioCase):
     def setUp(self):
         super().setUp()
-        Server.made = []
-        patcher = mock.patch.object(page, 'Studio', Server)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        Server.made, Keeper.made = [], []
+        for patcher in (mock.patch.object(page, 'Studio', Server),
+                        mock.patch.object(upkeep, 'Upkeep', Keeper)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.opened = []
 
     def serve(self, person: bool, *args: str, opens: bool = True) -> dict:
@@ -106,6 +130,23 @@ class ServeTests(StudioCase):
         self.assertNotIn('the-key', json.dumps(printed))
         self.assertEqual(self.opened, ['http://127.0.0.1:9000/#token=the-key'])
         self.assertEqual(self.serve(False, opens=False)['opened'], False)
+
+    def test_once_it_answers_the_skills_are_looked_after_in_the_background(self):
+        seen = []
+
+        def answering(server):
+            seen.append(list(Keeper.made[0].did))
+            server.did.append('serve')
+
+        with mock.patch.object(Server, 'serve', answering):
+            self.serve(True)
+        (keeper,) = Keeper.made
+        self.assertEqual(seen, [['start']], 'started before serving, and never waited for')
+        self.assertIs(self.engine.upkeep, keeper)
+        self.assertEqual(keeper.after, self.engine.look_again,
+                         'once it changes the skills, the computer is looked at again')
+        self.engine.close()
+        self.assertEqual(keeper.did, ['start', 'close'], 'closing ends an update in hand')
 
     def test_starting_picks_every_training_up_where_its_files_say_it_is(self):
         self.workers.then('research-plan', fails())
@@ -224,6 +265,13 @@ class ServeTests(StudioCase):
 
 
 class StatusTests(StudioCase):
+    def setUp(self):
+        super().setUp()
+        Keeper.made = []
+        patcher = mock.patch.object(upkeep, 'Upkeep', Keeper)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def status(self) -> dict:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -236,7 +284,13 @@ class StatusTests(StudioCase):
         waiting = self.start(title='Health checks')
         found = self.status()
         self.assertEqual(sorted(found), ['agent', 'brand', 'configured', 'limits', 'notify',
-                                         'previews', 'trainings', 'version', 'workspace'])
+                                         'previews', 'trainings', 'updates', 'upkeep',
+                                         'version', 'workspace'])
+        # What was found of the skills, looked at as they are: nothing is put back, and
+        # nothing is asked online.
+        self.assertEqual((found['upkeep'], found['updates']),
+                         ({'stand_in': True}, {'look': True}))
+        self.assertEqual(Keeper.made[0].did, [('check', False)])
         self.assertEqual((found['version'], found['configured'], found['agent']),
                          (VERSION, True,
                           {'default': 'claude', 'model': None, 'effort': None}))
@@ -262,7 +316,11 @@ class ProcessTests(StudioCase):
     def launch(self, opened: Path, programs: Path | None = None):
         recorder = self.base / 'recorder.py'
         recorder.write_text('import sys\nopen(sys.argv[1], "w").write(sys.argv[2])\n')
-        environment = {**os.environ, 'BROWSER': f'{sys.executable} {recorder} {opened} %s'}
+        # A home of its own, and no look online: nothing real is read and nothing is asked.
+        (self.base / 'home').mkdir(exist_ok=True)
+        settings.save(settings.Settings(look_for_updates=False))
+        environment = {**os.environ, 'BROWSER': f'{sys.executable} {recorder} {opened} %s',
+                       'HOME': str(self.base / 'home')}
         if programs:
             environment['PATH'] = f'{programs}{os.pathsep}{environment["PATH"]}'
         process = subprocess.Popen(

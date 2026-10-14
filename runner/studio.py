@@ -12,7 +12,10 @@ which the installed launcher uses, a person's terminal is given the link and the
 opened for them as well. It runs until
 it is interrupted, and picks every training up where its files say it is when started again.
 It fetches a shared workspace when it starts and every few minutes while it serves, and can
-tell the person through the computer's own notifications when no page is open.
+tell the person through the computer's own notifications when no page is open. Once it
+answers, it looks in the background at whether the skills are in place and current, puts
+back a link the installer placed that has gone missing, and at most once a day asks which
+releases exist (see `upkeep`). `status` says what was last found, and asks nothing online.
 One runner serves on a computer at a time: a second would undo what the first is doing.
 """
 import sys
@@ -35,7 +38,7 @@ import home  # noqa: E402
 from workspace import WorkspaceError  # noqa: E402
 
 from runner import engine as engines  # noqa: E402
-from runner import gitstate, page, setup  # noqa: E402
+from runner import gitstate, page, setup, upkeep as upkeeping  # noqa: E402
 
 
 @contextmanager
@@ -67,14 +70,16 @@ def only_runner():
         path.unlink(missing_ok=True)
 
 
-def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show) -> int:
-    """Print one line of JSON, then serve until interrupted."""
+def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show, keeper=None) -> int:
+    """Print one line of JSON, then serve until interrupted. `keeper` makes what looks
+    after the skills here, given what to call once it has changed them."""
     out = out or sys.stdout
     space = gitstate.current()
     if space is not None:
         gitstate.identity(space.repo)  # nothing can be recorded without one; says the fix
     with only_runner():
         engine = make()
+        engine.upkeep = (keeper or upkeeping.Upkeep)(after=engine.look_again)
         server = page.Studio(engine, args.port)
         signal.signal(signal.SIGTERM, cmd_desk.interrupt)
         try:
@@ -83,6 +88,7 @@ def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show) -> int:
             if out.isatty() and getattr(args, 'open', False):
                 opener(server.url)   # the person's own terminal, and their own browser
             engine.resume(wait=False)   # the page answers while the workspace is fetched
+            engine.upkeep.start()       # and while the skills are looked at
             server.serve()
         except KeyboardInterrupt:
             pass
@@ -91,9 +97,12 @@ def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show) -> int:
     return 0
 
 
-def status(args, make=engines.Engine, out=None) -> int:
-    """What is set up on this computer and where every run is. Starts nothing."""
+def status(args, make=engines.Engine, out=None, keeper=None) -> int:
+    """What is set up on this computer and where every run is. Starts nothing, changes
+    nothing, and asks nothing online: the skills are looked at as they are."""
     engine = make()
+    engine.upkeep = (keeper or upkeeping.Upkeep)()
+    engine.upkeep.check(repair=False)
     report = {'version': gitstate.installed(), **setup.describe(engine), **engine.status()}
     print(json.dumps(report, indent=2, sort_keys=True), file=out or sys.stdout)
     return 0
