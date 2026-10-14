@@ -28,7 +28,7 @@ Stage files end with a checkpoint written for a plain training. With levels, use
 - After every blueprint is approved: `training.py checkpoint --no-question --stage document --level 101 --next "Write the 101 learner guide"`.
 - After a level's scenario gate, if a level remains: the same command with the next level. After the last level, go on to `--stage package`.
 
-One `README.md` covers the whole training, at the top. `deck-handoff.md` sits in the level's folder. Each level's deck is its own `harness-slides` task: give that skill the level's folder as its project, and record it with `training.py pin harness-slides --level 301 --task <id> --runtime <path>`.
+One `README.md` covers the whole training, at the top. `deck-handoff.md` sits in the level's folder, and each level's deck is its own `harness-slides` task, as the deck-handoff reference describes.
 
 ## Writing a level
 

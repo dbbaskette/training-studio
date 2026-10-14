@@ -22,5 +22,4 @@ Rules that go with them:
 
 - Yoodli is optional and off unless asked for. While it is on, the brief and the scenarios cannot be skipped: turn Yoodli off first.
 - A stage is skipped for every level or for none.
-- When `stage` is `done`, run `training.py check --complete` before saying anything about completeness. The marker does not prove the training is still complete.
 - A refusal from the helper is shown to the user as it is.
