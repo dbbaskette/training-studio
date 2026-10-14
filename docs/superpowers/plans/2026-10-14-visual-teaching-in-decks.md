@@ -2,7 +2,7 @@
 
 Make technical training decks explain concepts through diagrams, approved icons, and useful images. Harness Slides owns design, asset handling, compilation, and creative review. Training Studio supplies teaching requirements, presents decisions, and tracks approved inputs and outputs.
 
-Status: in progress. Harness Slides has the design contract on `main`, unreleased (its #46 to #50). Training Studio proposes copy and visuals together at the outline gate, where the installed Harness Slides can take them (#43), and draws each section from the approved design and builds it against it (#44). Assets and review are still to come.
+Status: in progress. Harness Slides has the design contract on `main`, unreleased (its #46 to #50). Training Studio proposes copy and visuals together at the outline gate, where the installed Harness Slides can take them (#43), and draws each section from the approved design and builds it against it (#44). It records the icons a design names before any section is drawn, takes the person's pictures on the page, gives composers narrow asset tools, and makes what is drawn stale when an asset changes (#45). Review is still to come.
 
 ## Evidence and intended outcome
 
@@ -52,11 +52,11 @@ Acceptance: the outline review visibly proposes a Kubernetes architecture treatm
 ## Milestone 3 Give composers usable assets
 
 - [ ] Add only the Harness Slides capabilities missing from milestone 1. Prefer existing composition primitives when they can realize the approved design; do not migrate to a different compiler merely to obtain a new schema.
-- [ ] Resolve and record relevant approved icons before section authoring. Share stable IDs for recurring concepts; retain icon search for refinements. Repeated actors in a diagram may reuse their identifying icon when that improves comprehension.
-- [ ] Add narrowly scoped worker tools for listing approved assets and requesting or resolving assets through Harness Slides. Keep provider execution, file handling, provenance and generated-image metadata in Harness Slides.
+- [x] Resolve and record relevant approved icons before section authoring. Share stable IDs for recurring concepts; retain icon search for refinements. Repeated actors in a diagram may reuse their identifying icon when that improves comprehension.
+- [x] Add narrowly scoped worker tools for listing approved assets and requesting or resolving assets through Harness Slides. Keep provider execution, file handling, provenance and generated-image metadata in Harness Slides.
 - [ ] Make assets usable from compilation and preview directories through stable asset identifiers and managed paths. Preserve alt text, source or generation provenance, hashes and any applicable usage restrictions.
-- [ ] Reuse Harness Slides' existing provider configuration and setup reporting. Do not invent a second credential store in Training Studio. Report missing configuration with the affected asset request.
-- [ ] Include asset files and their hashes in the section and deck input fingerprints. Fail with a clear missing-asset response when a required approved asset cannot be resolved.
+- [x] Reuse Harness Slides' existing provider configuration and setup reporting. Do not invent a second credential store in Training Studio. Report missing configuration with the affected asset request.
+- [x] Include asset files and their hashes in the section and deck input fingerprints. Fail with a clear missing-asset response when a required approved asset cannot be resolved.
 - [ ] Verify native icon geometry and editable diagram objects survive both PPTX and Google delivery. Raster illustrations remain images; record their provenance and inspect their final rendering.
 
 Likely Training Studio files: `runner/worker_tools.py`, `runner/slides.py`, `runner/brand.py` only if its adapter needs changes, `runner/pipeline.py`, `runner/engine.py` and their targeted tests.
@@ -88,7 +88,7 @@ Acceptance: a prose-card rendering of a reconciliation mechanism receives a spec
 
 These rows are implementation requirements, not new public status names. Map them to the existing state model and add new names only where necessary.
 
-Implemented: V01, V02, V03, V04, V13 and V14, each a test of its name in Training Studio's `tests/test_runner_deck.py` (`DesignTests`). They map to the runner's own outline gate: "awaiting review" is `waiting` in the run record with the design's revision and question, and "approved" is `approved` holding the outline's hash and the design's hash and revision. V04 and V14 map to the deck's start and its sections: "the approval holds" is `approved` and the tool's revision unchanged with nothing sent to the tool, and "stops" is the run's `stopped` problem with the approval kept. The milestone 4 spec says how, for [the outline gate](../specs/2026-10-13-milestone-4-slides.md#the-outline-gate-with-a-design) and for [the sections](../specs/2026-10-13-milestone-4-slides.md#sections-built-from-the-approved-design).
+Implemented: V01, V02, V03, V04, V05, V06, V07, V13 and V14, each a test of its name in Training Studio's `tests/test_runner_deck.py` (`DesignTests`). They map to the runner's own outline gate: "awaiting review" is `waiting` in the run record with the design's revision and question, and "approved" is `approved` holding the outline's hash and the design's hash and revision. V05, V06 and V07 are tests of their names in `AssetTests` there: "waits" is the run's problem in state `waiting`, which `waits` for assets, with the approval and the start kept; "resolving" is a picture supplied on the page, or the run tried again, after which it carries on with one reply sent to the tool; and "stale" is a section, round or saved deck whose recorded asset fingerprint no longer matches the file. V04 and V14 map to the deck's start and its sections: "the approval holds" is `approved` and the tool's revision unchanged with nothing sent to the tool, and "stops" is the run's `stopped` problem with the approval kept. The milestone 4 spec says how, for [the outline gate](../specs/2026-10-13-milestone-4-slides.md#the-outline-gate-with-a-design) and for [the sections](../specs/2026-10-13-milestone-4-slides.md#sections-built-from-the-approved-design).
 
 | Row | Starting condition | Event | Required result and test |
 | --- | --- | --- | --- |

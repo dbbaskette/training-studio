@@ -28,6 +28,15 @@ What a caller needs to know
     slides.design_status(project)
     slides.design_check(project)                   # {'plan', 'revision', 'buildAllowed'}
     slides.design_respond(project, reply)          # a person's answer to the question
+    slides.capabilities()                          # what it says it has, or None
+    slides.assets()                                # whether it keeps an asset manifest
+    slides.asset_status(project)                   # {'manifest', 'assets': [{..., 'state'}]}
+    slides.asset_check(project, brand=None)        # {'status': 'ready', ...}, or Refused
+    slides.asset_icon(project, icon, ident, alt=None, brand=None)
+    slides.asset_supplied(project, file, ident, alt, source, kind='supplied',
+                          restrictions=None)       # a person's picture, recorded
+    slides.images_status()                         # whether an image provider is set up
+    slides.generate_image(project, ident, prompt, output, slide, alt=None)
 
 - `brand` is the path of an exported brand-contract.json. `outline`, `composition`, `parts`
   and `assessment` are paths of JSON files; `folder`, `compiled`, `preview_folder` and
@@ -99,6 +108,18 @@ Added to the above
   neighbouring ones, each with its approved title and, where a slide gives one, its
   approved `intent`. They then ask for refusals as JSON, so a `design-mismatch` names its
   slide in `found`. Without `design` the command is as 0.13.1 takes it.
+- `capabilities()` is the set of names `version` lists, which a tool after 0.13.1 gives,
+  or None for one that lists none. `designs()`, `sections()` and `assets()` read it first
+  and ask the tool by a refusal only when it lists nothing.
+- The asset manifest is the tool's record of each picture and icon a deck may use, kept in
+  `project`, the deck's design project. `assets()` says whether the tool keeps one: its
+  capability `assets`, or for a tool that lists none, whether `assets status` of an empty
+  folder that is thrown away answers as JSON. Every asset call asks for JSON, so a refusal
+  carries `found` and `codes`, each problem with its `asset`, `provider` and `next`. The tool
+  keeps the files, their hashes, alt text, sources and provenance; nothing here keeps a
+  credential. `asset_supplied` is the person's alone: no worker is given it.
+- `generate_image` asks the tool's own image provider, set up as the tool says, for the
+  approved artwork of one slide drawn as generated art. The tool refuses any other slide.
 - `slides.runtime` is the folder the tool is installed in, with links followed. Give it to
   `Slides(runtime=...)` to use that same tool somewhere else, as the worker tools' server
   does. `Slides(read=...)` replaces how a guidance file is read.
@@ -269,6 +290,9 @@ class Slides:
         self.node = 'node' if run else shutil.which('node')
         self._designs: bool | None = None
         self._sections: bool | None = None
+        self._assets: bool | None = None
+        self._capabilities: frozenset | None = None
+        self._asked_capabilities = False
         if self.node is None:
             raise WorkspaceError('harness-slides needs Node.js 20 or newer, which was not '
                                  'found on this computer. Install it, then try again.')
@@ -412,6 +436,9 @@ class Slides:
         tool is asked, not its version: a proposal from a file that is not there, in an empty
         folder that is thrown away, is refused as JSON by a tool that has all three, and
         nothing is written. The answer is kept."""
+        listed = self.capabilities()
+        if self._designs is None and listed is not None:
+            self._designs = {'design-batch', 'design-schema-2', 'json-refusals'} <= listed
         if self._designs is None:
             try:
                 with tempfile.TemporaryDirectory() as folder:
@@ -429,6 +456,9 @@ class Slides:
         from one needs: `--section` beside `--design-project` on compile and preview, with
         refusals as JSON. Asked as `designs` asks, and kept: `--section` alone is refused as
         JSON `input-invalid` by a tool that has it, before the file it names is read."""
+        listed = self.capabilities()
+        if self._sections is None and listed is not None:
+            self._sections = {'compose-section', 'json-refusals'} <= listed
         if self._sections is None:
             try:
                 with tempfile.TemporaryDirectory() as folder:
@@ -441,6 +471,41 @@ class Slides:
             self._sections = bool(found) and [problem.get('code') for problem
                                               in found['problems']] == ['input-invalid']
         return self._sections
+
+    def capabilities(self) -> frozenset | None:
+        """What the tool says it has, as `version` lists it, or None when it lists nothing,
+        as 0.13.1 and the builds before the list do not. Asked once."""
+        if not self._asked_capabilities:
+            self._asked_capabilities = True
+            try:
+                found = json.loads(self._call('version'))
+            except (WorkspaceError, OSError, ValueError):
+                found = None
+            listed = found.get('capabilities') if isinstance(found, dict) else None
+            self._capabilities = frozenset(str(name) for name in listed) \
+                if isinstance(listed, list) else None
+        return self._capabilities
+
+    def assets(self) -> bool:
+        """Whether this tool keeps an asset manifest a deck's pictures and icons are recorded
+        in: its capability `assets`, or for a tool that lists none, whether `assets status` of
+        an empty folder, thrown away after, answers as JSON. Nothing is written. Kept."""
+        if self._assets is None:
+            listed = self.capabilities()
+            if listed is not None:
+                self._assets = 'assets' in listed
+            else:
+                try:
+                    with tempfile.TemporaryDirectory() as folder:
+                        code, out, _ = self.run([
+                            self.node, str(self.runtime / SCRIPT), 'assets', 'status',
+                            '--project', folder, '--json'])
+                    found = json.loads(out) if code == 0 else None
+                except (WorkspaceError, OSError, ValueError):
+                    found = None
+                self._assets = isinstance(found, dict) and isinstance(found.get('assets'),
+                                                                      list)
+        return self._assets
 
     def design_propose(self, project: Path, proposal: Path,
                        expected: str | None = None) -> dict:
@@ -467,6 +532,56 @@ class Slides:
             file.write_text(json.dumps(reply, ensure_ascii=False), encoding='utf-8')
             return self._json('design', 'respond', '--project', str(project), '--file',
                               str(file), '--json')
+
+    # --- the asset manifest ---
+
+    def asset_status(self, project: Path) -> dict:
+        """Each asset recorded in `project`, as {'manifest', 'assets'}: each with its
+        `assetId`, `kind`, `path` (none for an icon), `sha256`, `alt`, `source`,
+        `restrictions`, `ref` (an icon's library ID), `provenance` and `state`: 'ok',
+        'file-missing', 'hash-changed' or 'invalid'."""
+        return self._json('assets', 'status', '--project', str(project), '--json')
+
+    def asset_check(self, project: Path, brand: Path | None = None) -> dict:
+        """Refuse a recorded file that is missing or changed, and with `brand` an icon the
+        brand's library no longer has as it was recorded."""
+        return self._json('assets', 'check', '--project', str(project),
+                          *(['--brand', str(brand)] if brand else []), '--json')
+
+    def asset_icon(self, project: Path, icon: str, ident: str, alt: str | None = None,
+                   brand: Path | None = None) -> dict:
+        """Record the brand icon `icon`, a library ID, as the asset `ident`. With `brand` the
+        ID is checked against the brand's hashed icon index."""
+        return self._json('assets', 'icon', icon, '--project', str(project), '--id', ident,
+                          *(['--alt', alt] if alt else []),
+                          *(['--brand', str(brand)] if brand else []), '--json')
+
+    def asset_supplied(self, project: Path, file: Path, ident: str, alt: str, source: str,
+                       kind: str = 'supplied', restrictions: str | None = None) -> dict:
+        """Record a picture the person gave as the asset `ident`. A file from outside the
+        project is copied into it; one inside is recorded as it is now."""
+        return self._json('assets', 'add-supplied', str(file), '--project', str(project),
+                          '--id', ident, '--alt', alt, '--source', source, '--kind', kind,
+                          *(['--restrictions', restrictions] if restrictions else []),
+                          '--json')
+
+    def images_status(self) -> dict:
+        """Whether the tool's image provider is set up: {'status', 'provider', 'steps'?}.
+        It reads its own setup and asks nobody."""
+        return self._json('images', 'status', '--json')
+
+    def generate_image(self, project: Path, ident: str, prompt: str, output: str, slide: str,
+                       alt: str | None = None) -> dict:
+        """Have the tool's image provider make the approved artwork of `slide` from the
+        brief `prompt`, at `output` inside the project's assets folder, and record it as the
+        asset `ident`. A request made again with the same brief costs nothing more."""
+        with tempfile.TemporaryDirectory() as folder:
+            brief = Path(folder) / 'brief.txt'
+            brief.write_text(prompt, encoding='utf-8')
+            return self._json('images', 'generate', '--project', str(project), '--id', ident,
+                              '--prompt-file', str(brief), '--output', output,
+                              '--design-project', str(project), '--slide', slide,
+                              *(['--alt', alt] if alt else []), '--json')
 
     # --- what the tool's own workers read ---
 

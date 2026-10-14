@@ -209,6 +209,12 @@ const SECTION_WORDS = {
   'to-do': ['none', 'Not started'], working: ['current', 'Being drawn'],
   done: ['done', 'Handed in'], failed: ['late', 'Could not be drawn'],
 };
+// How each asset a deck's approved design uses stands in the slides tool's record of it.
+const ASSET_WORDS = {
+  recorded: ['done', 'Recorded'], wanted: ['none', 'Still needed'],
+  missing: ['late', 'Its file is missing'], changed: ['late', 'Its file has changed'],
+  conflict: ['late', 'Recorded as something else'],
+};
 const SEVERITIES = { critical: ['late', 'Critical'], major: ['late', 'Major'],
   minor: ['none', 'Minor'] };
 const SERIOUS = ['critical', 'major'];
@@ -4061,8 +4067,9 @@ function problemPart(run, lead) {
     ? capsule(label, lead ? 'filled' : '', () => steer(found.action, go), 'problem-action')
     : capsule('See everything it made', '', () => show('training', { path: view.path }),
       'problem-open');
-  return callout('late', make('h2', 'aside-title', theirs ? 'It has stopped'
-    : 'It has stopped, and needs you'),
+  const title = run.state === 'waiting' ? 'It is waiting for you'
+    : theirs ? 'It has stopped' : 'It has stopped, and needs you';
+  return callout('late', make('h2', 'aside-title', title),
     add(make('p', ''), make('strong', '', 'What happened: '), found.what),
     add(make('p', ''), make('strong', '', 'What was kept: '), found.kept),
     add(make('div', 'bar'), go));
@@ -4655,6 +4662,76 @@ function sectionItem(section, index) {
   return add(item, bead(shape), text, make('span', 'step-words', words));
 }
 
+// One picture or icon a deck's approved design uses, and how it stands. A picture the
+// person gives can be supplied here, or given again.
+function assetItem(found, index, theirs) {
+  const [shape, words] = ASSET_WORDS[found.state] || ['none', spoken(found.state || '')];
+  const named = (found.kind === 'icon' ? 'Icon' : capital(found.kind)) + ': '
+    + (found.ref || found.asset);
+  const text = add(make('div', 'row-text'), make('p', 'step-name', named),
+    make('p', 'quiet', (found.concept ? found.concept + ', on ' : 'On ') + found.slide
+      + (found.alt ? '. It shows: ' + found.alt : '')));
+  if (found.supply && !theirs) add(text, assetForm(found, index));
+  const item = make('li', 'row step asset');
+  item.dataset.state = found.state;
+  return add(item, bead(shape), text, make('span', 'step-words', words));
+}
+
+function assetForm(found, index) {
+  view.assetsHeld = view.assetsHeld || {};
+  const held = view.assetsHeld[found.asset] || (view.assetsHeld[found.asset] = {});
+  const id = 'asset-' + index;
+  const picture = field(id + '-file', found.state === 'recorded' ? 'Give another picture'
+    : 'Supply the picture', {}, '', { picked: (input) => {
+    held.file = (input.files || [])[0] || null;
+  }, accept: '.png,.jpg,.jpeg,.gif', hint: 'A PNG, JPEG or GIF file.' });
+  picture.querySelector('input').multiple = false;
+  const send = capsule('Add the picture', '', () => supplyAsset(found, index, send),
+    id + '-send');
+  return add(make('div', 'asset-supply'), picture,
+    field(id + '-alt', 'What it shows', held, 'alt'),
+    field(id + '-source', 'Where it came from', held, 'source'),
+    field(id + '-restrictions', 'Any limit on its use, if there is one', held,
+      'restrictions'),
+    add(make('div', 'bar'), send));
+}
+
+// Give the slides tool a picture for the deck. A deck that waited for it carries on.
+async function supplyAsset(found, index, pressed) {
+  if (view.busy) return;
+  const id = 'asset-' + index;
+  const held = (view.assetsHeld || {})[found.asset] || {};
+  const missing = !held.file ? [id + '-file', 'Choose the picture first.']
+    : !(held.alt || '').trim() ? [id + '-alt', 'Say what the picture shows.']
+      : !(held.source || '').trim() ? [id + '-source', 'Say where it came from.'] : null;
+  if (missing) {
+    refuse(...missing).focus();
+    return;
+  }
+  const turn = view.turn;
+  view.busy = true;
+  pressed.disabled = true;
+  try {
+    const content = await base64Of(held.file);
+    const run = await send('asset', { path: view.path, level: view.run.deck.level,
+      asset: found.asset, content, alt: held.alt.trim(), source: held.source.trim(),
+      restrictions: (held.restrictions || '').trim() || null });
+    view.busy = false;
+    if (turn !== view.turn) return;
+    view.run = run;
+    delete view.assetsHeld[found.asset];
+    toast('The picture is recorded.');
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    pressed.disabled = false;
+    refuse(id + '-file', failure.message + ' Nothing was changed.').focus();
+    return;
+  }
+  paintRun(false);
+  refresh();
+}
+
 function deckCard(run) {
   const deck = run.deck;
   const sections = list(deck.sections);
@@ -4671,6 +4748,15 @@ function deckCard(run) {
     add(node, make('p', '', 'It is drawn in sections, side by side. Each one draws its '
       + 'slides, looks at a preview of them, and puts right what it sees before handing in.'),
     items);
+  }
+  const assets = list(deck.assets);
+  if (assets.length) {
+    const items = make('ul', 'rows');
+    assets.forEach((found, index) => items.append(assetItem(found, index,
+      run.mine === false)));
+    add(node, make('h3', 'row-title', 'Pictures and icons'), make('p', '', 'What its '
+      + 'approved design uses. The slides tool keeps each one, and a picture is yours to '
+      + 'give.'), items);
   }
   return add(node, run.outline ? add(make('div', 'bar'), capsule('Read '
     + outlineLabel(run.outline), 'quiet', () => show('outline', { path: view.path }),

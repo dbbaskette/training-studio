@@ -1739,5 +1739,222 @@ class DesignTests(unittest.TestCase):
         self.assertEqual(old.codes, ['design-revision-stale'])
 
 
+class AssetTests(Deck):
+    """The asset manifest, through the wrapper. The stand-in plays the tool that keeps one and
+    says so in `version`, the tool after 0.13.1 that keeps a design and lists nothing, and
+    0.13.1 itself. Pictures are made here, and an image provider is a stub."""
+
+    def setUp(self):
+        super().setUp()
+        self.slides = slides_stand_in.stand_in(assets=True)
+        self.tool = self.slides.run
+        self.project = self.root / 'deck'
+        self.project.mkdir()
+
+    def picture(self, name: str = 'console.png', shade: int = 90) -> Path:
+        path = self.root / name
+        path.write_bytes(slides_stand_in.manifest.png(40, 20, shade))
+        return path
+
+    def refused(self, call, *args, **named) -> slides.Refused:
+        with self.assertRaises(slides.Refused) as refused:
+            call(*args, **named)
+        return refused.exception
+
+    def proposed(self) -> None:
+        """The contract fixture, approved, with its first slide drawn as generated art from
+        one generated candidate."""
+        plan = json.loads((CONTRACT / 'proposal.json').read_text(encoding='utf-8'))
+        first = plan['slides'][0]
+        first['intent']['visual']['family'] = 'generated-art'
+        first['asset']['candidates'] = [{'assetId': 'hero_art', 'kind': 'generated',
+                                         'ref': 'An operator inside a cluster',
+                                         'concept': 'The operator', 'status': 'pending'}]
+        proposed = self.slides.design_propose(self.project, self.write(plan, 'proposal.json'))
+        self.slides.design_respond(self.project, {
+            'questionId': proposed['question']['id'], 'planRevision': proposed['revision'],
+            'decision': 'approve', 'feedback': 'Approve the whole plan'})
+
+    def test_what_a_tool_has_is_read_from_its_version_and_asked_only_when_it_lists_nothing(self):
+        self.assertEqual(self.slides.capabilities(), frozenset(slides_stand_in.CAPABILITIES))
+        self.assertEqual((self.slides.assets(), self.slides.designs(), self.slides.sections()),
+                         (True, True, True))
+        self.assertEqual([call for call in self.tool.calls if call != ['--version']],
+                         [['version']], 'one question, and no probe')
+        for older, has in ((slides_stand_in.stand_in(design=True), True),
+                           (slides_stand_in.stand_in(), False)):
+            self.assertIsNone(older.capabilities())
+            self.assertEqual((older.assets(), older.designs(), older.sections()),
+                             (False, has, has))
+            probe = [call for call in older.run.calls if call[:2] == ['assets', 'status']]
+            self.assertEqual(len(probe), 1)
+            self.assertFalse(Path(probe[0][probe[0].index('--project') + 1]).exists())
+        # A tool that lists nothing and answers the probe as JSON keeps a manifest.
+        for answer, has in (((0, '{"manifest": "m", "assets": []}\n', ''), True),
+                            ((1, '', 'Unknown command/action; run --help\n'), False),
+                            ((0, '{}\n', ''), False)):
+            def run(command, cwd=None, said=answer):
+                if command[2:] == ['--version']:
+                    return says()(command)
+                if command[2:] == ['version']:
+                    return 0, '{"runtimeVersion": "0.13.1"}\n', ''
+                return said
+            tool = slides.Slides(runtime=Path('/opt/harness-slides'), run=run)
+            self.assertEqual(tool.assets(), has, answer)
+
+    def test_a_supplied_picture_is_copied_in_recorded_and_checked(self):
+        made = self.slides.asset_supplied(self.project, self.picture(), 'console_view',
+                                          'The cluster console', 'Course author',
+                                          kind='screenshot', restrictions='Internal only')
+        self.assertEqual((made['status'], made['path']),
+                         ('recorded', 'assets/supplied/console_view.png'))
+        again = self.slides.asset_supplied(self.project, self.picture(), 'console_view',
+                                           'The cluster console', 'Course author',
+                                           kind='screenshot', restrictions='Internal only')
+        self.assertEqual(again['status'], 'unchanged')
+        [entry] = self.slides.asset_status(self.project)['assets']
+        self.assertEqual((entry['kind'], entry['state'], entry['alt'], entry['restrictions'],
+                          entry['width'], entry['sha256']),
+                         ('screenshot', 'ok', 'The cluster console', 'Internal only', 40,
+                          made['sha256']))
+        self.assertEqual(self.slides.asset_check(self.project)['status'], 'ready')
+        other = self.refused(self.slides.asset_supplied, self.project,
+                             self.picture('other.png', 30), 'console_view', 'Another',
+                             'Course author', kind='screenshot')
+        self.assertEqual((other.codes, other.found[0]['asset']),
+                         (['asset-conflict'], 'console_view'))
+        # A file inside the project is recorded as it is now.
+        kept = self.project / made['path']
+        kept.write_bytes(self.picture('new.png', 10).read_bytes())
+        self.assertEqual(self.refused(self.slides.asset_check, self.project).codes,
+                         ['asset-hash-changed'])
+        self.assertEqual(self.slides.asset_status(self.project)['assets'][0]['state'],
+                         'hash-changed')
+        self.assertEqual(self.slides.asset_supplied(self.project, kept, 'console_view',
+                                                    'The cluster console', 'Course author',
+                                                    kind='screenshot')['status'], 'updated')
+        kept.unlink()
+        missing = self.refused(self.slides.asset_check, self.project)
+        self.assertEqual((missing.codes, missing.found[0]['asset']),
+                         (['asset-file-missing'], 'console_view'))
+        self.assertIn('Restore the file', missing.found[0]['next'])
+
+    def test_a_brand_icon_is_recorded_by_its_library_id_and_checked_against_the_brand(self):
+        made = self.slides.asset_icon(self.project, 'ex-database', 'icon_data',
+                                      brand=self.contract)
+        self.assertEqual((made['kind'], made['ref'], made['alt'], made['checked']),
+                         ('icon', 'ex-database', 'Icon database', True))
+        self.assertEqual(self.slides.asset_check(self.project, self.contract)['assets'], 1)
+        for icon in ('ex-nothing', 'ex-photo'):
+            wrong = self.refused(self.slides.asset_icon, self.project, icon, 'icon_x',
+                                 brand=self.contract)
+            self.assertEqual((wrong.codes, wrong.found[0]['asset']),
+                             (['icon-unavailable'], 'icon_x'))
+        self.assertEqual(self.refused(self.slides.asset_icon, self.project, 'ex-cloud',
+                                      'icon_data').codes, ['asset-conflict'])
+
+    def composition(self, asset: str) -> Path:
+        drawn = slides_stand_in.sketch(STEPS, 's1_')
+        shown = {**drawn, 'canvas': {'type': 'stack', 'direction': 'row', 'children': [
+            drawn['canvas'], {'type': 'image', 'id': 's1_console', 'asset': asset}]}}
+        return self.write({'version': 1, 'title': OUTLINE['title'], 'direction': DIRECTION,
+                           'slides': [shown]})
+
+    def test_a_picture_named_by_its_asset_id_is_copied_into_the_build(self):
+        self.slides.asset_supplied(self.project, self.picture(), 'console_view',
+                                   'The cluster console', 'Course author', kind='screenshot')
+        built = self.root / 'built'
+        code, out, err = self.tool(['node', 'script', 'compose', 'compile', '--file',
+                                    str(self.composition('console_view')), '--brand',
+                                    str(self.contract), '--asset-project', str(self.project),
+                                    '--output', str(built)])
+        self.assertEqual(code, 0, err)
+        report = json.loads((built / 'compose-report.json').read_text(encoding='utf-8'))
+        [placed] = report['inputs']['assets']
+        self.assertEqual((placed['asset'], placed['path'], placed['source']),
+                         ('console_view', 'assets/console_view.png',
+                          'assets/supplied/console_view.png'))
+        self.assertTrue((built / placed['path']).is_file())
+        (built / placed['path']).write_bytes(b'changed')
+        stale = self.refused(self.slides.preview, built, self.root / 'shown', 'drive')
+        self.assertIn('changed since it was compiled', stale.problems[0])
+        code, out, _ = self.tool(['node', 'script', 'compose', 'compile', '--file',
+                                  str(self.composition('nowhere')), '--brand',
+                                  str(self.contract), '--asset-project', str(self.project),
+                                  '--json'])
+        found = json.loads(out)['problems']
+        self.assertEqual((code, [(p['code'], p['slide'], p['asset']) for p in found]),
+                         (1, [('asset-unresolved', STEPS['id'], 'nowhere')]))
+
+    def test_generated_art_is_made_only_for_its_approved_slide_by_the_tools_own_provider(self):
+        self.proposed()
+        status = self.slides.images_status()
+        self.assertEqual((status['status'], len(status['steps'])), ('key_required', 3))
+        missing = self.refused(self.slides.generate_image, self.project, 'hero_art',
+                               'An operator pod inside a cluster boundary.',
+                               'assets/generated/hero_art.png', 'operator_architecture')
+        self.assertEqual([(problem['code'], problem['provider'], problem['asset'],
+                           problem['slide']) for problem in missing.found],
+                         [('provider-missing', 'gemini-api', 'hero_art',
+                           'operator_architecture')])
+        self.assertIn('GEMINI_API_KEY', missing.found[0]['next'])
+        self.tool.env = {'GEMINI_API_KEY': 'set'}   # the stub stands for the provider
+        other = self.refused(self.slides.generate_image, self.project, 'hero_art', 'A brief.',
+                             'assets/generated/hero_art.png', 'reconcile_loop')
+        self.assertEqual(other.codes, ['design-mismatch'])
+        made = self.slides.generate_image(self.project, 'hero_art', 'A brief.',
+                                          'assets/generated/hero_art.png',
+                                          'operator_architecture', alt='An operator')
+        self.assertEqual(made['status'], 'downloaded')
+        [entry] = self.slides.asset_status(self.project)['assets']
+        self.assertEqual((entry['kind'], entry['path'], entry['alt'],
+                          entry['provenance']['slide'], entry['state']),
+                         ('generated', 'assets/generated/hero_art.png', 'An operator',
+                          'operator_architecture', 'ok'))
+        self.assertEqual(self.refused(self.slides.generate_image, self.project, 'hero_art',
+                                      'Another brief.', 'assets/generated/hero_art.png',
+                                      'operator_architecture').codes, ['input-invalid'])
+
+    def test_once_a_design_is_approved_the_tool_sorts_none_of_its_candidates(self):
+        # As Harness Slides does on main: candidates are read from the question waiting now,
+        # so an approved design has none to sort, and one not recorded passes the check.
+        self.proposed()
+        code, out, _ = self.tool(['node', 'script', 'assets', 'check', '--project',
+                                  str(self.project), '--design-project', str(self.project),
+                                  '--json'])
+        self.assertEqual((code, json.loads(out)['candidates']),
+                         (0, {'resolved': [], 'pending': []}))
+
+    def test_each_asset_call_is_run_as_the_command_line_takes_it(self):
+        self.proposed()
+        picture = self.picture()
+        self.tool.env = {'GEMINI_API_KEY': 'set'}
+        self.slides.asset_status(self.project)
+        self.slides.asset_check(self.project, self.contract)
+        self.slides.asset_icon(self.project, 'ex-database', 'icon_data', 'Data',
+                               self.contract)
+        self.slides.asset_supplied(self.project, picture, 'console_view', 'A console',
+                                   'Course author', 'screenshot', 'Internal only')
+        self.slides.images_status()
+        self.slides.generate_image(self.project, 'hero_art', 'A brief.',
+                                   'assets/generated/hero_art.png', 'operator_architecture')
+        asked = [call for call in self.tool.calls if call[0] in ('assets', 'images')]
+        brief = asked[-1][asked[-1].index('--prompt-file') + 1]
+        project = str(self.project)
+        self.assertEqual(asked, [
+            ['assets', 'status', '--project', project, '--json'],
+            ['assets', 'check', '--project', project, '--brand', str(self.contract), '--json'],
+            ['assets', 'icon', 'ex-database', '--project', project, '--id', 'icon_data',
+             '--alt', 'Data', '--brand', str(self.contract), '--json'],
+            ['assets', 'add-supplied', str(picture), '--project', project, '--id',
+             'console_view', '--alt', 'A console', '--source', 'Course author', '--kind',
+             'screenshot', '--restrictions', 'Internal only', '--json'],
+            ['images', 'status', '--json'],
+            ['images', 'generate', '--project', project, '--id', 'hero_art', '--prompt-file',
+             brief, '--output', 'assets/generated/hero_art.png', '--design-project', project,
+             '--slide', 'operator_architecture', '--json']])
+        self.assertFalse(Path(brief).exists(), 'the brief is written for the call alone')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -2,6 +2,7 @@
 
     slides = stand_in()        # the runner's Slides, with StandIn behind it
     stand_in(design=True)      # the same, with the design session of the next version
+    stand_in(assets=True)      # and with its asset manifest, saying what it has in `version`
     sketch(slide, prefix)      # one content slide of an outline, drawn plainly
 
 `sketch` draws a slide as a section's composer might. StandIn's `fails`, `drive`, `local`
@@ -28,14 +29,16 @@ from xml.sax.saxutils import escape
 
 from runner import slides as tool
 from runner.slides import GALLERY, LEAD, MINIMUM, REFERENCES, RELATIONS
+from stand_ins import assets as manifest
 from stand_ins import design as designs
 
 
-def stand_in(design: bool = False) -> tool.Slides:
+def stand_in(design: bool = False, assets: bool = False) -> tool.Slides:
     """A Slides that needs nothing installed. With `design`, its tool has the design session
-    of the version after 0.13.1."""
+    of the version after 0.13.1; with `assets`, its asset manifest as well, and it says what
+    it has in `version`."""
     command = StandIn()
-    command.design = design
+    command.design, command.assets = design or assets, assets
     return tool.Slides(runtime=Path('stand-in'), run=command, read=command.read)
 
 
@@ -56,7 +59,7 @@ NODES = {'stack': ('direction', 'gap', 'align', 'children'),
          'box': ('text', 'shape', 'fill', 'color', 'textRole', 'align', 'children', 'gap',
                  'style'),
          'text': ('text', 'textRole', 'color', 'align'), 'icon': ('icon', 'color', 'style'),
-         'rule': (), 'spacer': ()}
+         'image': ('src', 'asset', 'alt', 'fit'), 'rule': (), 'spacer': ()}
 SHAPES = {'rect': (1, 1), 'ellipse': (.7, .7), 'roundRect': (1, 1), 'diamond': (.5, .5),
           'hexagon': (.6, .65), 'chevron': (.6, 1), 'can': (1, .6)}   # the room text gets
 DRAWN = {   # how each relation must show in the structure, and what to say when it does not
@@ -109,12 +112,29 @@ LATER = {'design propose': ('mode', 'json'), 'design status': ('json',),
          'design check': ('json',), 'design respond': ('json',),
          'compose compile': ('section', 'json'),
          'compose preview': ('design-project', 'section', 'json')}
+# What the tool with the asset manifest adds: its commands, and a project to resolve from.
+ASSETS = {'assets add-supplied': ('project', 'alt', 'source', 'restrictions', 'id', 'kind',
+                                  'json'),
+          'assets icon': ('project', 'id', 'alt', 'brand', 'json'),
+          'assets status': ('project', 'design-project', 'json'),
+          'assets check': ('project', 'design-project', 'brand', 'json'),
+          'images status': ('provider', 'json'),
+          'images generate': ('project', 'id', 'prompt-file', 'output', 'design-project',
+                              'slide', 'alt', 'json'),
+          'compose compile': ('asset-project',)}
+SUBJECT = ('assets add-supplied', 'assets icon')   # the two that name the file or the icon
+CAPABILITIES = ['assets', 'canonical-digests', 'compose-review', 'compose-section',
+                'design-batch', 'design-schema-2', 'json-refusals', 'relative-records']
 FLAGS = ('json', 'section')     # options that take no value
 NEWER = ('mode', 'section')     # options 0.13.1 does not parse, for any command
 UNKNOWN = ("Unknown option '--{}'. To specify a positional argument starting with a '-', "
            "place it at the end of the command after '--', as in '-- \"--{}\"")
 # How a composition's problem lines are sorted into the tool's codes, as refusals.mjs does.
-SORTED = ((re.compile(r'unknown icon|is a picture, not native|no drawing in the library|'
+SORTED = ((re.compile(r"is not in the project's asset manifest|needs the project that records "
+                      r"it|resolves through the project's asset manifest"), 'asset-unresolved'),
+          (re.compile(r'is missing from the project'), 'asset-file-missing'),
+          (re.compile(r'changed since it was recorded'), 'asset-hash-changed'),
+          (re.compile(r'unknown icon|is a picture, not native|no drawing in the library|'
                       r'hashed icon library'), 'icon-unavailable'),
           (re.compile(r'template layout|no layout named|subtitle placeholders|no picture slot|'
                       r'layout with a title'), 'layout-unavailable'))
@@ -638,7 +658,7 @@ class _Compiler:
             if any(key not in ('id', 'type', 'weight', 'at', *NODES[kind]) for key in n):
                 fail(where, 'unsupported node field; never silently drop content')
             facts['nodes'] += 1
-            if kind in ('box', 'text', 'icon') or 'id' in n:
+            if kind in ('box', 'text', 'icon', 'image') or 'id' in n:
                 self.claim(n.get('id'), where)
                 local.add(n['id'])
             spot = n.get('at')
@@ -682,6 +702,16 @@ class _Compiler:
             if kind == 'icon' and not (isinstance(n.get('icon'), str) and re.fullmatch(
                     r'[\w.-]{1,80}', n['icon'])):
                 fail(where, 'icon needs a stable icon ID from the brand icon search')
+            if kind == 'image':
+                if 'asset' in n and 'src' in n:
+                    fail(where, 'image takes src or asset, not both')
+                if 'asset' in n:
+                    fail(where, f"image asset {n['asset']} resolves through the project's "
+                         'asset manifest; compile it with compose compile --asset-project DIR')
+                if not _str(n.get('src')) or not _str(n.get('alt')):
+                    fail(where, 'image needs src and alt')
+                if n.get('fit', 'contain') not in ('contain', 'cover'):
+                    fail(where, 'fit must be contain|cover')
             if kind == 'box':
                 if 'text' in n and 'children' in n:
                     fail(where, 'a box holds text or children, not both')
@@ -799,6 +829,8 @@ class _Compiler:
             return 0
         if kind in ('icon', 'rule'):
             return self.icon if kind == 'icon' else inset / 2
+        if kind == 'image':
+            return inset * 4
         if kind == 'box':
             # A rectangle pads its content; another shape confines it to an inner area.
             across, down = SHAPES[n.get('shape', 'rect')]
@@ -973,6 +1005,9 @@ class _Compiler:
             self.structure['icons'].append({
                 'slide': sid, 'id': n['id'], 'icon': n['icon'], 'order': len(self.elements),
                 **{key: _tidy(value) for key, value in slot.items()}})
+        elif kind == 'image':
+            self.put(n['id'], 'image', rect, src=n['src'], alt=n['alt'],
+                     fit=n.get('fit', 'contain'))
         elif kind == 'rule':
             across = width >= height
             self.put(n.get('id') or f'{sid}_rule{len(self.elements)}', 'line',
@@ -1095,6 +1130,8 @@ def _drawn(slide: dict, scene: dict, wide: int = PICTURE) -> tuple[int, int, byt
             fill(x, y, width, height, element['fill'])
         if element['type'] == 'line':
             fill(x, y, width, height, element['color'])
+        elif element['type'] == 'image':
+            fill(x, y, width, height, theme['muted'])
         elif element.get('text'):
             size = element.get('fontSize', theme['bodySize'])
             fill(x + 4, y + 4, min(width - 8, _wide(element['text'], size)), size * .5,
@@ -1212,6 +1249,13 @@ class StandIn:
     session is stand_ins/design.py, and it stops at the design: nothing is presented for a
     rendered review. Without `design` it is 0.13.1 as far as the runner asks: `--mode` is an
     option it has never heard of, and `--json` is not valid for a design command.
+
+    `assets` makes it the tool on Harness Slides' `main` after #59: `version` lists its
+    capabilities, and it plays `assets add-supplied|icon|status|check`, `images
+    status|generate`, `--asset-project` and image nodes named by asset ID, as
+    stand_ins/assets.py says. `env` is the environment it looks for an image provider's key
+    in, and `made` gives a generated picture's bytes. Without `assets` it knows none of them,
+    and `version` lists nothing.
     """
 
     def __init__(self):
@@ -1220,6 +1264,9 @@ class StandIn:
         self.fails: dict[str, str] = {}
         self.drive, self.local, self.pause, self.at_once = True, True, 0.0, 0
         self.design = False
+        # The asset manifest: `env` is what the tool would find in its environment, where an
+        # image provider's key is looked for, and `made` stands in for the provider.
+        self.assets, self.env, self.made = False, {}, None
         self.composed = None    # the composition last compiled, to sort its problems by slide
         self._busy, self._renders, self._guard = 0, 0, threading.Lock()
 
@@ -1250,11 +1297,20 @@ class StandIn:
     def _act(self, args: list[str]):
         if args == ['--version']:
             return f'Harness Slides {MINIMUM}'
+        if args == ['version']:   # what it can do, from the version that has the manifest on
+            return {'package': 'harness-slides', 'runtimeVersion': MINIMUM,
+                    'runtime': '/stand-in/harness-slides',
+                    **({'capabilities': list(CAPABILITIES)} if self.assets else {})}
         name = ' '.join(args[:2])
-        if name not in OPTIONS:
+        known = {**OPTIONS, **{key: () for key in ASSETS if key not in OPTIONS}} \
+            if self.assets else OPTIONS
+        if name not in known:
             raise _Said('Unknown command/action; run --help')
-        allowed = OPTIONS[name] + (LATER.get(name, ()) if self.design else ())
+        allowed = known[name] + (LATER.get(name, ()) if self.design else ()) \
+            + (ASSETS.get(name, ()) if self.assets else ())
         options, rest = {}, args[2:]
+        if name in SUBJECT and rest and not rest[0].startswith('--'):
+            options['subject'] = rest.pop(0)
         while rest:
             key = rest.pop(0).removeprefix('--')
             if key in NEWER and not self.design:
@@ -1266,6 +1322,8 @@ class StandIn:
             raise _Said(self.fails[name])
         if name.startswith('design '):
             return self._design(name.partition(' ')[2], options)
+        if name.startswith(('assets ', 'images ')):
+            return self._manifest(name, options)
         act = getattr(self, '_' + name.replace(' ', '_'))
         if name not in ('compose compile', 'compose preview'):
             return act(options)
@@ -1541,13 +1599,16 @@ class StandIn:
             raise designs.Refusal(SECTION_ALONE, {'code': 'input-invalid'})
         data, contract = _read(options['file']), self.contract(options.get('brand'))
         comp, compiler, compiled = _load(options['file']), _Compiler(contract), None
-        self.composed = comp
+        self.composed, uses, unresolved = comp, {}, []
+        if self.assets:   # an image named by asset ID, from the project's manifest
+            comp, uses, unresolved = manifest.resolve(comp, options.get('asset-project')
+                                                      or project)
         try:
             compiled = compiler.run(comp)
         except _Said as said:
             compiler.problems.append(str(said))
         # Unknown icons and layouts are caught now, not when the deck is rendered.
-        problems = compiler.problems + self._asks(comp, contract)
+        problems = unresolved + compiler.problems + self._asks(comp, contract)
         if problems:
             raise _said(problems)
         scene, structure = compiled
@@ -1568,12 +1629,15 @@ class StandIn:
         if not options.get('output'):
             return {'status': 'fits; nothing written. Add a new --output directory to '
                               'write the build', **summary}
+        placed, copies = manifest.place(scene, Path(options['file']).resolve().parent, uses) \
+            if self.assets else ([], {})
         output = Path(options['output']).resolve()
+        mine = project or options.get('asset-project')
         report['inputs'] = {
-            'composition': {'path': _recorded(output, options['file'], project),
+            'composition': {'path': _recorded(output, options['file'], mine),
                             'sha256': _digest(data)},
-            'brand': {'path': _recorded(output, options['brand'], project),
-                      'sha256': _digest(_read(options['brand']))}, 'assets': []}
+            'brand': {'path': _recorded(output, options['brand'], mine),
+                      'sha256': _digest(_read(options['brand']))}, 'assets': placed}
         report['sceneDigest'] = _digest(_compact(scene).encode())
         report['structureDigest'] = _digest(_compact(structure).encode())
         output = _folder(output)
@@ -1581,6 +1645,9 @@ class StandIn:
                             ('compose-report.json', report),
                             ('brand-contract.json', contract)):
             _write(output / name, _pretty(value))
+        for path, copy in copies.items():   # each asset copied into the build
+            (output / path).parent.mkdir(exist_ok=True)
+            (output / path).write_bytes(copy)
         return {'output': str(output), 'sceneDigest': report['sceneDigest'], **summary}
 
     def _asks(self, comp, contract: dict) -> list[str]:
@@ -1726,6 +1793,8 @@ class StandIn:
         if not options.get('file') or not options.get('output'):
             raise _Said('Provide --file COMPILED_DIR and a new --output deck.pptx')
         scene, _ = self._compiled(options['file'])
+        if self.assets:   # each asset copied into the build is still what was compiled
+            manifest.verify(options['file'])
         output = Path(options['output']).resolve()
         if output.exists():
             raise _Said(f'{output} already exists; choose a new output file')
@@ -1752,6 +1821,8 @@ class StandIn:
         approved = designs.bound(scene['slides'], options['design-project'],
                                  bool(options.get('section'))) \
             if options.get('design-project') else None
+        if self.assets:
+            manifest.verify(options['file'])
         output = _folder(Path(options['output']).resolve())
         with self._guard:
             self._busy += 1
@@ -1952,7 +2023,8 @@ class StandIn:
             where = where.group(1) if where else ''
             code = next((code for pattern, code in SORTED if pattern.search(line)),
                         'composition-invalid')
-            icon = re.search(r'icon (\S+)', line) if code == 'icon-unavailable' else None
+            icon = re.search(r'icon (\S+)', line) if code == 'icon-unavailable' else \
+                re.search(r'asset (\S+)', line) if code.startswith('asset-') else None
             problems.append({'code': code, 'detail': line,
                              'slide': where if where in slides else owner.get(where),
                              'asset': icon.group(1) if icon else None})
@@ -1978,6 +2050,60 @@ class StandIn:
                 raise _Said(str(refused))
             return _Blocked(designs.refusal(refused, session.revision()
                                             if options.get('project') else None))
+
+    # --- the asset manifest, and images ---
+
+    def _manifest(self, name: str, options: dict):
+        """assets add-supplied, icon, status or check, and images status or generate, played
+        by stand_ins/assets.py. With --json a refusal is a JSON object on standard output,
+        with the design revision of the design project when one is named."""
+        try:
+            return self._recorded(name, options)
+        except FileNotFoundError as missing:
+            refused = designs.Refusal(f"ENOENT: no such file or directory, realpath "
+                                      f"'{missing.filename or missing}'")
+        except manifest.ImagesError as failed:
+            refused = designs.Refusal(str(failed), manifest.images_problem(
+                failed, options.get('provider') or 'gemini-api', options.get('id'),
+                options.get('slide')))
+        except (designs.Refusal, ValueError) as said:
+            refused = said
+        if not options.get('json'):
+            raise _Said(str(refused))
+        project = options.get('design-project')
+        return _Blocked(designs.refusal(refused, designs.Session(project).revision()
+                                        if project else None))
+
+    def _recorded(self, name: str, options: dict):
+        project, action = options.get('project'), name.partition(' ')[2]
+        if name == 'assets add-supplied':
+            return manifest.add_supplied(project, options.get('subject'), options.get('alt'),
+                                         options.get('source'), options.get('restrictions'),
+                                         options.get('id'), options.get('kind') or 'supplied')
+        if name == 'assets icon':
+            return manifest.record_icon(project, options.get('subject'), options.get('id'),
+                                        options.get('alt'), options.get('brand'))
+        if name == 'assets status':
+            return manifest.status(project, options.get('design-project'), self.env)
+        if name == 'assets check':
+            return manifest.check(project, options.get('design-project'),
+                                  options.get('brand'), self.env)
+        if action == 'status':
+            if (options.get('provider') or 'gemini-api') != 'gemini-api':
+                raise manifest.ImagesError('unknown_provider')
+            return _compact(manifest.images_status(self.env))
+        # images generate: only the approved artwork of a slide drawn as generated art.
+        design = options.get('design-project')
+        if design:
+            approved = designs.Session(design).check()['plan']
+            if not options.get('slide') or not any(
+                    slide['id'] == options['slide']
+                    and slide['intent']['visual']['family'] == 'generated-art'
+                    for slide in approved['slides']):
+                raise designs.Refusal('Generate only the selected approved slide artwork')
+        return _compact(manifest.generate(
+            project, options.get('id'), options.get('prompt-file'), options.get('output'),
+            options.get('alt'), options.get('slide'), self.env, self.made))
 
     @staticmethod
     def _given(options: dict):

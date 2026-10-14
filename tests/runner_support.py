@@ -255,9 +255,10 @@ def png(shade: int = 0) -> bytes:
             + chunk(b'IDAT', zlib.compress(bytes([0, shade % 256]))) + chunk(b'IEND', b''))
 
 
-def drawn(spec: dict, wording=None) -> dict:
+def drawn(spec: dict, wording=None, placing=None) -> dict:
     """A section as a composer would hand it in: every approved word, plainly stacked, and
-    each approved intent copied. `wording` changes a piece of text on its way to the slide."""
+    each approved intent copied. `wording` changes a piece of text on its way to the slide,
+    and `placing` adds nodes below the words of a slide, by its ID."""
     wording, slides = wording or (lambda text: text), []
     for slide in spec['slides']:
         stem = f"{spec['prefix']}{slide['id'].replace('-', '_')}"
@@ -267,7 +268,8 @@ def drawn(spec: dict, wording=None) -> dict:
                  for mark, key in (('h', 'label'), ('t', 'text'))]
         made = {'id': slide['id'], 'title': slide['title'], 'sources': slide['sources'],
                 'brief': {'relation': 'order', 'focal': f'{stem}_t1', 'rhythm': 'anchor'},
-                'canvas': {'type': 'stack', 'direction': 'column', 'children': texts},
+                'canvas': {'type': 'stack', 'direction': 'column', 'children': [
+                    *texts, *(placing or {}).get(slide['id'], ())]},
                 'notes': slide['notes']}
         made.update({key: slide[key] for key in ('caveat', 'source') if slide[key]})
         made.update({'intent': json.loads(slide['intent'])} if 'intent' in slide else {})
@@ -306,6 +308,7 @@ class Workers:
         self.blueprint_text = BLUEPRINT
         self.outline_said = OUTLINE
         self.design_said = None     # the design handed in with it, when one is asked for
+        self.placing = {}       # what a composer adds to a slide below its words, by slide ID
         self.found = []     # what each review in turn finds; nothing, once this runs out
 
     def then(self, kind: str, *acts) -> None:
@@ -389,7 +392,7 @@ class Workers:
         tools.submit_review('Six slides. The check slide is the one I am least sure of.')
 
     def section(self, tools, job):
-        made = drawn(tools.job['artifacts']['section'])
+        made = drawn(tools.job['artifacts']['section'], placing=self.placing)
         if tools.job['look']:  # drawn again after a review: never the same drawing twice
             made['slides'][0]['brief']['rhythm'] = f'drawn again, {len(self.jobs)}'
         made = json.dumps(made)
@@ -442,8 +445,11 @@ class Slides:
         self.imported, self.took = [], 0.01
         # Whether this tool keeps a design session, as the one after 0.13.1 does, and the
         # answers it was sent. `gate` says whether it checks a section against the design:
-        # None, as it keeps one.
+        # None, as it keeps one. `keeps` says whether it keeps a deck's assets, played by
+        # the stand-in's manifest: `env` is where it finds an image provider's key, and
+        # `made` stands in for the provider.
         self.design, self.replies, self.gate = False, [], None
+        self.keeps, self.env, self.made = False, {}, None
 
     def _asked(self, name: str, *given) -> None:
         from runner import slides
@@ -592,6 +598,11 @@ class Slides:
                     if 'canvas' not in slide and 'layout' not in slide]
         problems += ['A text does not fit: it needs 7 lines and has 4.'] \
             if 'TOO LONG TO FIT' in text else []
+        uses = {}
+        if self.keeps and design is not None:   # a picture is placed by its asset ID
+            from stand_ins import assets as manifest
+            _, uses, unresolved = manifest.resolve(made, design)
+            problems += unresolved
         if problems:
             raise slides.Refused(problems)
         self._bound(made['slides'], design, section)
@@ -602,7 +613,10 @@ class Slides:
         self._new(folder).mkdir(parents=True)
         (Path(folder) / 'scene.json').write_text(json.dumps({'title': made.get('title'), 'slides': [
             {key: slide.get(key) for key in ('id', 'title', 'sources', 'notes', 'intent')
-             if key != 'intent' or key in slide} for slide in made['slides']]}))
+             if key != 'intent' or key in slide} for slide in made['slides']],
+            # Each picture is copied into the build, so what it is now is in the deck.
+            **({'assets': {use['assetId']: use['sha256'] for use in uses.values()}}
+               if uses else {})}))
         return {**report, 'output': str(folder)}
 
     def merge(self, parts, composition) -> dict:
@@ -726,6 +740,82 @@ class Slides:
         self.replies.append(dict(reply))
         return self._session('design_respond', project,
                              lambda session: session.respond(reply))
+
+    def _manifest(self, name: str, act, *given):
+        """An asset command, played by the stand-in's manifest, which keeps the tool's rules
+        and writes where the tool does. A refusal comes as JSON would."""
+        from runner import slides
+        from stand_ins import assets as manifest
+        from stand_ins import design as designs
+        self._asked(name, *given)
+        try:
+            return act(manifest)
+        except manifest.ImagesError as failed:
+            refused = designs.Refusal(str(failed), manifest.images_problem(
+                failed, 'gemini-api', given[1] if len(given) > 1 else None,
+                given[2] if len(given) > 2 else None))
+        except FileNotFoundError as missing:
+            refused = designs.Refusal(f"ENOENT: no such file or directory, realpath "
+                                      f"'{missing.filename}'")
+        except (designs.Refusal, ValueError) as said:
+            refused = said
+        found = designs.refusal(refused, None)
+        raise slides.Refused([problem['detail'] for problem in found['problems']], found)
+
+    def assets(self) -> bool:
+        return self.keeps
+
+    def asset_status(self, project) -> dict:
+        return self._manifest('asset_status', lambda kept: kept.status(project), project)
+
+    def asset_check(self, project, brand=None) -> dict:
+        """This file's small brand has no icon library: an icon is held to Brand.ICONS."""
+        def act(kept):
+            known = {entry['id']: entry for entry in Brand.ICONS}
+            for entry in kept.read_manifest(Path(project).resolve())['assets']:
+                if brand and entry['kind'] == 'icon' and entry['ref'] not in known:
+                    from stand_ins import design as designs
+                    raise designs.Refusal(f"{entry['assetId']}: unknown icon {entry['ref']}; "
+                                          'search the brand icon library for a current ID',
+                                          {'code': 'icon-unavailable',
+                                           'asset': entry['assetId']})
+            return kept.check(project)
+        return self._manifest('asset_check', act, project)
+
+    def asset_icon(self, project, icon, ident, alt=None, brand=None) -> dict:
+        def act(kept):
+            known = {entry['id']: entry for entry in Brand.ICONS}
+            if brand and (icon not in known or not known[icon]['native']):
+                from stand_ins import design as designs
+                raise designs.Refusal(f'{ident}: unknown icon {icon}; search the brand icon '
+                                      'library for a current ID',
+                                      {'code': 'icon-unavailable', 'asset': ident})
+            return kept.record_icon(project, icon, ident, alt or (
+                known.get(icon) or {}).get('name'))
+        return self._manifest('asset_icon', act, project, ident, icon)
+
+    def asset_supplied(self, project, file, ident, alt, source, kind='supplied',
+                       restrictions=None) -> dict:
+        return self._manifest('asset_supplied', lambda kept: kept.add_supplied(
+            project, file, alt, source, restrictions, ident, kind), project, ident, file)
+
+    def images_status(self) -> dict:
+        return self._manifest('images_status', lambda kept: kept.images_status(self.env))
+
+    def generate_image(self, project, ident, prompt, output, slide, alt=None) -> dict:
+        from stand_ins import design as designs
+
+        def act(kept):
+            approved = designs.Session(project).check()['plan']
+            if not any(made['id'] == slide and made['intent']['visual']['family']
+                       == 'generated-art' for made in approved['slides']):
+                raise designs.Refusal('Generate only the selected approved slide artwork')
+            with tempfile.TemporaryDirectory() as folder:
+                brief = Path(folder) / 'brief.txt'
+                brief.write_text(prompt, encoding='utf-8')
+                return kept.generate(project, ident, brief, output, alt, slide, self.env,
+                                     self.made)
+        return self._manifest('generate_image', act, project, ident, slide)
 
     def drive_import(self, deck, name) -> dict:
         self._asked('drive_import', deck, name)
@@ -1059,15 +1149,16 @@ class StudioCase(unittest.TestCase):
                 'pdfinfo': have['pictures']}
         return f'/usr/bin/{Path(program).name}' if here.get(Path(program).name) else None
 
-    def stand_ins(self, design: bool = False) -> tuple:
+    def stand_ins(self, design: bool = False, assets: bool = False) -> tuple:
         """The stand-ins in tests/stand_ins, which keep the rules of the real slides tool
         and of a real brand skill. Give them to `self.slides` and `self.brand`. With
-        `design`, the slides tool is the one after 0.13.1, with its design session."""
+        `design`, the slides tool is the one after 0.13.1, with its design session; with
+        `assets`, the one that keeps a deck's assets too, and says so in `version`."""
         from stand_ins import brand as brand_stand_in, slides as slides_stand_in
         tool, skill = self.real
         with mock.patch.object(self.engines.slides_tool, 'Slides', tool), \
                 mock.patch.object(self.engines.brand_skill, 'Brand', skill):
-            return slides_stand_in.stand_in(design), brand_stand_in.stand_in()
+            return slides_stand_in.stand_in(design, assets), brand_stand_in.stand_in()
 
     def the_slides(self, runtime=None, run=None):
         from workspace import WorkspaceError

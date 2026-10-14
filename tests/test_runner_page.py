@@ -39,7 +39,7 @@ LISTED = [{'name': 'gpt-6-sol', 'label': 'GPT-6-Sol', 'default_level': 'medium',
            'levels': ['low', 'medium', 'high']}]
 GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
-         '/api/documents', '/api/copies', '/api/share', '/api/companions')
+         '/api/documents', '/api/copies', '/api/share', '/api/companions', '/api/asset')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
 RUN_KEYS = ['agent', 'clash', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'effort',
             'finished', 'kept', 'last_shared', 'mine', 'model', 'notice', 'outline', 'problem',
@@ -168,7 +168,10 @@ class RuleTests(PageCase):
                        '/api/documents': {'path': self.path, 'action': 'add',
                                           'name': 'handbook.txt', 'content': 'V29yZHMu'},
                        '/api/copies': {'path': self.path},
-                       '/api/share': {}, '/api/companions': {}}
+                       '/api/share': {}, '/api/companions': {},
+                       '/api/asset': {'path': self.path, 'asset': 'console_view',
+                                      'content': 'iVBORw0KGgo=', 'alt': 'A console',
+                                      'source': 'Course author'}}
         self.before = self.on_disk()
 
     def refused(self, method: str, target: str, expect: int, **options) -> dict:
@@ -1217,17 +1220,20 @@ class LaterTests(PageCase):
             self.assertEqual(self.post(endpoint, sent, 404)['error'],
                              'No run is driving this training.')
 
-    def test_only_a_document_sent_with_the_key_may_be_larger_than_any_other_change(self):
+    def test_only_a_document_or_a_picture_sent_with_the_key_may_be_large(self):
         headers = self.headers()
         self.assertEqual(page.DOCUMENT_LIMIT, 12_000_000)
         self.assertGreater(page.DOCUMENT_LIMIT, 8_000_000 * 4 // 3,
                            'the largest document fits once it is in base64')
         self.assertEqual(self.page.body_limit('/api/documents', headers), 12_000_000)
         self.assertEqual(self.page.body_limit('/api/documents?x=1', headers), 12_000_000)
+        self.assertEqual(self.page.body_limit('/api/asset', headers), 12_000_000)
         for token in (False, 'not-the-key'):
-            self.assertEqual(self.page.body_limit('/api/documents', self.headers(token=token)),
-                             desk.BODY_LIMIT, 'a stranger is never read at length')
-        for target in (*desk.WRITES, *(path for path in POSTS if path != '/api/documents'),
+            for target in ('/api/documents', '/api/asset'):
+                self.assertEqual(self.page.body_limit(target, self.headers(token=token)),
+                                 desk.BODY_LIMIT, 'a stranger is never read at length')
+        for target in (*desk.WRITES, *(path for path in POSTS
+                                       if path not in ('/api/documents', '/api/asset')),
                        '/api/documents/more', '/api/nothing', '/', '//[', ''):
             self.assertEqual(self.page.body_limit(target, headers), 64_000, target)
         self.assertEqual(desk.Page(self.PORT).body_limit('/api/documents', headers), 64_000,

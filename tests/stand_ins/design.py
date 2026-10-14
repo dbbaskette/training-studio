@@ -68,6 +68,22 @@ CODES = {
     'composition-invalid': (True, 'Fix the composition and compile again'),
     'icon-unavailable': (True, 'Search the brand icon library for a current native icon ID'),
     'layout-unavailable': (True, 'Choose a layout listed by compose layouts'),
+    'asset-missing': (True, 'Restore the file or correct its path, then compile again'),
+    'asset-file-missing': (True, 'Restore the file at its recorded path, or record the asset '
+                                 'again with assets add-supplied'),
+    'asset-hash-changed': (True, 'Look at the changed file; if it is right, record it again '
+                                 '(assets add-supplied, assets icon --brand or images '
+                                 'generate), then retry'),
+    'asset-conflict': (True, 'Choose a new asset ID with --id, or record the same file and '
+                             'kind again'),
+    'assets-busy': (True, 'Retry when the other asset command ends. If none is running, '
+                          'remove .harness-slides/assets.lock and retry'),
+    'provider-missing': (True, 'Set up the provider named in provider (images status says '
+                               'what is missing), or record a supplied image with assets '
+                               'add-supplied'),
+    'provider-failed': (True, 'Check Google access with drive check, or preview with '
+                              '--renderer local'),
+    'output-exists': (True, 'Choose a new output directory'),
     'input-missing': (True, 'Check the path given on the command line'),
     'input-invalid': (True, 'Correct the input named in the detail and retry'),
     'unclassified': (False, 'Read the detail; ask the person before working around it'),
@@ -77,12 +93,19 @@ KNOWN = ((re.compile(r'Question or design revision changed|Design revision chang
                      r'design revision changed|No existing design revision'),
           'design-revision-stale'),
          (re.compile(r'Awaiting design approval'), 'design-awaiting-approval'),
-         (re.compile(r'differs? from the approved design'), 'design-mismatch'),
+         (re.compile(r'differs? from the approved design|Generate only the selected '
+                     r'approved'), 'design-mismatch'),
          (re.compile(r'New creative authoring needs --design-project'), 'design-missing'),
          (re.compile(r'changed outside the checkpoint|real directories'),
           'design-state-invalid'),
          (re.compile(r'Record the actual user response|Unknown design response|Autonomy is '
-                     r'chosen|Only explicit whole-plan'), 'invalid-response'))
+                     r'chosen|Only explicit whole-plan'), 'invalid-response'),
+         (re.compile(r"is not in the project's asset manifest|needs the project that records "
+                     r"it|resolves through the project's asset manifest"), 'asset-unresolved'),
+         (re.compile(r'is missing from the project'), 'asset-file-missing'),
+         (re.compile(r'changed since it was recorded'), 'asset-hash-changed'),
+         (re.compile(r'unknown icon|is a picture, not native|no drawing in the library|hashed '
+                     r'icon library'), 'icon-unavailable'))
 
 
 class Refusal(ValueError):
