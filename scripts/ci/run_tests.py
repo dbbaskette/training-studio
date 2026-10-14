@@ -62,8 +62,10 @@ def real_git() -> str | None:
     /usr/bin/git there is a shim that asks xcrun for the real one on every call, which makes
     each call about three times as slow, and the suite starts some twenty thousand of them.
     The folder also holds Xcode's own python3; the workers are started with this Python.
+    Only the shim is replaced: a git of the person's own choosing, such as Homebrew's, is kept.
     """
-    if sys.platform != 'darwin' or not shutil.which('xcrun'):
+    if sys.platform != 'darwin' or shutil.which('git') != '/usr/bin/git' \
+            or not shutil.which('xcrun'):
         return None
     try:
         found = subprocess.run(['xcrun', '--find', 'git'], capture_output=True, text=True,
