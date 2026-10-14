@@ -537,10 +537,10 @@ class Engine:
         return seen[1]
 
     def models(self, name: str) -> dict:
-        """What an agent offers to choose from: {'agent', 'models', 'levels', 'problem'},
-        as `agents` describes. A list is kept for MODELS_FOR seconds, and one that could not
-        be made, with the sentence that says why, for MODELS_MISSED. Each agent is asked by
-        one caller at a time, and nothing else waits for it."""
+        """What an agent offers to choose from: {'agent', 'models', 'levels', 'source',
+        'problem'}, as `agents` describes. A list is kept for MODELS_FOR seconds, and one
+        that could not be made, with the sentence that says why, for MODELS_MISSED. Each
+        agent is asked by one caller at a time, and nothing else waits for it."""
         adapter = self.adapter(name)
         with self._lock:
             listing = self._listing.setdefault(name, threading.Lock())
@@ -554,7 +554,8 @@ class Engine:
                     raise WorkspaceError(f'{adapter.title} cannot list its models.')
                 found = {'agent': name, **adapter.models(), 'problem': None}
             except WorkspaceError as failure:
-                found = {'agent': name, 'models': [], 'levels': [], 'problem': str(failure)}
+                found = {'agent': name, 'models': [], 'levels': [], 'source': None,
+                         'problem': str(failure)}
             self._models[name] = (time.monotonic(), found)
             return found
 
@@ -864,7 +865,7 @@ class Engine:
         agent = form['agent'] or chosen.agent
         model = form['model'] if named else form['model'] or chosen.model
         effort = settings.check_effort(form['effort'] if named
-                                       else form['effort'] or chosen.effort, agent)
+                                       else form['effort'] or chosen.effort, agent, model)
         ready = self.ready(agent)
         if not ready.ready:
             raise WorkspaceError(ready.problem)

@@ -30,8 +30,9 @@ What a caller needs to know
   actions, an answer, its documents, its copies, and what its deck says. A training
   driven elsewhere never counts as needing the person here.
 - `GET /api/models?agent=codex` answers what an agent offers to choose from: {"agent",
-  "models": [{"name", "label", "levels", "default_level"}], "levels", "problem"}. `levels`
-  beside the models are those a model that is not listed may be given. A list that could
+  "models": [{"name", "label", "family", "about", "levels", "default_level"}], "levels",
+  "source", "problem"}. `levels` beside the models are those a model that is not listed may
+  be given, and `source` where a list the runner keeps came from. A list that could
   not be made is still answered, with no models and `problem` saying why, so the page can
   say so and still take a name typed in. It is kept a while, and listing holds up nothing
   else the page asks.

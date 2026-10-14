@@ -31,14 +31,20 @@ What a caller needs to know
 - `ready()` says whether the agent is installed, signed in and reachable from this network.
   It never starts an agent. Being signed in is not enough: a network can block one agent.
 - `models()` is what the agent offers to choose from: {'models': [{'name', 'label',
-  'levels', 'default_level'}], 'levels'}, where `levels` are the reasoning levels each model
-  takes and the outer `levels` those a model that is not listed may be given: the ones every
-  listed model takes. Claude Code lists nothing, so its aliases are offered. Codex is asked
-  with `codex debug models`, through `companion.run_command` under LIST_SECONDS; a hidden
-  model, or a level `settings` does not know, is left out. It refuses in a sentence when the
-  agent cannot be asked. Nothing here keeps the answer: the engine does.
+  'family', 'about', 'levels', 'default_level'}], 'levels', 'source'}, where `levels` are
+  the reasoning levels each model takes and the outer `levels` those a model that is not
+  listed may be given. Claude Code lists nothing, so the list `settings` keeps is offered,
+  each model by its exact ID and grouped by `family`, with `source` saying where the list
+  came from; a model that is not listed may be given every level. Codex is asked with
+  `codex debug models`, through `companion.run_command` under LIST_SECONDS, and its models
+  are offered in its order, labelled with their slug, with the catalog's description as
+  `about`; a hidden model, or a level `settings` does not know, is left out, and a model
+  that is not listed may be given the levels every listed one takes. It refuses in a
+  sentence when the agent cannot be asked. Nothing here keeps the answer: the engine does.
 - `Job.effort` is the reasoning level, passed as `--effort` to Claude Code and as
   `-c model_reasoning_effort` to Codex, which reads `-c` even with `--ignore-user-config`.
+  Claude Code is given it only when its model takes it (`settings.takes`): Haiku 4.5 takes
+  none.
 - A Claude worker is not passed any environment variable that belongs to another Claude
   session (names starting CLAUDE or ANTHROPIC). The account's email address still reaches
   every Claude worker, and a Codex worker still sees the list of the person's installed
@@ -75,9 +81,6 @@ SERVER = 'runner'           # the name the worker tools are served under
 CLAUDE_SEARCH = 'WebSearch'
 GUIDANCE_LIMIT = 60_000     # characters; an operating system limits one argument's length
 LIST_SECONDS = 30           # the longest an agent may take to list its models
-# Claude Code has no list of its models. These aliases name the latest of each kind, and
-# Anthropic's documentation gives each of those every level `--effort` takes.
-CLAUDE_MODELS = (('fable', 'Fable'), ('opus', 'Opus'), ('sonnet', 'Sonnet'), ('haiku', 'Haiku'))
 SOMEONE_ELSES = ('CLAUDE', 'ANTHROPIC')
 # Codex features a worker must not have. The last two are its shell.
 CODEX_OFF = ('apps', 'plugins', 'remote_plugin', 'plugin_sharing', 'browser_use',
@@ -550,7 +553,7 @@ class Claude(_Agent):
             command += ['--max-budget-usd', f'{job.limits.dollars:g}']
         if job.model:
             command += ['--model', job.model]
-        if job.effort:
+        if job.effort and job.effort in settings.takes(self.name, job.model):
             command += ['--effort', job.effort]
         return command
 
@@ -577,10 +580,10 @@ class Claude(_Agent):
                 self.host)
 
     def models(self, **unused) -> dict:
-        """The aliases Claude Code takes, each with every level it takes."""
-        levels = list(settings.EFFORTS[self.name])
-        return offered([{'name': name, 'label': label, 'default_level': None,
-                         'levels': levels} for name, label in CLAUDE_MODELS])
+        """Claude Code's models as the runner keeps them, each with the levels it takes."""
+        kept = settings.claude_models()
+        return offered([{**model, 'levels': list(model['levels'])} for model in kept['models']],
+                       list(settings.EFFORTS[self.name]), kept['source'])
 
 
 class Codex(_Agent):
@@ -672,21 +675,25 @@ def codex_models(printed: str) -> list[dict]:
             word = level.get('effort') if isinstance(level, dict) else level
             if isinstance(word, str) and word in known and word not in levels:
                 levels.append(word)
-        label = entry.get('display_name')
+        shown, about = entry.get('display_name'), entry.get('description')
+        shown = clip(shown, 80) if isinstance(shown, str) and shown.strip() else name
         usual = entry.get('default_reasoning_level')
-        found.append({'name': name,
-                      'label': clip(label, 80) if isinstance(label, str) and label.strip()
-                      else name,
+        found.append({'name': name, 'label': name if shown == name else f'{shown} ({name})',
+                      'family': None,
+                      'about': clip(about, 120) if isinstance(about, str) and about.strip()
+                      else None,
                       'default_level': usual if usual in levels else None, 'levels': levels})
     return found
 
 
-def offered(models: list[dict]) -> dict:
-    """The models to choose from, and the levels a model that is not listed may be given:
-    those every listed model takes."""
-    common = [level for level in (models[0]['levels'] if models else [])
-              if all(level in model['levels'] for model in models)]
-    return {'models': models, 'levels': common}
+def offered(models: list[dict], levels: list[str] | None = None,
+            source: str | None = None) -> dict:
+    """The models to choose from, where the list came from, and the levels a model that is
+    not listed may be given: `levels`, or else those every listed model takes."""
+    common = levels if levels is not None else [
+        level for level in (models[0]['levels'] if models else [])
+        if all(level in model['levels'] for model in models)]
+    return {'models': models, 'levels': common, 'source': source}
 
 
 def _toml(value) -> str:

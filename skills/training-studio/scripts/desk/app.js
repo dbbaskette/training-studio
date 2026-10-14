@@ -546,7 +546,9 @@ function say(problem, text) {
 // A labelled box to type in. What is typed is kept in `held[name]` as it is typed, so a
 // screen that is drawn again still has it. With `picked` it is the browser's own file picker
 // instead: nothing of it is kept, and what is chosen is handed to `picked`. With `options`,
-// each a value and its name, it is the browser's own list to choose one from.
+// each a value and its name, it is the browser's own list to choose one from. An option
+// with a third word, a group's name, is put in that group with the options next to it
+// that name it too.
 function field(id, label, held, name, about) {
   const spec = about || {};
   const title = make('label', 'field-label', label);
@@ -561,10 +563,17 @@ function field(id, label, held, name, about) {
     input.accept = spec.accept || '';
     input.addEventListener('change', () => spec.picked(input));
   } else {
-    for (const [value, text] of spec.options || []) {
+    let group = null;
+    for (const [value, text, under] of spec.options || []) {
       const option = make('option', '', text);
       option.value = value;
-      input.append(option);
+      if (!under) group = null;
+      else if (!group || group.label !== under) {
+        group = make('optgroup');
+        group.label = under;
+        input.append(group);
+      }
+      (group || input).append(option);
     }
     input.value = held[name] || '';
     input.maxLength = spec.long ? 4000 : 400;
@@ -3344,7 +3353,7 @@ async function readModels(agent, again) {
   }
   view.models[agent] = found.problem ? { problem: String(found.problem), at: Date.now() }
     : { models: list(found.models).filter((one) => one && typeof one.name === 'string'),
-      levels: list(found.levels) };
+      levels: list(found.levels), source: found.source || '' };
   paintPick();
 }
 
@@ -3355,15 +3364,17 @@ function paintPick() {
 }
 
 // The model, from the agent's own list, and how hard it reasons, from the levels that model
-// takes. "Another model…" is for a name the list does not have, and stays where the list
-// could not be made.
+// takes. Models of one family are a group, and what the agent says of a model follows its
+// name. "Another model…" is for a name the list does not have, and stays where the list
+// could not be made. A model that takes no level is offered none.
 function modelFields(held, prefix, fill, told) {
   const name = AGENT_NAMES[held.agent] || held.agent;
   const known = view.models[held.agent] || { asking: true };
   const found = listedFor(held.agent);
   const listed = found ? found.models : [];
   const model = held.other ? null : listed.find((one) => one.name === held.model);
-  const options = [['', OWN_CHOICE], ...listed.map((one) => [one.name, one.label || one.name])];
+  const options = [['', OWN_CHOICE], ...listed.map((one) => [one.name,
+    (one.label || one.name) + (one.about ? ': ' + one.about : ''), one.family || ''])];
   // Until the list comes, a model already chosen is offered as it is.
   if (!found && held.model && !held.other) options.push([held.model, held.model]);
   options.push([OTHER_MODEL, 'Another model…']);
@@ -3380,8 +3391,8 @@ function modelFields(held, prefix, fill, told) {
       settlePick(held);
       fill();
     },
-    hint: 'As ' + name + ' lists them. Its own choice is the model it uses when none is '
-      + 'named.' })];
+    hint: 'As ' + (found && found.source ? 'the ' + found.source + ',' : name) + ' lists '
+      + 'them. Its own choice is the model it uses when none is named.' })];
   if (known.asking) {
     nodes.push(make('p', 'quiet', 'Asking ' + name + ' which models it has…'));
   } else if (!found) {
@@ -3396,6 +3407,10 @@ function modelFields(held, prefix, fill, told) {
       hint: 'As ' + name + ' knows it, with no spaces.' }));
   }
   const levels = levelsFor(held);
+  if (model && !list(model.levels).length) {
+    nodes.push(make('p', 'quiet', (model.label || model.name) + ' takes no reasoning level.'));
+    return nodes;
+  }
   const usual = model && model.default_level
     ? ' (' + lower(levelName(model.default_level)) + ')' : '';
   const choices = [['', OWN_CHOICE + usual], ...list(levels).map((level) => [level,
