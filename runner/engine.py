@@ -11,6 +11,10 @@ What a caller needs to know
     engine.supply(path, 'add', name, data)   # a document of theirs; or 'remove', or 'done'
     engine.whose(path, 'scenario:main')      # who wrote a scenario: 'runner' or 'you'
     engine.copies_again(path)                # make the copies that are not made, again
+    engine.outline(path, level, 'approve')   # a person's decision about what a deck says
+    engine.picture(path, number, artifact=)  # one slide's picture, as PNG bytes
+    engine.deck_gate(path, 'deck')           # what gate 6 adds for a deck the runner made
+    engine.deck_needs()                      # what this computer has for making a deck
     engine.decided(path, outcome)            # commit a decision the page just recorded
     engine.carry_on(path)                    # then share if that is wanted, and wake the run
     engine.share()                           # fetch, replay and push the workspace
@@ -23,8 +27,10 @@ What a caller needs to know
   try at each step with its times, cost, outcome and error, which research run the plan
   was handed to, a worker's question and the person's answers, why the run is halted,
   where its research may look and whether the person's documents are all added, which
-  scenario files the runner drafted, and which copies it tried to make and why one could
-  not be made. It is committed with everything else.
+  scenario files the runner drafted, which copies it tried to make and why one could
+  not be made, and for each deck what its outline was written from, whether what it says
+  is put to the person, what they decided, and which deck was saved. It is committed with
+  everything else.
 - One try at an agent step: an empty job folder under `agents.staging()`, a brief, a
   worker, and results taken only from what the worker tools accepted. A draft is saved
   through the core and committed. A step is tried up to three times, with the reason for
@@ -34,15 +40,30 @@ What a caller needs to know
   unanswered and named at gate 2, where the person decides. Research with no answer at all
   does stop it.
 - The engine never approves. It sets a gate through the core and waits. The page records
-  the person's decision through the core, then calls `decided` and `carry_on`.
+  the person's decision through the core, then calls `decided` and `carry_on`. What a deck
+  says has a gate of the runner's own, kept in the run record: the engine puts it to the
+  person and waits, and `outline` is how the page records what they decided.
 - After the blueprints it goes one level at a time: the guide, the brief, each practice
   scenario, each Yoodli scenario, with the copies the training asked for made after each
   approval. A copy that cannot be made is noted with the reason and never holds it up.
   The index is written last. A stage the person left out is passed over, and something
   made from what has since changed is made again and put to them again.
-- It never makes a slide deck. A training that wants one stops, done as far as the runner
-  goes, with `deck` set in its view; the index is written once the deck is left out, or
-  approved in a conversation.
+- A deck is made for each level after its brief: the handoff, the brand exported and
+  checked, what the deck says written by a worker and put to the person at the runner's
+  own gate, the tool's split into sections, the sections drawn side by side by workers
+  that look at what they draw, the whole deck merged, compiled and previewed, a review by
+  a worker that drew nothing, the sections with a major finding about how they are drawn
+  drawn again, at most twice, and then the previewed deck itself saved through the core
+  with the brand's audit and the reviewed coverage, for gate 6. The brand's export is
+  checked before each step that uses it: a brand that changed underneath stops the deck
+  and says so. A render that fails leaves nothing behind. Previews are taken one at a
+  time on this computer.
+- On a computer that cannot make a deck, a training that wants one is taken through every
+  other stage. It then stops, done as far as the runner goes, with `deck_left` in its
+  view saying what is missing; the index is written once the deck is left out, or
+  approved in a conversation. `look_again` looks at the computer afresh and wakes them.
+- When a training has a brand, the writers of its guide, its brief and its scenarios are
+  given the brand's rules for how the organisation and its products are named.
 - A training researched from the person's documents waits for them first. Nothing is
   drafted or researched until `supply(path, 'done')`.
 - A training whose decisions were moved to a conversation is left alone, except that its
@@ -62,10 +83,21 @@ What a caller needs to know
   harness-research wrapper; both are replaceable so that no test starts an agent.
   `documents`, `copies` and `index` are the three modules of those names, or anything
   with the same functions; a test gives its own, so that none reads a PDF, asks Google or
-  runs a converter.
+  runs a converter. `slides` and `brand` make the wrappers of the slides tool and of a
+  brand skill, each refusing with a sentence when this computer has none.
+- What this computer has for a deck is looked at when asked and reused for a few minutes:
+  the slides tool and its version, a brand skill and its brands, and from the slides
+  module's `ready(slides)` whether LibreOffice (`local`) or Google Drive (`drive`) can render and
+  whether the programs that make pictures (`pictures`) are there, with its sentences for
+  what is missing under `missing`.
+- A slides wrapper that has `reading(brand)`, giving the tool's own design guidance and
+  examples as {name: text}, has them handed to the composers. Without it they work from
+  the composition contract and their brief.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import secrets
 import shutil
@@ -77,16 +109,19 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
+import computer
 import home
 import hub
 import workspace
 from workspace import WorkspaceError
 
-from runner import agents, gitstate, pipeline, settings, worker_tools
+from runner import agents, deck, gitstate, pipeline, settings, worker_tools
+from runner import brand as brand_skill
 from runner import copies as copies_made
 from runner import documents as documents_kept
 from runner import index as index_written
 from runner import research as research_cli
+from runner import slides as slides_tool
 
 SCHEMA = 1
 RECORD = f'{workspace.STATE_DIR}/run.json'
@@ -96,9 +131,16 @@ IN_HAND = f'{workspace.STATE_DIR}/step.lock'
 AT_ONCE = 3             # research questions worked on at the same time
 LINES = 6               # the last things a worker did that the page is shown
 READY_FOR = 60          # seconds a look at an agent is reused
+LOOKED_FOR = 300        # seconds a look at what this computer has for a deck is reused
 BUSY_TRIES = 20         # times a finding is offered while another save holds the lock
 ACTIONS = ('pause', 'resume', 'stop', 'retry')
+# The steps of a deck, and what the engine does for each. What a deck says is drafted like
+# any other draft, and gate 6 is the core's.
+DECK = {'deck-handoff': '_handoff', 'deck-brand': '_export', 'gate:deck-outline': '_ask',
+        'deck-start': '_split', 'deck-sections': '_sections', 'deck-repair': '_sections',
+        'deck-whole': '_whole', 'deck-review': '_review', 'deck-save': '_keep'}
 SUPPLYING = ('add', 'remove', 'done')
+DECIDING = ('approve', 'revise')    # what a person may decide about what a deck says
 STATES = {'working': 'working', 'waiting': 'waiting for you', 'paused': 'paused',
           'stopped': 'stopped', 'failed': 'stopped on a problem',
           'done': 'finished as far as the runner takes it'}
@@ -112,6 +154,24 @@ NOT_HERE = ('The documents this training was researched from are on another comp
             'Research cannot be run again here until they are added again.')
 SETTLED = ('The research for this training was planned from the documents already added, so '
            'they cannot be changed now.')
+PREVIEWS = 'previews'   # in the per-user data folder: the render's turn, and each deck's file
+DECK_KEPT = ('What you approved the deck should say is kept, and so is everything made '
+             'before it.')
+NOT_CHOSEN = ("How a deck's previews are rendered has not been chosen. Choose Google Drive "
+              'or LibreOffice in Settings.')
+NO_RENDERER = ('This computer has no way to render previews of slides. Install LibreOffice, '
+               'or give it Google access that reaches Drive.')
+NO_DRIVE = ('Previews are set to go through Google Drive, and Google access from this '
+            'computer does not reach Drive. Sign in to Google with Drive access, or choose '
+            'LibreOffice in Settings.')
+NO_LOCAL = ('Previews are set to be rendered with LibreOffice, which this computer does not '
+            'have. Install it, or choose Google Drive in Settings.')
+NO_PICTURES = ('The programs the slides tool uses to turn a render into pictures are not on '
+               'this computer.')
+BRAND_CHANGED = ('The brand changed underneath this deck after it was exported. {said} Try '
+                 'again to export it afresh. The slides are then drawn again from what you '
+                 'approved the deck should say.')
+NO_PICTURE = 'There is no picture of that slide on this computer.'
 
 
 def read_record(root: Path) -> dict | None:
@@ -137,7 +197,7 @@ def new_record(agent: str, model: str | None, chosen: settings.Settings,
                        'training_dollars': chosen.training_dollars},
             'steps': {}, 'research': None, 'question': None, 'answers': {}, 'halt': None,
             'problem': None, 'cleared': 0.0, 'documents': supplied, 'drafted': [],
-            'copies': {'problems': {}, 'tried': {}}}
+            'copies': {'problems': {}, 'tried': {}}, 'deck': {}}
 
 
 def attempts(record: dict, step: str | None = None) -> list[dict]:
@@ -160,6 +220,13 @@ def last_error(record: dict, step: str) -> str | None:
     entry = pipeline.tries(record, step)
     tried = [attempt for attempt in entry.get('attempts', []) if attempt.get('error')]
     return tried[-1]['error'] if tried and entry.get('failed') else None
+
+
+def older(version: str, needed: str) -> bool:
+    """True when a version is older than the one that is needed."""
+    def parts(text: str) -> tuple:
+        return tuple(int(part) for part in re.findall(r'\d+', text)[:3])
+    return parts(version) < parts(needed)
 
 
 def folder_name(step: str) -> str:
@@ -207,9 +274,13 @@ class Engine:
     """Drives every training in this computer's workspace."""
 
     def __init__(self, adapters=None, research=None, background: bool = True,
-                 at_once: int = AT_ONCE, documents=None, copies=None, index=None):
+                 at_once: int = AT_ONCE, documents=None, copies=None, index=None,
+                 slides=None, brand=None):
         self.adapters = dict(adapters or agents.AGENTS)
         self.research = research or research_cli.Research
+        self.slides = slides or slides_tool.Slides
+        self.brand = brand or brand_skill.Brand
+        self._looked: tuple[float, dict] | None = None
         self.documents = documents or documents_kept
         self.copies = copies or copies_made
         self.index = index or index_written
@@ -286,7 +357,15 @@ class Engine:
         `copies` saves looking at the copies again when the caller just has."""
         supplied = self.documents.listed(root) if record.get('documents') else ()
         copies = self._wanted(root, record) if copies is None else copies
-        return pipeline.survey(root, record, copies, supplied)
+        return pipeline.survey(root, record, copies, supplied, self._deck_here(root))
+
+    def _deck_here(self, root: Path) -> dict | None:
+        """What this computer has for a training's deck. Not looked at for a training
+        that wants none."""
+        if 'deck' not in pipeline.wanted(workspace.load(root)):
+            return None
+        needs = self.deck_needs()
+        return {'missing': needs['missing'], 'brands': needs['brands']}
 
     @staticmethod
     def _away(found: pipeline.Survey) -> bool:
@@ -321,7 +400,8 @@ class Engine:
                 gitstate.discard(space, root)
                 raise
         self.wake(root)
-        return {'path': str(root), 'id': root.name, 'gates': pipeline.gates(form)}
+        drawn = bool(form['deck_target'] and form['brand']) and not self.deck_needs()['missing']
+        return {'path': str(root), 'id': root.name, 'gates': pipeline.gates(form, drawn)}
 
     def adopt(self) -> None:
         """Make every training in the workspace known to this computer's page."""
@@ -446,7 +526,10 @@ class Engine:
 
     def _do(self, root: Path, run: _Run, found: pipeline.Survey,
             step: pipeline.Next) -> None:
-        if step.kind == 'gate':
+        drawing = DECK.get(pipeline.bare(step.step.id)) if step.step.stage == 'deck' else None
+        if drawing:
+            getattr(self, drawing)(root, run, found, step)
+        elif step.kind == 'gate':
             self._gate(root, step.step)
         elif step.step.id == 'research-start':
             self._hand_over(root, step.step)
@@ -500,8 +583,8 @@ class Engine:
         return entry
 
     def _hand_on(self, root: Path, found: pipeline.Survey) -> None:
-        """The deck is all that is left, and the runner makes no deck: say so through the
-        core, once."""
+        """The deck is all that is left, and it cannot be made here: say so through the
+        core, once, with what is missing."""
         says = pipeline.deck_says(found)
         if (found.session['stage'], found.session.get('next_step')) == ('deck', says):
             return
@@ -580,6 +663,617 @@ class Engine:
                 'the training is not ready yet'))
         self._last(root)
 
+    # --- what this computer has for a deck -----------------------------------------------
+
+    def _look(self, fresh: bool = False) -> dict:
+        """What this computer has for making a deck: the slides tool, what it can render
+        with, and a brand skill with its brands. A look is reused for a few minutes."""
+        seen = self._looked
+        if not fresh and seen and time.monotonic() - seen[0] < LOOKED_FOR:
+            return seen[1]
+        found = {'tool': None, 'version': None, 'local': False, 'drive': False,
+                 'pictures': False, 'lacks': [],
+                 'brand': {'found': False, 'name': None, 'brands': [], 'problem': None}}
+        try:
+            tool = self.slides()
+            ready = slides_tool.ready(tool)
+            ready = ready if isinstance(ready, dict) else {}
+            found.update(version=str(tool.version()), local=bool(ready.get('local')),
+                         drive=bool(ready.get('drive')),
+                         pictures=ready.get('pictures', True) is not False,
+                         lacks=[said for said in ready.get('missing') or ()
+                                if isinstance(said, str)])
+        except (WorkspaceError, OSError) as refusal:
+            found['tool'] = str(refusal)
+        try:
+            skill = self._skill()
+            found['brand'] = {'found': True, 'name': str(skill.name), 'problem': None, 'brands': [
+                {'brand': str(entry.get('brand')), 'name': str(entry.get('name')),
+                 'variants': [str(variant) for variant in entry.get('variants') or ()]}
+                for entry in skill.brands() if isinstance(entry, dict)]}
+        except (WorkspaceError, OSError) as refusal:
+            found['brand']['problem'] = str(refusal)
+        self._looked = (time.monotonic(), found)
+        return found
+
+    def deck_needs(self, fresh: bool = False) -> dict:
+        """What a deck needs on this computer: `missing`, a sentence for each thing it
+        lacks, each with what to do about it; `how`, the way previews are rendered here;
+        whether `drive` and `local` can render; the `brand` skill found and its `brands`;
+        and `items`, each need as a line of the page's check of this computer."""
+        seen, chosen = self._look(fresh), settings.load().previews
+        how = chosen or ('local' if seen['local'] else None)
+        brand, renders = seen['brand'], None
+        dated = None if seen['tool'] or not older(seen['version'], slides_tool.MINIMUM) else (
+            f"The slides tool on this computer is version {seen['version']}, and a deck "
+            f'needs {slides_tool.MINIMUM} or newer. Update it.')
+        missing = [said for said in (seen['tool'], dated, brand['problem']) if said]
+        if not seen['tool']:
+            if how is None:
+                renders = NOT_CHOSEN if seen['drive'] else NO_RENDERER
+            elif not seen[how]:
+                renders = NO_DRIVE if how == 'drive' else NO_LOCAL
+            missing += [renders] if renders else []
+            missing += [NO_PICTURES] if not seen['pictures'] else []
+        fact, item = computer.fact, computer.item
+        can = {True: 'ok', False: 'problem'}
+        items = [
+            item('deck-slides', 'The slides tool',
+                 'missing' if seen['tool'] else 'problem' if dated else 'ok',
+                 [fact('Installed', can[not seen['tool']], seen['version'] or 'not found')],
+                 seen['tool'] or dated or ''),
+            item('deck-brand', 'A brand skill', 'ok' if brand['found'] else 'missing',
+                 [fact('Installed', can[brand['found']], brand['name'] or 'not found')],
+                 brand['problem'] or ''),
+            item('deck-previews', 'A way to render previews of slides',
+                 'problem' if renders or seen['tool'] else 'ok',
+                 [fact('LibreOffice on this computer', can[seen['local']]),
+                  fact('Google Drive', can[seen['drive']]),
+                  fact('Chosen', 'ok' if how else 'unknown',
+                       {'drive': 'Google Drive', 'local': 'LibreOffice'}.get(how, 'not yet'))],
+                 renders or ''),
+            item('deck-pictures', 'The programs that turn a render into pictures',
+                 'ok' if seen['pictures'] else 'missing',
+                 [fact('Installed', can[seen['pictures']])],
+                 ' '.join([NO_PICTURES, *seen['lacks']]) if not seen['pictures'] else '')]
+        return {'missing': missing, 'how': how, 'drive': seen['drive'], 'local': seen['local'],
+                'brand': dict(brand), 'brands': list(brand['brands']), 'items': items}
+
+    def _skill(self):
+        """The brand skill to use: the one the person named at set-up, else the first
+        that is found."""
+        named = settings.load().brand_skill
+        return self.brand(runtime=named) if named else self.brand()
+
+    def brand_skills(self) -> list[dict]:
+        """Every brand skill found on this computer, as {'name', 'path', 'chosen'}, read
+        from `brand.found()`. `path` is where the skill is, which names it at set-up."""
+        named = settings.load().brand_skill
+        try:
+            found = [entry for entry in brand_skill.found() if isinstance(entry, dict)
+                     and entry.get('runtime')]
+        except (WorkspaceError, OSError):
+            return []
+        return [{'name': str(entry.get('name') or entry['runtime']),
+                 'path': str(entry['runtime']),
+                 'chosen': str(entry['runtime']) == named if named else number == 0}
+                for number, entry in enumerate(found)]
+
+    def brands(self) -> list[dict] | None:
+        """The brands the brand skill on this computer has, or None with no brand skill."""
+        brand = self._look()['brand']
+        return list(brand['brands']) if brand['found'] else None
+
+    def look_again(self) -> dict:
+        """Look at this computer afresh, as the person asks, and let every training that
+        was waiting on what it lacked carry on."""
+        needs = self.deck_needs(fresh=True)
+        for root in self.trainings():
+            self.wake(root)
+        return needs
+
+    @staticmethod
+    def _previews() -> Path:
+        """Where this computer keeps the render's one turn, and for each deck the preview
+        file it has in Google Drive. Nothing here is shared."""
+        return home.data_root() / PREVIEWS
+
+    def previews_left(self) -> list[dict]:
+        """The preview files the runner has left in Google Drive from this computer. It
+        never deletes one, so the person is shown each with its address."""
+        folder = self._previews()
+        kept = [home.read_json(path, None) for path in sorted(folder.glob('*.json'))] \
+            if folder.is_dir() else []
+        return [{key: entry.get(key) for key in ('name', 'url', 'training')}
+                for entry in kept if isinstance(entry, dict) and entry.get('url')]
+
+    def _how(self, root: Path, found: pipeline.Survey, level: str | None) -> dict:
+        """How one deck's previews are taken, as `worker_tools.render` takes it."""
+        title = found.session['title'] + (f', level {level}' if level else '')
+        folder, space = self._previews(), self.space()
+        folder.mkdir(parents=True, exist_ok=True)
+        name = folder_name(f"{space.name}-{root.name}-{level or ''}")
+        return {'renderer': self.deck_needs()['how'], 'lock': str(folder / 'render.lock'),
+                'kept': str(folder / f'{name}.json'),
+                'named': {'name': f'Preview: {title}', 'training': title, 'path': str(root)}}
+
+    def _naming(self, root: Path, session: dict) -> str | None:
+        """How the training's brand names the organisation and its products, exported
+        afresh for one writer. None with no brand chosen, or no brand skill here."""
+        chosen = pipeline.brand_of(session)
+        if chosen is None or not self._look()['brand']['found']:
+            return None
+        folder = agents.staging() / f'{root.name}--names-{secrets.token_hex(3)}'
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            made = self._skill().export(folder, *chosen, delivery=deck.DELIVERY)
+            return Path(made['voice']).read_text(encoding='utf-8')
+        except (WorkspaceError, OSError, KeyError, TypeError):
+            return None
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    # --- the slide deck ------------------------------------------------------------------
+
+    @staticmethod
+    def _decided(record: dict, level: str | None) -> dict:
+        """What a run record holds of one level's deck."""
+        return record.setdefault('deck', {}).setdefault(level or '', {})
+
+    @staticmethod
+    def _note(root: Path, level: str | None, **changes) -> dict:
+        """Note what this computer has built of a deck. Call it holding `files`."""
+        built = {**pipeline.read_built(root, level), **changes}
+        pipeline.write_built(root, level, built)
+        return built
+
+    def _done(self, root: Path, step: pipeline.Step, clock: float, what: str) -> None:
+        """Note a step of the runner's own that worked, and commit. Call it holding
+        `files`."""
+        record = self._load(root)
+        self._tried(record, step.id, home.now(), time.monotonic() - clock, 'kept')
+        self._store(root, record)
+        self._commit(root, what)
+
+    def _brand_holds(self, root: Path, found: pipeline.Survey, step: pipeline.Step) -> bool:
+        """Check a deck's exported brand again before a step that uses it. A brand that
+        changed underneath stops the deck, and says so."""
+        level = self._level(step)
+        mine = found.decks[level]
+        try:
+            self._skill().check(pipeline.contract(root, mine))
+        except WorkspaceError as refusal:
+            with self.files:
+                self._note(root, level, brand={**(mine.built.get('brand') or {}),
+                                               'changed': str(refusal)})
+            self._problem(root, step.id, 'stopped', BRAND_CHANGED.format(said=refusal),
+                          DECK_KEPT)
+            return False
+        return True
+
+    def _handoff(self, root: Path, run: _Run, found: pipeline.Survey,
+                 step: pipeline.Next) -> None:
+        """Write deck-handoff.md from the record. It is derived, and written again whenever
+        the blueprint or the settings change."""
+        it, clock = step.step, time.monotonic()
+        level = self._level(it)
+        with self.files:
+            workspace.write_atomic(
+                pipeline.place(root, level, pipeline.HANDOFF),
+                pipeline.handoff_text(root, found.session, level).encode('utf-8'))
+            workspace.checkpoint(root, stage='deck', level=level, next_step=it.label)
+            self._done(root, it, clock, f'write the handoff for {workspace.label(it.artifact)}')
+
+    def _export(self, root: Path, run: _Run, found: pipeline.Survey,
+                step: pipeline.Next) -> None:
+        """Export the brand for one deck, for reading delivery, into a folder of its own,
+        and read what the slides tool tells a deck's workers for that brand."""
+        it, clock, token = step.step, time.monotonic(), secrets.token_hex(3)
+        level = self._level(it)
+        work = pipeline.place(root, level, pipeline.WORK)
+        folder, told = work / f'brand-{token}', work / f'told-{token}'
+        work.mkdir(parents=True, exist_ok=True)
+        try:
+            chosen, tool = pipeline.brand_of(found.session), self.slides()
+            made = self._skill().export(folder, *chosen, delivery=deck.DELIVERY)
+            contract = Path(made['contract']).resolve()
+            told.mkdir()
+            (told / 'outline-contract.txt').write_text(tool.outline_contract(contract),
+                                                       encoding='utf-8')
+            (told / 'compose-contract.txt').write_text(tool.compose_contract(contract),
+                                                       encoding='utf-8')
+            home.write_json(told / 'layouts.json', tool.layouts(contract))
+            reading = getattr(tool, 'reading', None)
+            for name, text in (reading(contract) if callable(reading) else {}).items():
+                worker_tools._write(told / 'reading' / f'{worker_tools.slug(name)}.txt', text)
+            kept = {'brand': chosen[0], 'variant': chosen[1], 'folder': folder.name,
+                    'told': told.name, 'changed': None, 'at': home.now(),
+                    'contract': contract.relative_to(work.resolve()).as_posix(),
+                    'voice': (Path(made['voice']).resolve().relative_to(work.resolve())
+                              .as_posix() if made.get('voice') else None),
+                    'sha256': workspace.sha256_file(contract)}
+        except (WorkspaceError, OSError, KeyError, ValueError, TypeError) as refusal:
+            shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(told, ignore_errors=True)
+            return self._problem(root, it.id, 'stopped', (
+                f'The brand could not be exported for this deck. {refusal}'), KEPT)
+        with self.files:
+            for old in (*work.glob('brand-*'), *work.glob('told-*')):
+                if old not in (folder, told):
+                    shutil.rmtree(old, ignore_errors=True)
+            self._note(root, level, brand=kept)
+            self._done(root, it, clock, f'export the brand for {workspace.label(it.artifact)}')
+
+    def _ask(self, root: Path, run: _Run, found: pipeline.Survey, step: pipeline.Next) -> None:
+        """Put what a deck says to the person, at the runner's own gate, and wait. The
+        core has no gate for it, so this one is kept in the run record."""
+        it = step.step
+        level, says = self._level(it), pipeline.subject(it)
+        with self.files:
+            record = self._load(root)
+            self._decided(record, level)['waiting'] = {
+                'sha256': workspace.sha256_file(pipeline.place(root, level, pipeline.OUTLINE)),
+                'at': home.now()}
+            self._store(root, record)
+            workspace.checkpoint(root, stage='deck', level=level,
+                                 next_step=f'Waiting for your review of {says}')
+            self._commit(root, f'ask for a review of {says}')
+
+    def _split(self, root: Path, run: _Run, found: pipeline.Survey,
+               step: pipeline.Next) -> None:
+        """Start a deck from what the person approved: add the direction, the layouts for
+        its lead slides and the house rules, have the slides tool split it into sections,
+        put the lead slides right, and rewrite each section's brief for a worker with
+        tools and no files."""
+        it, clock, token = step.step, time.monotonic(), secrets.token_hex(3)
+        if not self._brand_holds(root, found, it):
+            return
+        level = self._level(it)
+        mine, work = found.decks[level], pipeline.place(root, level, pipeline.WORK)
+        folder, source = work / f'start-{token}', work / f'outline-{token}.json'
+        approved = mine.kept['approved']
+        words = [f"Approved on the page, {approved['at']}."]
+        words += [approved['note']] if approved.get('note') else []
+        try:
+            listed = home.read_json(work / mine.built['brand']['told'] / 'layouts.json', {})
+            whole = deck.complete(mine.outline, (listed or {}).get('layouts'), words)
+            home.write_json(source, whole)
+            self.slides().outline_start(source, pipeline.contract(root, mine), folder)
+            sections = []
+            for part in home.read_json(folder / 'parts.json', {})['parts']:
+                ident = Path(part).stem
+                if not pipeline.SECTION.match(ident):
+                    made = json.loads((folder / part).read_text(encoding='utf-8'))
+                    home.write_json(folder / part, deck.lead(made))
+                    continue
+                written = (folder / 'briefs' / f'{ident}.md').read_text(encoding='utf-8')
+                slides = deck.named_in(written, whole)
+                if not slides:
+                    raise WorkspaceError(f'The slides tool gave {ident} no slides.')
+                worker_tools._write(folder / 'given' / f'{ident}.md', deck.brief(
+                    written, whole).replace(str(folder), '.').replace(str(Path.home()), '~'))
+                sections.append({'id': ident, 'file': part, 'slides': slides})
+            if not sections:
+                raise WorkspaceError('The slides tool split the deck into no sections.')
+            home.write_json(folder / 'given' / 'outline.json', whole)
+        except (WorkspaceError, OSError, KeyError, ValueError, TypeError) as refusal:
+            shutil.rmtree(folder, ignore_errors=True)
+            return self._problem(root, it.id, 'failed', (
+                f'The deck could not be split into sections. {refusal}'), DECK_KEPT)
+        finally:
+            source.unlink(missing_ok=True)
+        with self.files:
+            for old in (*work.glob('start-*'), pipeline.place(root, level, pipeline.SHOTS),
+                        pipeline.place(root, level, pipeline.DRAWN)):
+                if old != folder:
+                    shutil.rmtree(old, ignore_errors=True)
+            self._note(root, level, sections={}, rounds=[], start={
+                'outline': approved['sha256'], 'brand': mine.built['brand']['sha256'],
+                'folder': folder.name, 'sections': sections, 'at': home.now()})
+            self._done(root, it, clock, f'split {workspace.label(it.artifact)} into '
+                       f"{len(sections)} section{'' if len(sections) == 1 else 's'}")
+
+    def _sections(self, root: Path, run: _Run, found: pipeline.Survey,
+                  step: pipeline.Next) -> None:
+        """One try at each section still to draw, or to draw again, side by side. Their
+        previews are still taken one at a time."""
+        if not self._brand_holds(root, found, step.step):
+            return
+        how = self._how(root, found, self._level(step.step))
+
+        def one(section: str) -> None:
+            if self._may_go(root):
+                self._section(root, run, found, step.step, section, how)
+
+        if self.at_once <= 1 or len(step.questions) == 1:
+            for section in step.questions:
+                one(section)
+            return
+        with ThreadPoolExecutor(max_workers=self.at_once) as pool:
+            for pending in [pool.submit(one, section) for section in step.questions]:
+                pending.result()
+
+    def _section(self, root: Path, run: _Run, found: pipeline.Survey, whole: pipeline.Step,
+                 section: str, how: dict) -> None:
+        """One try at drawing one section. What is kept is what the worker last previewed:
+        the section, and the pictures of that preview."""
+        number, level = pipeline.numbered(section), self._level(whole)
+        again = ' again' if pipeline.bare(whole.id) == 'deck-repair' else ''
+        it = pipeline.Step(f'{whole.id}:{number}', 'agent',
+                           f'Draw section {number} of {workspace.label(whole.artifact)}{again}',
+                           f'Drawing section {number} of {workspace.label(whole.artifact)}'
+                           f'{again}', 'deck', whole.artifact)
+        work = pipeline.section_work(root, found, whole, section,
+                                     last_error(self._load(root), it.id), how)
+        outcome, handed, started_at, folder = self._job(root, run, it, work)
+        if outcome.reason == 'stopped':
+            return self._stopped(root, it, outcome, started_at)
+        if not handed['artifacts'] or not handed['shown']:
+            return self._failed(root, it, outcome, started_at,
+                                pipeline.why_not(handed, outcome.detail))
+        mine, base = found.decks[level], pipeline.place(root, level, pipeline.WORK)
+        with self.files:
+            turn = len(mine.rounds) if again else 0
+            file = Path(mine.start['folder']) / 'drawn' / f'{section}-{turn}.json'
+            draft = next(iter(handed['artifacts'].values()))
+            worker_tools._write(base / file, draft['text'])
+            shown = pipeline.place(root, level, pipeline.DRAWN) / section
+            shutil.rmtree(shown, ignore_errors=True)
+            shown.mkdir(parents=True)
+            for slide in handed['shown']['slides']:
+                (shown / f"{slide['number']}.png").write_bytes(
+                    worker_tools.picture(slide['path']))
+            drawn = dict(pipeline.read_built(root, level).get('sections') or {})
+            drawn[section] = {
+                'start': mine.start['folder'], 'round': turn, 'file': file.as_posix(),
+                'sha256': workspace.sha256_file(base / file),
+                'previews': handed['shown']['previews'],
+                'pictures': [slide['number'] for slide in handed['shown']['slides']],
+                'notes': (handed['review'] or '').strip() or None}
+            self._note(root, level, sections=drawn)
+            record = self._load(root)
+            self._tried(record, it.id, started_at, outcome.seconds, 'kept',
+                        **self._cost(outcome))
+            self._store(root, record)
+            self._commit(root, f'keep section {number} of {workspace.label(whole.artifact)}'
+                         + (', drawn again' if again else ''))
+        shutil.rmtree(folder, ignore_errors=True)
+
+    def _whole(self, root: Path, run: _Run, found: pipeline.Survey,
+               step: pipeline.Next) -> None:
+        """Merge the sections with the lead slides, compile the whole deck and preview it.
+        Only the last preview of a deck is kept, and a try that fails leaves nothing."""
+        it, clock = step.step, time.monotonic()
+        if not self._brand_holds(root, found, it):
+            return
+        level = self._level(it)
+        mine, base = found.decks[level], pipeline.place(root, level, pipeline.WORK)
+        start = base / mine.start['folder']
+        folder, shots = start / f'whole-{secrets.token_hex(3)}', pipeline.place(
+            root, level, pipeline.SHOTS)
+        drawn = mine.built.get('sections') or {}
+        try:
+            folder.mkdir()
+            shutil.copyfile(start / 'parts.json', folder / 'parts.json')
+            for part in home.read_json(start / 'parts.json', {})['parts']:
+                made = drawn.get(Path(part).stem)
+                (folder / part).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(base / made['file'] if made else start / part, folder / part)
+            tool = self.slides()
+            tool.merge(folder / 'parts.json', folder / 'composition.json')
+            tool.compile(folder / 'composition.json', pipeline.contract(root, mine),
+                         folder=folder / 'compiled')
+            shown = worker_tools.render(tool, folder / 'compiled', folder / 'preview',
+                                        self._how(root, found, level))
+            file = Path(str(shown['deck'])).resolve()
+            if (folder / 'preview').resolve() not in file.parents \
+                    or file.read_bytes()[:4] != workspace.PPTX_SIGNATURE:
+                raise WorkspaceError('The renderer did not leave a deck that can be opened.')
+            slides = worker_tools.pictures(shown, folder / 'preview', shots)
+            home.write_json(shots / pipeline.ABOUT, {'deck': shown['deckSha256'], 'slides': [
+                {key: slide[key] for key in ('number', 'id', 'title')} for slide in slides]})
+        except (WorkspaceError, OSError, KeyError, ValueError, TypeError) as refusal:
+            shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(shots, ignore_errors=True)
+            return self._problem(root, it.id, 'failed', (
+                f'The slides could not be put together and rendered. {refusal} Nothing of '
+                'that try was kept.'), DECK_KEPT)
+        with self.files:
+            for old in start.glob('whole-*'):
+                if old != folder:
+                    shutil.rmtree(old, ignore_errors=True)
+            rounds = [made for made in pipeline.read_built(root, level).get('rounds') or ()
+                      if made.get('start') == mine.start['folder']]
+            rounds.append({
+                'start': mine.start['folder'], 'at': home.now(), 'review': None,
+                'folder': folder.relative_to(base).as_posix(),
+                'preview': (folder / 'preview').relative_to(base).as_posix(),
+                'compiled': (folder / 'compiled').relative_to(base).as_posix(),
+                'file': file.relative_to(base.resolve()).as_posix(),
+                'made_from': {ident: made['sha256'] for ident, made in drawn.items()},
+                'deck': shown['deckSha256'], 'slides': slides})
+            self._note(root, level, rounds=rounds)
+            self._done(root, it, clock, f'put {workspace.label(it.artifact)} together: '
+                       f"{len(slides)} slide{'' if len(slides) == 1 else 's'}")
+
+    def _review(self, root: Path, run: _Run, found: pipeline.Survey,
+                step: pipeline.Next) -> None:
+        """One try at the review of a whole deck, by a worker that drew none of it."""
+        it = step.step
+        if not self._may_go(root):
+            return
+        level = self._level(it)
+        work = pipeline.work(root, found, it, None, last_error(self._load(root), it.id), [])
+        outcome, handed, started_at, folder = self._job(root, run, it, work)
+        if outcome.reason == 'stopped':
+            return self._stopped(root, it, outcome, started_at)
+        if handed['assessment'] is None or handed['coverage'] is None:
+            return self._failed(root, it, outcome, started_at,
+                                pipeline.why_not(handed, outcome.detail))
+        with self.files:
+            rounds = list(pipeline.read_built(root, level).get('rounds') or ())
+            rounds[-1] = {**rounds[-1], 'review': {
+                'findings': handed['assessment']['findings'],
+                'weakest': handed['assessment']['weakest'],
+                'coverage': handed['coverage']['objectives'], 'at': home.now()}}
+            self._note(root, level, rounds=rounds)
+            record = self._load(root)
+            self._tried(record, it.id, started_at, outcome.seconds, 'kept',
+                        **self._cost(outcome))
+            self._store(root, record)
+            self._commit(root, f'keep the review of {workspace.label(it.artifact)}')
+        shutil.rmtree(folder, ignore_errors=True)
+
+    def _keep(self, root: Path, run: _Run, found: pipeline.Survey, step: pipeline.Next) -> None:
+        """Keep the previewed deck as the deck: run the brand's audit on it, put it into
+        Google Slides when that is where it goes, and save it through the core with the
+        coverage the reviewer read off its slides. The file saved is the one whose
+        pictures the page shows."""
+        it, clock = step.step, time.monotonic()
+        if not self._brand_holds(root, found, it):
+            return
+        level, session = self._level(it), found.session
+        mine, base = found.decks[level], pipeline.place(root, level, pipeline.WORK)
+        last, title = mine.last, session['title'] + (f', level {level}' if level else '')
+        file, link = base / last['file'], None
+        try:
+            audit = pipeline.audited(self._skill().audit(file, *pipeline.brand_of(session)))
+        except WorkspaceError as refusal:
+            audit = pipeline.audited(None, f"The brand's audit could not be run. {refusal}")
+        try:
+            cited = self.slides().cited(base / last['compiled'])
+            if session['settings']['deck_target'] == 'google':
+                link = deck.link(self.slides().drive_import(file, title), title, last['deck'])
+        except WorkspaceError as refusal:
+            return self._problem(root, it.id, 'failed', (
+                f'The deck was drawn and reviewed, but could not be kept. {refusal}'),
+                'The slides as they were drawn and reviewed are kept on this computer.')
+        with self.files:
+            shows = pipeline.deck_shows(root, session, mine, audit, cited)
+            entry = pipeline.keep_deck(root, found, mine, None if link else file, link, shows)
+            record = self._load(root)
+            self._decided(record, level)['saved'] = {
+                'deck': last['deck'], 'sha256': entry['sha256'], 'at': home.now()}
+            self._store(root, record)
+            self._done(root, it, clock, f'keep {workspace.label(it.artifact)}')
+
+    def outline(self, path, level: str | None, decision: str, note: str | None = None,
+                seen: str | None = None) -> dict:
+        """Record what a person decided about what a deck says, as the page heard it:
+        `approve`, or `revise` with what should change. Nothing else calls this: the
+        engine puts an outline to the person and waits."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        if decision not in DECIDING:
+            raise WorkspaceError('What a deck says can be decided as: '
+                                 + ', '.join(DECIDING) + '.')
+        note = (note or '').strip() or None
+        if decision == 'revise' and not note:
+            raise WorkspaceError('Say what should change.')
+        with self.files:
+            record = self._load(root)
+            step = self._survey(root, record).next
+            if step.kind != 'outline' or self._level(step.step) != level:
+                raise WorkspaceError('What that deck says is not waiting for a decision.')
+            kept, says = self._decided(record, level), pipeline.subject(step.step)
+            if seen is not None and seen != kept['waiting']['sha256']:
+                raise WorkspaceError(f'{workspace.sentence(says)} has changed since it was '
+                                     'opened. Read the new version before deciding.')
+            if decision == 'approve':
+                kept['approved'] = {'sha256': kept['waiting']['sha256'], 'at': home.now(),
+                                    'by': 'page', 'note': note}
+                said = f'{workspace.sentence(says)} was approved on the page.'
+            else:
+                kept['asked'] = {'kind': 'revise', 'note': note, 'at': home.now()}
+                self._fresh(record, step.step.id.replace('gate:', '', 1))
+                said = (f'Changes to {says} were asked for on the page: '
+                        f'{workspace.shortened(note)}')
+            kept['waiting'] = None
+            self._store(root, record)
+            workspace.checkpoint(root, next_step=said)
+            self._commit(root, said)
+        self.carry_on(root)
+        return self.view(root)
+
+    # --- a deck, as the page is shown it -------------------------------------------------
+
+    @staticmethod
+    def _drawing(found: pipeline.Survey) -> pipeline.Step | None:
+        """The step of a deck that is in hand, or None when the next step is not one."""
+        step = found.next.step
+        return step if step is not None and step.stage == 'deck' and found.decks else None
+
+    def _before(self, found: pipeline.Survey, step: pipeline.Next) -> str:
+        """What a deck of this size has cost before, said before any of it is drawn."""
+        slides = len(deck.slides_of(found.decks[self._level(step.step)].outline))
+        cost = deck.before(slides)
+        return (f" A deck of {slides} slides has cost about ${cost['dollars']:,.2f} and "
+                f"{cost['minutes']:g} minutes of agent time to draw before, and as much "
+                'again each time its slides were drawn again after a review.')
+
+    def _live(self, run: _Run, drawing: pipeline.Step | None) -> dict:
+        """The sections workers are drawing now, each with how many previews it has taken
+        and the slides its latest one shows."""
+        with self._lock:
+            working = {ident: worker.get('folder') for ident, worker in run.workers.items()}
+        live = {}
+        for ident, folder in working.items():
+            step, _, number = ident.rpartition(':')
+            if drawing is None or pipeline.bare(step) not in pipeline.SIDE_BY_SIDE \
+                    or self._level(drawing) != workspace.split(step)[1] or folder is None:
+                continue
+            state = home.read_json(Path(folder) / 'state.json', {})
+            live[f'section-{number}'] = {
+                'previews': state.get('previews', 0),
+                'slides': [slide['number'] for slide in state.get('shown') or ()]}
+        return live
+
+    @staticmethod
+    def _given_up(record: dict, drawing: pipeline.Step | None) -> set:
+        """The sections whose workers have failed as often as they may."""
+        return {f"section-{name.rpartition(':')[2]}" for name in record['steps']
+                if drawing is not None and pipeline.spent(record, name)
+                and pipeline.bare(name.rpartition(':')[0]) in pipeline.SIDE_BY_SIDE
+                and workspace.split(name.rpartition(':')[0])[1] == Engine._level(drawing)}
+
+    def picture(self, path, number: int, artifact: str | None = None,
+                section: str | None = None) -> bytes:
+        """One slide's picture, as PNG bytes: of a deck the runner rendered, named by the
+        core's name for it, or of a section's latest preview while a deck is drawn. Where
+        the picture is kept is worked out from those and the number, and what is there is
+        returned only if it is a picture inside the training's own folder, or inside the
+        folder of the worker drawing that section."""
+        root = self.driven(path)
+        if root is None:
+            raise WorkspaceError('No run is driving this training.')
+        session, within = workspace.load(root), root
+        if artifact is not None:
+            if artifact not in workspace.artifact_names(root, session) \
+                    or workspace.split(artifact)[0] != 'deck':
+                raise WorkspaceError('That is not a slide deck of this training.')
+            file = pipeline.picture_of(root, workspace.split(artifact)[1], number)
+        else:
+            record, run = self._load(root), self._run(root)
+            drawing = self._drawing(self._survey(root, record))
+            if drawing is None:
+                raise WorkspaceError('No deck is being drawn in this training now.')
+            file = pipeline.picture_of(root, self._level(drawing), number, section)
+            with self._lock:
+                live = run.workers.get(f"{drawing.id}:{pipeline.numbered(section)}") or {}
+            if live.get('folder') and (Path(live['folder']) / 'shown' / file.name).is_file():
+                within = Path(live['folder'])
+                file = within / 'shown' / file.name
+        if within.resolve() not in file.resolve().parents or not file.is_file():
+            raise FileNotFoundError(NO_PICTURE)
+        return worker_tools.picture(file)
+
+    def deck_gate(self, path, artifact: str) -> dict:
+        """What gate 6 adds for a deck: its slides whose pictures are here, what the
+        review still finds, the brand's audit and the coverage."""
+        root = Path(path)
+        return pipeline.deck_gate(root, workspace.load(root), artifact)
+
     # --- limits --------------------------------------------------------------------------
 
     def _left(self, record: dict) -> float:
@@ -623,7 +1317,10 @@ class Engine:
         record = self._load(root)
         number = len(pipeline.tries(record, step.id).get('attempts', [])) + 1
         folder = self._folder(root, step.id, number)
-        worker_tools.prepare(folder, **work.prepared)
+        worker_tools.prepare(folder, **{**work.prepared, 'runtimes': {
+            'slides': os.environ.get(slides_tool.VARIABLE),
+            'brand': settings.load().brand_skill
+            or os.environ.get(brand_skill.VARIABLE)}})
         limits = agents.Limits(record['limits']['step_seconds'],
                                max(0.01, self._left(record)))
         job = agents.Job(work.guidance, work.task, folder, work.profile,
@@ -631,7 +1328,7 @@ class Engine:
         lines, started_at, clock = deque(maxlen=LINES), home.now(), time.monotonic()
         with self._lock:
             run.workers[step.id] = {'label': step.doing, 'started_at': started_at,
-                                    'lines': lines}
+                                    'lines': lines, 'folder': folder}
         try:
             outcome = self.adapter(record['agent']).run(job, activity=lines.append,
                                                         stop=run.stop)
@@ -691,14 +1388,17 @@ class Engine:
     def _draft(self, root: Path, run: _Run, found: pipeline.Survey,
                step: pipeline.Next) -> None:
         """One try at a drafting step: the research plan, a blueprint, a guide, a brief, a
-        practice scenario or a Yoodli scenario."""
-        if not self._may_go(root):
+        practice scenario, a Yoodli scenario, or what a deck says."""
+        it, says = step.step, pipeline.bare(step.step.id) == 'deck-outline'
+        if (says and not self._brand_holds(root, found, it)) or not self._may_go(root):
             return
-        record, it = self._load(root), step.step
+        record = self._load(root)
         sources = (self.documents.sources(root)
                    if it.id == 'research-plan' and record.get('documents') else None)
+        naming = (self._naming(root, found.session)
+                  if it.stage in pipeline.NAMED and it.kind == 'agent' else None)
         work = pipeline.work(root, found, it, step.request, last_error(record, it.id),
-                             record['answers'].get(it.id, []), sources)
+                             record['answers'].get(it.id, []), sources, naming)
         outcome, handed, started_at, folder = self._job(root, run, it, work)
         if outcome.reason == 'stopped':
             return self._stopped(root, it, outcome, started_at)
@@ -710,11 +1410,17 @@ class Engine:
                     # Noted before the file is written, so it is never taken for a person's.
                     record['drafted'].append(it.artifact)
                     self._store(root, record)
-                pipeline.keep_draft(root, it, handed, step.request, found)
+                if says:  # kept in the deck's own folder: its gate is the runner's
+                    self._decided(record, self._level(it)).update(
+                        outline=pipeline.keep_outline(root, found, self._level(it), handed,
+                                                      step.request), asked=None, waiting=None)
+                else:
+                    pipeline.keep_draft(root, it, handed, step.request, found)
                 self._tried(record, it.id, started_at, outcome.seconds, 'kept',
                             **self._cost(outcome))
                 self._store(root, record)
-                self._commit(root, f'keep {workspace.label(it.artifact)}')
+                self._commit(root, 'keep ' + (f'what {workspace.label(it.artifact)} says'
+                                              if says else workspace.label(it.artifact)))
             shutil.rmtree(folder, ignore_errors=True)
         elif handed['question']:
             with self.files:
@@ -858,6 +1564,9 @@ class Engine:
             target = outcome.get('artifact')
             if outcome.get('request') and target:
                 self._fresh(record, target)
+                base, level = workspace.split(target)
+                for step in pipeline.DECK_STEPS if base == 'deck' else ():
+                    self._fresh(record, workspace.qualify(step, level))
                 problem = record.get('problem') or {}
                 if problem.get('step') == target:
                     record['problem'] = None
@@ -1083,7 +1792,12 @@ class Engine:
         """What a working run is doing now, in a sentence."""
         step = found.next
         if step.kind == 'gate':
-            return f'Getting {workspace.label(step.step.artifact)} ready for your review.'
+            return f'Getting {pipeline.subject(step.step)} ready for your review.'
+        if step.step.stage == 'deck' and pipeline.bare(step.step.id) in pipeline.SIDE_BY_SIDE:
+            mine = found.decks[self._level(step.step)]
+            listed = len(mine.start.get('sections') or ())
+            return (f'{step.step.doing}: {listed - len(step.questions)} of {listed} drawn '
+                    'so far.')
         if step.step.id == 'research':
             verdicts = found.research.verdicts
             answered = len(verdicts) - len(found.research.unread)
@@ -1111,6 +1825,9 @@ class Engine:
         if step.kind == 'wait':
             it = workspace.sentence(workspace.label(step.step.artifact))
             return 'waiting', f'{it} is waiting for your review.'
+        if step.kind == 'outline':
+            it = workspace.sentence(pipeline.subject(step.step))
+            return 'waiting', f'{it} is waiting for your review.{self._before(found, step)}'
         if step.kind == 'done':
             return 'done', (pipeline.finished_says(report, found) if report
                             else found.session.get('next_step') or 'This training is done.')
@@ -1197,7 +1914,7 @@ class Engine:
         ahead = found.next.step if found.next.kind == 'gate' else next(
             (step for step in coming if step.kind != 'code'), found.next.step)
         if ahead.kind == 'gate' and ahead.artifact:
-            return state, f'Getting {workspace.label(ahead.artifact)} ready for your review.'
+            return state, f'Getting {pipeline.subject(ahead)} ready for your review.'
         return state, f'{ahead.doing} now.'
 
     def brief(self, path) -> dict | None:
@@ -1216,7 +1933,7 @@ class Engine:
         state, sentence = self._state(record, found, self._run(root))
         asked = record.get('question')
         needs = bool(asked or record.get('problem') or found.next.kind == 'stuck'
-                     or (state == 'waiting' and found.next.kind == 'documents'))
+                     or (state == 'waiting' and found.next.kind in ('documents', 'outline')))
         return {'state': state, 'sentence': sentence, 'needs': needs,
                 'question': asked['text'] if asked else None}
 
@@ -1275,6 +1992,8 @@ class Engine:
             problem = {'what': found.next.why, 'action': None, 'label': None,
                        'kept': 'Everything in the training\'s folder is as it was.'}
         dollars, tokens = spent(record)
+        drawing = self._drawing(found)
+        level = self._level(drawing) if drawing else None
         return {
             'state': state, 'sentence': sentence, 'agent': record['agent'],
             'model': record.get('model'), 'steps': self._steps(record, found, state),
@@ -1286,8 +2005,12 @@ class Engine:
                         if problem else None),
             'documents': self._supplied(root, record, found),
             'copies': self._copies(found),
-            'deck': ({'says': pipeline.deck_says(found), 'artifact': 'deck'}
-                     if ending == 'deck' and not resting else None),
+            'outline': pipeline.outline_view(root, found, level) if drawing else None,
+            'deck': (pipeline.deck_view(root, found, level, self._live(run, drawing),
+                                        self._given_up(record, drawing))
+                     if drawing else None),
+            'deck_left': ({'says': pipeline.deck_says(found), 'artifact': 'deck'}
+                          if ending == 'deck' and not resting else None),
             'finished': ({'ready': bool(report['ready']),
                           'limitations': list(report['limitations']),
                           'blocking': list(report['blocking']), 'index': report['file']}

@@ -194,15 +194,28 @@ def describe(tool: str, given: dict) -> str:
                           f"\"{given.get('query', '')}\""),
         'submit_finding': f"Handing back the finding for {given.get('item', 'its question')}",
         'ask_person': 'Asking a question',
+        'check_outline': 'Checking what the slides say',
+        'submit_outline': 'Handing in what the slides say',
+        'check_section': 'Checking that its slides can be drawn',
+        'preview_section': 'Rendering its slides to look at them',
+        'search_icons': f"Searching the icons for \"{given.get('words', '')}\"",
+        'submit_section': 'Handing in its slides',
+        'look_at_slide': f"Looking at slide {given.get('number', '')}",
+        'submit_assessment': 'Handing in what it found on the slides',
+        'submit_coverage': 'Saying which slides address each objective',
         'web_search': f"Searching the web: {given.get('query', '')}",
     }
     return clip(lines.get(tool, f'Using {tool}')).rstrip(': ')
 
 
+HANDED = {'submit_artifact': 'draft', 'submit_finding': 'finding', 'submit_outline': 'outline',
+          'submit_section': 'section', 'submit_assessment': 'review'}
+
+
 def settled(tool: str | None, refused: bool) -> str | None:
     """One plain line for how a call came out, when that is worth saying."""
-    if tool in ('submit_artifact', 'submit_finding'):
-        thing = 'draft' if tool == 'submit_artifact' else 'finding'
+    if tool in HANDED:
+        thing = HANDED[tool]
         return (f'The {thing} was sent back with problems to fix' if refused
                 else f'The {thing} was accepted')
     if tool == 'save_source' and refused:

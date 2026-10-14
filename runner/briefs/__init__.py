@@ -10,6 +10,11 @@ What a caller needs to know
     briefs.guidance('brief', kind='product')    writing a brief of one kind
     briefs.guidance('scenario')                 drafting a practice scenario
     briefs.guidance('yoodli')                   laying a scenario out in Yoodli's fields
+    briefs.guidance('deck-outline')             writing what a slide deck says
+    briefs.guidance('deck-section')             drawing one section of a deck
+    briefs.guidance('deck-section', repair=True)   drawing it again after a review
+    briefs.guidance('deck-review')              reviewing a deck someone else drew
+    briefs.guidance('document', naming=True)    for a training with a brand: with its names
     briefs.mode('roleplay')                     the core's own reference for one mode
 
 - A brief says how to do a kind of job. It is the same for every training, so it goes to
@@ -24,6 +29,11 @@ What a caller needs to know
   asks of them.
 - A scenario's mode is not part of its brief. The mode's reference is the core's own, and
   goes to the worker as one of the job's inputs.
+- A deck's briefs have no example. The format of an outline and of a section is the slides
+  tool's own, and goes to the worker as an input, with the brand's limits in it.
+- The writers of a guide, a brief and a scenario are told, when the training has a brand,
+  that one of their inputs says how the organisation and its products are named, and that
+  names are all it governs. What is added to a brief goes in before how to hand back.
 """
 from __future__ import annotations
 
@@ -36,7 +46,9 @@ from workspace import WorkspaceError
 
 HERE = Path(__file__).resolve().parent
 JOBS = ('research-plan', 'research-question', 'blueprint', 'document', 'brief', 'scenario',
-        'yoodli')
+        'yoodli', 'deck-outline', 'deck-section', 'deck-review')
+NAMED = ('document', 'brief', 'scenario')   # the writers a brand's naming rules are given to
+HAND_BACK = '\n## Hand back\n'
 EXAMPLES = Path('assets') / 'examples'
 EXAMPLE = {'blueprint': 'blueprint.md', 'document': 'document.md', 'brief': '{kind}-brief.md',
            'scenario': 'scenario.md', 'yoodli': 'yoodli.md'}
@@ -57,8 +69,10 @@ def mode(name: str) -> str:
     return (workspace.GUIDANCE_DIR / MODES / f'{name}.md').read_text(encoding='utf-8')
 
 
-def guidance(job: str, level: str | None = None, kind: str | None = None) -> str:
-    """The guidance for one kind of job, whole."""
+def guidance(job: str, level: str | None = None, kind: str | None = None,
+             naming: bool = False, repair: bool = False) -> str:
+    """The guidance for one kind of job, whole. `naming` says the job has the brand's
+    naming rules among its inputs, and `repair` that a section is drawn again."""
     if job not in JOBS:
         raise WorkspaceError('There is a brief for: ' + ', '.join(JOBS) + '.')
     if level is not None and (job not in LEVELLED or level not in workspace.LEVELS):
@@ -67,7 +81,12 @@ def guidance(job: str, level: str | None = None, kind: str | None = None) -> str
     if (kind is not None) != (job == 'brief') or kind not in (None, *workspace.BRIEF_KINDS):
         raise WorkspaceError('A brief, and nothing else, is written as one of these kinds: '
                              + ', '.join(workspace.BRIEF_KINDS) + '.')
+    if (naming and job not in NAMED) or (repair and job != 'deck-section'):
+        raise WorkspaceError('Naming rules are given to the writers of a guide, a brief and '
+                             'a scenario, and only a section of a deck is drawn again.')
     text = read(job)
+    for added in (['naming'] if naming else []) + (['deck-repair'] if repair else []):
+        text = text.replace(HAND_BACK, f'\n{read(added)}{HAND_BACK}', 1)
     if level is not None:
         text += '\n' + read(LEVELLED[job]).replace('{level}', level)
     if job not in EXAMPLE:

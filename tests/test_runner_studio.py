@@ -163,8 +163,8 @@ class StatusTests(StudioCase):
         failing = self.start()
         waiting = self.start(title='Health checks')
         found = self.status()
-        self.assertEqual(sorted(found), ['agent', 'configured', 'limits', 'trainings',
-                                         'version', 'workspace'])
+        self.assertEqual(sorted(found), ['agent', 'brand', 'configured', 'limits', 'previews',
+                                         'trainings', 'version', 'workspace'])
         self.assertEqual((found['version'], found['configured'], found['agent']),
                          (VERSION, True, {'default': 'claude', 'model': None}))
         self.assertEqual((found['workspace']['path'], found['workspace']['folder']),
