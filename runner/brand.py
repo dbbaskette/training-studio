@@ -7,6 +7,7 @@ What a caller needs to know
     brand.brands()                            # [{'brand', 'name', 'variants': [str]}]
     made = brand.export(folder, brand_id, variant, delivery='reading')
     brand.check(contract)                     # refuses when the brand changed underneath
+    brand.contracts()                         # whether it has those two commands at all
     brand.icons(words, limit=5)               # [{'id', 'name', ...}] from its icon library
     report = brand.audit(deck, brand_id, variant)
     brand.ready()                             # what the skill's own readiness check says
@@ -272,6 +273,14 @@ class Brand:
         """Check an exported contract against the brand as it is now. A brand that changed
         since the export is refused, with a line that says what changed."""
         return self._answer('contract', 'check', '--file', str(contract))
+
+    def contracts(self) -> bool:
+        """Whether the skill has the two commands a deck is made with: `contract export` and
+        `contract check`. Asked with `contract` alone, which a skill that has them answers by
+        naming them and which writes nothing."""
+        _, out, err = self.run([self.node, str(self.script), 'contract'])
+        said = f'{out}\n{err}'
+        return bool(re.search(r'\bexport\b', said) and re.search(r'\bcheck\b', said))
 
     def icons(self, words: str, limit: int = 5) -> list[dict]:
         """Search the icon library. Every word must match, so fewer words find more."""

@@ -90,6 +90,14 @@ What a caller needs to know
   the training's own folder or the folder of the worker drawing that section, is sent.
 - `POST /api/outline` records what the person decided about what a deck says, which is the
   runner's own gate, and answers the run.
+- A run carries `redesign`: each of its decks drawn without a design, as {"level",
+  "artifact", "label", "may", "why"}. `POST /api/redesign` with {"path", "level"} draws one
+  again from a design, after the person said yes in the page's confirmation, and answers
+  the run. It is 409 while the training works, for a deck that has its design already, and
+  where this computer cannot make a deck from one, saying why.
+- A decision at gate 6 about a deck the slides tool put to the person with its review is
+  sent to that tool first, as their answer to its question; a refusal there is 409, and
+  the core records nothing.
 - `POST /api/asset` with {"path", "level", "asset", "content", "alt", "source",
   "restrictions"?} gives the slides tool a picture the person supplies for an asset of
   their deck's approved design, and answers the run. `content` is the picture in base64;
@@ -139,7 +147,7 @@ READS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/models', '/api/
 WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
           '/api/publish', '/api/adopt', '/api/fetch', '/api/delete', '/api/companions',
-          '/api/asset', '/api/upgrade', '/api/restart', '/api/versions')
+          '/api/asset', '/api/upgrade', '/api/restart', '/api/versions', '/api/redesign')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 ASSET = '/api/asset'
@@ -352,6 +360,10 @@ class RunnerPage(desk.Page):
         committed, shared if that is wanted, and the run is woken."""
         with self.engine.files:
             self.engine.hold(path)
+            try:   # a deck the slides tool presented has the approval sent to it first
+                self.engine.deck_decided(path, target, decision, note, seen)
+            except WorkspaceError as refusal:
+                raise desk.Refusal(HTTPStatus.CONFLICT, str(refusal))
             reply = super().decide(path, target, decision, note, seen)
             driven = self.engine.decided(path, reply['decided'])
         if not driven:
@@ -433,6 +445,8 @@ class RunnerPage(desk.Page):
             return desk.as_json(HTTPStatus.OK, self.asset(sent))
         if path == '/api/outline':
             return desk.as_json(HTTPStatus.OK, self.outline(sent))
+        if path == '/api/redesign':
+            return desk.as_json(HTTPStatus.OK, self.redesign(sent))
         return super().write(path, sent)
 
     def update(self) -> dict:
@@ -489,6 +503,16 @@ class RunnerPage(desk.Page):
         return self.engine.outline(path, level or None, decision, note,
                                    desk.text(sent, 'seen', False),
                                    desk.text(sent, 'design', False))
+
+    def redesign(self, sent: dict) -> dict:
+        """Draw a deck that was drawn without a design again from one, as the person asked,
+        after they said yes in the page's confirmation. It is theirs alone to ask for."""
+        path, level = desk.text(sent, 'path'), desk.text(sent, 'level', False)
+        self.run(path)
+        try:
+            return self.engine.redesign(path, level or None)
+        except WorkspaceError as refusal:
+            raise desk.Refusal(HTTPStatus.CONFLICT, str(refusal))
 
     def asset(self, sent: dict) -> dict:
         """A picture the person supplies for their deck: it is theirs alone to give."""

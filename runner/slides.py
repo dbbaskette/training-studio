@@ -24,24 +24,30 @@ What a caller needs to know
     slides.drive_import(deck, name)                # {'id', 'name', 'url'}
     slides.designs()                               # whether it keeps a design session
     slides.sections()                              # whether it checks a section against it
-    slides.design_propose(project, proposal, expected=None)   # with its question
+    slides.design_propose(project, proposal, expected=None, brand=None)   # with its question
     slides.design_status(project)
     slides.design_check(project)                   # {'plan', 'revision', 'buildAllowed'}
     slides.design_respond(project, reply)          # a person's answer to the question
     slides.capabilities()                          # what it says it has, or None
+    slides.has('review-packets')                   # whether it says it has that one
+    slides.lacks()                                 # what a new deck needs and it lacks
     slides.assets()                                # whether it keeps an asset manifest
-    slides.asset_status(project)                   # {'manifest', 'assets': [{..., 'state'}]}
-    slides.asset_check(project, brand=None)        # {'status': 'ready', ...}, or Refused
+    slides.asset_status(project, design=None)      # {'manifest', 'assets': [{..., 'state'}]}
+    slides.asset_check(project, brand=None, design=None)   # {'status': 'ready', ...}, or
+                                                   # Refused
     slides.asset_icon(project, icon, ident, alt=None, brand=None)
     slides.asset_supplied(project, file, ident, alt, source, kind='supplied',
                           restrictions=None)       # a person's picture, recorded
     slides.images_status()                         # whether an image provider is set up
     slides.generate_image(project, ident, prompt, output, slide, alt=None)
     slides.reviews()                               # whether it reviews a build against the design
-    made = slides.review_prepare(compiled, output, design)   # renders output/deck.pptx
+    made = slides.review_prepare(compiled, output, design, renderer=None, file_id=None)
+                                                   # renders output/deck.pptx
     slides.review_slide(output, slide)             # one slide's packet: criteria, prompts
+    slides.review_packets(output)                  # every slide's packet, in one call
     slides.review_mark(output, revision, numbers, note)       # its pictures were looked at
     slides.review_assess(output, revision, assessment)        # with what is unresolved
+    slides.design_present(project, output, revision)          # the deck put to the person
 
 - `brand` is the path of an exported brand-contract.json. `outline`, `composition`, `parts`
   and `assessment` are paths of JSON files; `folder`, `compiled`, `preview_folder` and
@@ -72,7 +78,11 @@ What a caller needs to know
 
 Added to the above
 ------------------
-- `Slides()` asks the tool for its version and refuses one older than MINIMUM.
+- `Slides()` asks the tool for its version and refuses one older than MINIMUM, the oldest
+  a deck already begun keeps working with. What a new deck needs is said by capability and
+  never by version: `lacks()` names each of NEEDED the tool lacks, in order, and NAMES says
+  each as a person reads it. RELEASE is the release a person is told to update to, the one
+  the installer pins.
 - Paths in what a call returns are text, as the tool printed them. Where the tool leaves
   something out, `preview` gives None: `contactSheet` for one slide, `fileId` and `url` for
   a local render. What else the tool said is still there, `critic` among them.
@@ -115,7 +125,9 @@ Added to the above
   slide in `found`. Without `design` the command is as 0.13.1 takes it.
 - `capabilities()` is the set of names `version` lists, which a tool after 0.13.1 gives,
   or None for one that lists none. `designs()`, `sections()` and `assets()` read it first
-  and ask the tool by a refusal only when it lists nothing.
+  and ask the tool by a refusal only when it lists nothing; so does `lacks()`. `has(name)`
+  is whether the list names it: a tool that lists nothing has none of them. A caller uses
+  what a capability gives only where `has` says so, and does as before where it does not.
 - The asset manifest is the tool's record of each picture and icon a deck may use, kept in
   `project`, the deck's design project. `assets()` says whether the tool keeps one: its
   capability `assets`, or for a tool that lists none, whether `assets status` of an empty
@@ -139,6 +151,15 @@ Added to the above
   adds `unresolved`. A changed deck, picture, build or design revision is refused as
   `review-stale`, a changed asset copy as `asset-hash-changed`, and a computer without
   LibreOffice or Poppler as `renderer-unavailable`.
+- Where the tool has them: `review_prepare` with `renderer` 'drive' renders through Google
+  Drive (`review-google-renderer`), writing again the file `file_id` names, and returns
+  its `fileId` and `url`; a refusal after the upload names that file in `left`.
+  `review_packets` gives every slide's packet in one call (`review-packets`): {'revision',
+  'assessmentBinding', 'designReview', 'slides': [{'number', 'id', 'planId', 'title',
+  'image', 'imageSha256', 'mark', 'packet', 'findings'}]}, `packet` being what
+  `review_slide` gives as `slide`. `design_present` puts a reviewed deck to the person in
+  the design session, its unresolved findings listed (`design-present-findings`); only
+  `design_respond` with the person's own answer approves it.
 - `slides.runtime` is the folder the tool is installed in, with links followed. Give it to
   `Slides(runtime=...)` to use that same tool somewhere else, as the worker tools' server
   does. `Slides(read=...)` replaces how a guidance file is read.
@@ -160,7 +181,29 @@ from workspace import WorkspaceError
 from runner import companion
 
 VARIABLE = 'HARNESS_SLIDES_RUNTIME'
-MINIMUM = '0.13.1'
+MINIMUM = '0.13.1'      # the oldest runtime taken: a deck begun on it carries on there
+RELEASE = '0.14.1'      # what a person is told to update to, as the installer pins it
+# What a new deck needs of the slides tool, by the names its `version` lists.
+NEEDED = ('design-schema-2', 'design-batch', 'json-refusals', 'compose-section', 'assets',
+          'compose-review')
+# Each capability, as a person reads it.
+NAMES = {'assets': 'an asset manifest for the pictures and icons a deck uses',
+         'assets-approved-candidates': 'checking every asset an approved design names',
+         'canonical-digests': 'designs compared whatever order their keys are in',
+         'compose-icon-assets': 'icons placed by the asset they are recorded as',
+         'compose-review': 'a whole deck reviewed against its approved design',
+         'compose-section': 'a section checked against the approved design',
+         'design-batch': 'one question for a whole design',
+         'design-icon-ids': 'an exact icon named in a design',
+         'design-present-findings': 'a reviewed deck put to you with its findings',
+         'design-schema-2': 'a design proposed with its words and its assets',
+         'json-refusals': 'refusals a program can read',
+         'native-charts': 'charts drawn as charts',
+         'relative-records': 'records that move with the deck',
+         'review-google-renderer': 'a review rendered through Google Drive',
+         'review-input-refusals': 'a review asked wrongly refused plainly',
+         'review-packets': "every slide's review given in one call",
+         'review-sources-from-slide': 'an assessment that takes its sources from the slide'}
 RENDERERS = ('drive', 'local')
 SCRIPT = Path('scripts') / 'harness-slides.mjs'
 TIMEOUT = 300    # a local preview may wait two minutes for LibreOffice, then draw each slide
@@ -169,7 +212,8 @@ PROGRAMS = {'soffice': 'HARNESS_SOFFICE', 'pdftoppm': 'HARNESS_PDFTOPPM',
             'pdfinfo': 'HARNESS_PDFINFO'}   # the variables the tool reads for each program
 COUNTED = re.compile(r'^\d+ problems to fix:$')
 NOISE = re.compile(r'^\((?:node:\d+\)|Use `node )')   # Node's own warnings, not the tool's
-LEFT = re.compile(r'The preview deck is in Drive \((\S+)\); retry with --file-id (\S+?)\.$')
+LEFT = re.compile(r'The (?:preview|review) deck is in Drive \((\S+)\); retry with '
+                  r'(?:--renderer google )?--file-id (\S+?)\.$')
 PREVIEWING = threading.Lock()   # one preview at a time, whoever asks
 GUIDES = {'design guidance': 'design.md', 'composition guidance': 'compositions.md',
           'drafting guidance': 'draft.md', 'gallery': 'gallery.md'}   # under REFERENCES
@@ -506,6 +550,29 @@ class Slides:
                 if isinstance(listed, list) else None
         return self._capabilities
 
+    def has(self, name: str) -> bool:
+        """Whether the tool's `version` lists this capability. A tool that lists none has
+        none of them."""
+        return name in (self.capabilities() or ())
+
+    def lacks(self) -> list[str]:
+        """Each capability a new deck needs that this tool lacks, in the order of NEEDED.
+        Read from what `version` lists; for a tool that lists nothing, the design session,
+        the section check and the asset manifest are asked as `designs`, `sections` and
+        `assets` ask, and a review against the design is lacking, since no such tool has
+        it."""
+        listed = self.capabilities()
+        if listed is not None:
+            return [name for name in NEEDED if name not in listed]
+        found = {'compose-review'}
+        if not self.designs():
+            found |= {'design-schema-2', 'design-batch', 'json-refusals'}
+        if not self.sections():
+            found.add('compose-section')
+        if not self.assets():
+            found.add('assets')
+        return [name for name in NEEDED if name in found]
+
     def assets(self) -> bool:
         """Whether this tool keeps an asset manifest a deck's pictures and icons are recorded
         in: its capability `assets`, or for a tool that lists none, whether `assets status` of
@@ -527,14 +594,17 @@ class Slides:
                                                                       list)
         return self._assets
 
-    def design_propose(self, project: Path, proposal: Path,
-                       expected: str | None = None) -> dict:
+    def design_propose(self, project: Path, proposal: Path, expected: str | None = None,
+                       brand: Path | None = None) -> dict:
         """Propose a design in `project`, a folder that exists, as one question for the
         whole plan. A changed proposal names the revision it replaces in `expected`. Slides
-        whose approved design is unchanged keep their approval."""
+        whose approved design is unchanged keep their approval. With `brand`, each icon the
+        proposal names by its library ID is checked against the brand's library, which a
+        tool with `design-icon-ids` does."""
         args = ['design', 'propose', '--project', str(project), '--file', str(proposal),
                 '--mode', 'batch', '--json']
-        return self._json(*args, *(['--expected', expected] if expected else []))
+        return self._json(*args, *(['--expected', expected] if expected else []),
+                          *(['--brand', str(brand)] if brand else []))
 
     def design_status(self, project: Path) -> dict:
         """Where the design of `project` stands, with the question waiting now."""
@@ -555,17 +625,24 @@ class Slides:
 
     # --- the asset manifest ---
 
-    def asset_status(self, project: Path) -> dict:
+    def asset_status(self, project: Path, design: Path | None = None) -> dict:
         """Each asset recorded in `project`, as {'manifest', 'assets'}: each with its
         `assetId`, `kind`, `path` (none for an icon), `sha256`, `alt`, `source`,
         `restrictions`, `ref` (an icon's library ID), `provenance` and `state`: 'ok',
-        'file-missing', 'hash-changed' or 'invalid'."""
-        return self._json('assets', 'status', '--project', str(project), '--json')
+        'file-missing', 'hash-changed' or 'invalid'. With `design`, the design project, it
+        adds `candidates`: {'resolved', 'pending'}, each {'slide', 'assetId', 'kind',
+        'concept', 'ref'?}."""
+        return self._json('assets', 'status', '--project', str(project),
+                          *(['--design-project', str(design)] if design else []), '--json')
 
-    def asset_check(self, project: Path, brand: Path | None = None) -> dict:
+    def asset_check(self, project: Path, brand: Path | None = None,
+                    design: Path | None = None) -> dict:
         """Refuse a recorded file that is missing or changed, and with `brand` an icon the
-        brand's library no longer has as it was recorded."""
+        brand's library no longer has as it was recorded. With `design`, also each asset the
+        design names that is not recorded: on a tool with `assets-approved-candidates`,
+        every one of the stored plan, approved or not."""
         return self._json('assets', 'check', '--project', str(project),
+                          *(['--design-project', str(design)] if design else []),
                           *(['--brand', str(brand)] if brand else []), '--json')
 
     def asset_icon(self, project: Path, icon: str, ident: str, alt: str | None = None,
@@ -613,17 +690,33 @@ class Slides:
             self._reviews = 'compose-review' in (self.capabilities() or ())
         return self._reviews
 
-    def review_prepare(self, compiled: Path, output: Path, design: Path) -> dict:
+    def review_prepare(self, compiled: Path, output: Path, design: Path,
+                       renderer: str | None = None, file_id: str | None = None) -> dict:
         """Render a whole deck compiled against the design approved in `design` into
         `output/deck.pptx`, picture each slide, and prepare its creative review. An unchanged
-        build keeps its deck and its receipts. Renders are taken one at a time."""
+        build keeps its deck and its receipts. Renders are taken one at a time. With
+        `renderer` 'drive' it is rendered through Google Drive, writing again the file
+        `file_id` names when one is given; otherwise with LibreOffice."""
+        args = ['review', '--compiled', str(compiled), '--output', str(output),
+                '--design-project', str(design)]
+        if renderer == 'drive':
+            args += ['--renderer', 'google', *(['--file-id', file_id] if file_id else [])]
         with PREVIEWING:
-            return self._json('review', '--compiled', str(compiled), '--output', str(output),
-                              '--design-project', str(design), '--json')
+            made = self._json(*args, '--json')
+        return {**made, 'fileId': made.get('fileId'), 'url': made.get('url')}
 
     def review_slide(self, output: Path, slide: str) -> dict:
         """One slide's part of a prepared review, by its ID, once its receipts are checked."""
         return self._json('review', '--output', str(output), '--slide', slide, '--json')
+
+    def review_packets(self, output: Path) -> dict:
+        """Every slide's part of a prepared review, in deck order, once its receipts are
+        checked: one call in place of one for each slide."""
+        found = self._json('review', '--output', str(output), '--packets', '--json')
+        if not isinstance(found.get('slides'), list):
+            raise WorkspaceError('The slides tool gave a review without its slides. Check '
+                                 'that it is installed whole.')
+        return found
 
     def review_mark(self, output: Path, revision: str, numbers: list[int], note: str) -> dict:
         """Record that the pictures of these slides were looked at, for this revision."""
@@ -638,6 +731,13 @@ class Slides:
             file.write_text(json.dumps(assessment, ensure_ascii=False), encoding='utf-8')
             return self._json('review', '--output', str(output), '--assessment', str(file),
                               '--revision', revision, '--json')
+
+    def design_present(self, project: Path, output: Path, revision: str) -> dict:
+        """Put the deck a review in `output` rendered, of this review revision, to the person
+        as the design session's rendered question, with what its assessment leaves unresolved
+        listed. Returns the design's status, with that question."""
+        return self._json('design', 'present', '--project', str(project), '--output',
+                          str(output), '--revision', revision, '--accept-findings', '--json')
 
     # --- what the tool's own workers read ---
 

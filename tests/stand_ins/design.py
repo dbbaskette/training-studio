@@ -1,20 +1,27 @@
-"""The slides tool's design session, for the stand-in: `design propose`, `status`, `check`
-and `respond` as Harness Slides has them after 0.13.1, with schema 2, the whole-plan
-question and refusals as JSON.
+"""The slides tool's design session, for the stand-in: `design propose`, `status`, `check`,
+`respond` and `present` as Harness Slides has them after 0.13.1, with schema 2, the
+whole-plan question and refusals as JSON.
 
-    session = Session(project)
-    session.propose(plan, expected=None, mode=None)   # the status, as the command prints it
+    session = Session(project, has=())
+    session.propose(plan, expected=None, mode=None, brand=None)   # the status, as printed
     session.status()
     session.check()                                    # {'plan', 'revision', 'buildAllowed'}
     session.respond(reply)
-    bound(slides, project, section)                    # a build, checked against the approval
+    session.present(review, revision)                  # with --accept-findings
+    bound(slides, project, section, canonical=False)   # a build, checked against the approval
     refusal(error, revision)                           # what --json prints for a refusal
 
 It keeps the tool's own rules, messages and codes, ported from scripts/lib/design-session.mjs,
-slide-decisions.mjs and refusals.mjs, and writes the session where the tool does. It stops
-at the design: nothing is rendered here, so it never asks the rendered-review question.
-The session names no project: the tool is told it with --project each time. A session
-written when it did name one is read all the same, and loses the name when next written.
+slide-decisions.mjs and refusals.mjs, and writes the session where the tool does. The
+session names no project: the tool is told it with --project each time. A session written
+when it did name one is read all the same, and loses the name when next written.
+
+`has` is what the tool lists in `version`, and what 0.14.1 added is played only where it is
+listed: `design-icon-ids`, an icon candidate named by its library ID (`refType`) and
+`--brand` on propose; `canonical-digests`, an intent compared, and a proposal kept, whatever
+the order of its keys; and `design-present-findings`, `present`, which puts a rendered review
+to the person as the rendered question, its unresolved findings listed. Without it nothing is
+rendered here and that question is never asked.
 """
 from __future__ import annotations
 
@@ -85,6 +92,7 @@ CODES = {
                               '--renderer local'),
     'review-stale': (True, 'Prepare the review again from the current build and design, '
                            'then inspect and assess it again'),
+    'rendered-review-stale': (True, 'Review the current render again, then design present'),
     'renderer-unavailable': (True, 'Install the named tool, or preview with the other '
                                    'renderer'),
     'output-exists': (True, 'Choose a new output directory'),
@@ -106,8 +114,13 @@ KNOWN = ((re.compile(r'Question or design revision changed|Design revision chang
                      r'chosen|Only explicit whole-plan'), 'invalid-response'),
          (re.compile(r'Review revision changed|Assess the current creative review revision'),
           'review-stale'),
+         (re.compile(r'Rendered review changed|Present requires|Rendered coverage|Rendered '
+                     r'slides must map'), 'rendered-review-stale'),
          (re.compile(r'Critique needs a judgment|Critique must|Use slide-specific evidence|'
                      r'Answer teaching-treatment|Provide revision, slide numbers'),
+          'input-invalid'),
+         (re.compile(r'Prepare native review first|Prepare and mark are separate|Prepare '
+                     r'structured creative review first|Unknown creative review slide'),
           'input-invalid'),
          (re.compile(r"is not in the project's asset manifest|needs the project that records "
                      r"it|resolves through the project's asset manifest"), 'asset-unresolved'),
@@ -129,6 +142,12 @@ def digest(value) -> str:
     """The tool's digest: SHA-256 of the value as JSON.stringify writes it."""
     return hashlib.sha256(json.dumps(value, separators=(',', ':'), ensure_ascii=False)
                           .encode('utf-8')).hexdigest()
+
+
+def canonical_digest(value) -> str:
+    """canonicalDigest: the same, with the keys of every object sorted, at every depth."""
+    return hashlib.sha256(json.dumps(value, separators=(',', ':'), ensure_ascii=False,
+                                     sort_keys=True).encode('utf-8')).hexdigest()
 
 
 def _now() -> str:
@@ -179,15 +198,24 @@ def _copy(copy) -> bool:
             and all(_text(copy[key]) for key in ('focal', 'caveat', 'source') if key in copy))
 
 
-def _candidates(found) -> bool:
+def _ref_ok(item: dict) -> bool:
+    """An icon candidate's ref is a free name, or with refType library-id a library ID."""
+    return 'refType' not in item or item['refType'] == 'name' or (
+        item['refType'] == 'library-id' and item.get('kind') == 'icon'
+        and re.fullmatch(r'[\w.-]{1,80}', str(item.get('ref')), re.ASCII) is not None)
+
+
+def _candidates(found, library: bool = False) -> bool:
+    keys = ('assetId', 'kind', 'ref', 'concept', 'alt', 'status',
+            *(('refType',) if library else ()))
     return (isinstance(found, list) and 0 < len(found) <= 12
             and len({item.get('assetId') if isinstance(item, dict) else None
                      for item in found}) == len(found)
-            and all(_fields(item, ('assetId', 'kind', 'ref', 'concept', 'alt', 'status'))
+            and all(_fields(item, keys)
                     and isinstance(item.get('assetId'), str)
                     and ASSET_ID.match(item['assetId']) is not None
                     and item.get('kind') in KINDS and _text(item.get('ref'))
-                    and _text(item.get('concept'))
+                    and _ref_ok(item) and _text(item.get('concept'))
                     and ('alt' not in item or _text(item['alt']))
                     and item.get('status') in ('resolved', 'pending') for item in found))
 
@@ -220,9 +248,10 @@ def decision(intent, sources) -> None:
                          'valid)')
 
 
-def validate(plan) -> dict:
+def validate(plan, library: bool = False) -> dict:
     """The plan as it is stored: a schema-2 slide given copy gains the visibleText rendered
-    from it. Schema 1 is returned unchanged."""
+    from it. Schema 1 is returned unchanged. With `library`, as a tool with
+    `design-icon-ids`, an icon candidate may name its library ID with refType."""
     if not _fields(plan, ('schema', 'title', 'scope', 'slides')) \
             or plan.get('schema') not in (1, 2) or not _text(plan.get('title')) \
             or plan.get('scope') not in ('new', 'redesign') \
@@ -270,10 +299,12 @@ def validate(plan) -> dict:
                     and slide['visibleText'] != render(slide['copy']):
                 raise Refusal(f'{ident}: visibleText differs from the text rendered from copy; '
                               'send copy alone', {**at, 'code': 'copy-mismatch'})
-            if 'candidates' in asset and not _candidates(asset['candidates']):
+            if 'candidates' in asset and not _candidates(asset['candidates'], library):
                 raise Refusal(f'{ident}: each asset candidate needs a unique assetId, kind '
                               f"{'|'.join(KINDS)}, ref, concept, optional alt and status "
-                              'resolved|pending', at)
+                              'resolved|pending' + ('; refType library-id is for an icon '
+                                                    'whose ref is a brand icon library ID'
+                                                    if library else ''), at)
         shown = render(slide['copy']) if copied else slide['visibleText']
         for kept in slide.get('qualifications') or ():
             if _squash(kept) not in _squash(shown):
@@ -303,56 +334,123 @@ def _binding(session: dict, slide: dict) -> str:
                    {key: value for key, value in slide.items() if key != 'notes'}])
 
 
+def candidate_icon_problems(slides: list, entries: list | None) -> list[dict]:
+    """candidateIconProblems: each icon candidate named by its library ID, checked against
+    the brand's icon index. One the library lacks is unresolved; one it holds only as a
+    picture, or without a drawing, is unavailable. None without an index to check."""
+    found = []
+    known = {entry.get('id'): entry for entry in entries or ()}
+    for slide in slides:
+        for item in (slide.get('asset') or {}).get('candidates') or ():
+            if item.get('kind') != 'icon' or item.get('refType') != 'library-id':
+                continue
+            entry = known.get(item['ref'])
+            if entries is None:
+                found.append({'code': 'icon-unavailable', 'slide': slide['id'],
+                              'asset': item['assetId'], 'detail': (
+                                  f"{slide['id']}: candidate {item['assetId']}: icon "
+                                  f"{item['ref']} cannot be checked, because the brand contract "
+                                  'names no hashed icon library and index')})
+            elif entry is None:
+                found.append({'code': 'asset-unresolved', 'slide': slide['id'],
+                              'asset': item['assetId'], 'detail': (
+                                  f"{slide['id']}: candidate {item['assetId']} names icon "
+                                  f"{item['ref']}, which is not in the brand icon library"),
+                              'next': 'Search the brand icon library for a current icon ID and '
+                                      'propose it, or propose the fallback for approval'})
+            elif not entry.get('native'):
+                found.append({'code': 'icon-unavailable', 'slide': slide['id'],
+                              'asset': item['assetId'], 'detail': (
+                                  f"{slide['id']}: candidate {item['assetId']}: icon "
+                                  f"{item['ref']} is a picture, not native geometry; choose "
+                                  'another')})
+    return found
+
+
 def _pending(session: dict) -> list[dict]:
     return [slide for slide in session['plan']['slides']
             if (session['approvals'].get(slide['id']) or {}).get('binding')
             != _binding(session, slide)]
 
 
+def _findings_on(session: dict, ids: list) -> list[dict]:
+    return [found for found in (session.get('rendered') or {}).get('findings') or ()
+            if found['slide'] in ids]
+
+
 def _question(session: dict) -> dict | None:
     if session.get('awaitingRevision'):
         return None
-    left = _pending(session)
+    phase = 'design' if _pending(session) else 'rendered'
+    rendered = session.get('rendered')
+    if phase == 'rendered' and not rendered:
+        return None     # nothing presented: there is no rendered question to ask
+    left = _pending(session) if phase == 'design' else [
+        slide for slide in session['plan']['slides'] if slide['id'] not in rendered['approved']]
     if not left:
-        return None     # the rendered question needs a render, which this never has
+        return None
     ids = [slide['id'] for slide in (left[:1] if session['mode'] == 'guided' else left)]
     titles = '; '.join(slide['title'] for slide in session['plan']['slides']
                        if slide['id'] in ids)
-    batch, whole = session['mode'] == 'batch', len(ids) == len(session['plan']['slides'])
-    revision = session['revision']
-    return {'id': digest(['design', revision, revision, ids]), 'phase': 'design',
-            'revision': revision, 'planRevision': revision, 'slides': ids,
+    batch = session['mode'] == 'batch' and phase == 'design'
+    whole = len(ids) == len(session['plan']['slides'])
+    revision = session['revision'] if phase == 'design' else rendered['binding']
+    findings = _findings_on(session, ids) if phase == 'rendered' else []
+    count = len(findings)
+    return {'id': digest([phase, session['revision'], revision, ids]), 'phase': phase,
+            'revision': revision, 'planRevision': session['revision'], 'slides': ids,
             'prompt': (f"Approve {'the whole design plan' if whole else 'the remaining designs'}"
                        f' ({titles}), or request changes?' if batch else
-                       f'Approve the proposed design for {titles}, or request changes?'),
+                       f'Approve the proposed design for {titles}, or request changes?'
+                       if phase == 'design' else
+                       f'Approve the rendered slides for {titles} as they stand, with {count} '
+                       f"unresolved finding{'' if count == 1 else 's'} listed in findings, or "
+                       'request revisions?' if count else
+                       f'Approve the rendered slides for {titles}, or request revisions?'),
             'options': ([('Approve the whole plan' if whole else 'Approve these designs'),
                          'Request changes'] if batch else
                         ['Approve this design', 'Change this design',
-                         'Review remaining designs together']),
-            'wait': True, 'rule': RULE}
+                         'Review remaining designs together'] if phase == 'design' else
+                        ['Approve these slides with the findings listed' if count
+                         else 'Approve these slides', 'Request revisions',
+                         'Review remaining slides together']),
+            **({'findings': findings} if count else {}), 'wait': True, 'rule': RULE}
 
 
 def _status(session: dict, project: Path) -> dict:
     waiting, question = _pending(session), _question(session)
-    plan = session['plan']['slides']
+    plan, rendered = session['plan']['slides'], session.get('rendered')
     return {'project': str(project), 'revision': session['revision'],
             'mode': session['mode'],
             'buildAllowed': not waiting and not session.get('awaitingRevision'),
             'pending': [slide['id'] for slide in waiting],
             'status': ('revision requested' if session.get('awaitingRevision') else
                        'awaiting design approval' if waiting else
-                       'design approved; build permitted'),
+                       'design approved; build permitted' if not rendered else
+                       'rendered user review explicitly waived' if rendered.get('waived') else
+                       'rendered user review approved'
+                       if len(rendered['approved']) == len(plan) else
+                       'awaiting rendered user review'),
             'feedback': session['feedback'], 'question': question,
-            'slides': [{'number': plan.index(slide) + 1, **slide} for slide in plan
-                       if question and slide['id'] in question['slides']],
-            'renderedRevision': None, 'renderedReview': None, 'renderedAcceptance': False}
+            'slides': ([{'number': plan.index(slide) + 1, **slide} for slide in plan
+                        if question and slide['id'] in question['slides']]
+                       if not question or question['phase'] == 'design' else
+                       [{'id': ident, 'image': str(project / rendered['images'][ident])}
+                        for ident in question['slides']]),
+            'renderedRevision': (rendered or {}).get('revision'),
+            'renderedReview': str(project / rendered['review']) if rendered else None,
+            'renderedFindings': (rendered or {}).get('findings') or [],
+            'renderedAcceptance': bool(rendered and (rendered.get('waived') or len(
+                rendered['approved']) == len(plan)))}
 
 
 class Session:
-    """One project's design session, kept where the tool keeps it."""
+    """One project's design session, kept where the tool keeps it. `has` is what the tool
+    lists in `version`."""
 
-    def __init__(self, project):
+    def __init__(self, project, has=()):
         self.project = Path(os.path.abspath(project))   # as Node resolves it: links kept
+        self.has = frozenset(has or ())
 
     def _root(self) -> Path:
         """The project, which a command that writes needs to be a real folder already."""
@@ -372,9 +470,10 @@ class Session:
         value = json.loads(path.read_text(encoding='utf-8'))
         if not isinstance(value, dict) or value.get('schema') != 1 \
                 or value.get('tool') != 'harness-slides-design' \
-                or value.get('revision') != digest(value.get('plan')):
+                or value.get('revision') not in (digest(value.get('plan')),
+                                                 canonical_digest(value.get('plan'))):
             raise Refusal('Design state changed outside the checkpoint; recover the proposal')
-        validate(value['plan'])
+        validate(value['plan'], library=True)
         value.pop('project', None)  # named by a session written before --project named it
         return value
 
@@ -419,26 +518,43 @@ class Session:
             return None
         return found['revision'] if found else None
 
-    def propose(self, plan, expected: str | None = None, mode: str | None = None) -> dict:
+    def propose(self, plan, expected: str | None = None, mode: str | None = None,
+                brand: list | None = None) -> dict:
+        """`brand` is the brand's icon index entries, given with --brand, or None."""
         if mode is not None and mode not in ('guided', 'batch'):
             raise Refusal("Choose the question mode guided or batch; autonomy is the person's "
                           'answer, not a proposal option', {'code': 'invalid-proposal'})
-        plan = validate(plan)
+        plan = validate(plan, 'design-icon-ids' in self.has)
+        if brand is not None:
+            problems = candidate_icon_problems(plan['slides'], brand)
+            if problems:
+                raise Refusal(problems[0]['detail'] if len(problems) == 1 else
+                              f'{len(problems)} icon candidates to fix:\n'
+                              + '\n'.join(problem['detail'] for problem in problems),
+                              *problems)
+        canonical = 'canonical-digests' in self.has
 
         def act(root: Path) -> dict:
+            nonlocal plan
             old = self._read(root)
             if old and expected != old['revision']:
                 raise Refusal('Design revision changed; use the current expected revision')
             if not old and expected:
                 raise Refusal('No existing design revision')
-            revision = digest(plan)
+            # The same content in another key order is unchanged: it keeps the stored plan.
+            if canonical and old and canonical_digest(old['plan']) == canonical_digest(plan):
+                plan = old['plan']
+            revision = old['revision'] if old and old['plan'] is plan else \
+                canonical_digest(plan) if canonical else digest(plan)
             session = {'schema': 1, 'tool': 'harness-slides-design',
                        'plan': json.loads(json.dumps(plan)), 'revision': revision,
                        'mode': mode or (old or {}).get('mode') or 'guided',
                        'approvals': (old or {}).get('approvals') or {},
                        'feedback': (old or {}).get('feedback') or [],
                        'responses': (old or {}).get('responses') or [],
-                       'rendered': None, 'waiveRendered': bool((old or {}).get('waiveRendered'))}
+                       'rendered': (old or {}).get('rendered')
+                       if (old or {}).get('revision') == revision else None,
+                       'waiveRendered': bool((old or {}).get('waiveRendered'))}
             if old and old.get('awaitingRevision') and old['revision'] == revision:
                 session['awaitingRevision'] = True
             if (old or {}).get('revision') != revision:
@@ -451,7 +567,11 @@ class Session:
         return self._locked(act)
 
     def status(self) -> dict:
-        return _status(self._needed(self.project), self.project)
+        session = self._needed(self.project)
+        if session.get('rendered'):   # a presented review is checked again
+            self._rendered_holds(self.project, session, 'Rendered review changed; present '
+                                                        'current output before user approval')
+        return _status(session, self.project)
 
     def check(self) -> dict:
         session = self.approved()
@@ -490,29 +610,50 @@ class Session:
         def act(root: Path) -> dict:
             session = self._needed(root)
             question = _question(session)
+            if question and question['phase'] == 'rendered':
+                self._rendered_holds(root, session, 'Rendered review changed; present current '
+                                                    'output')
             if not question or reply['questionId'] != question['id'] \
                     or reply['planRevision'] != session['revision']:
                 raise Refusal('Question or design revision changed; do not apply a '
                               'stale/default response')
             if reply['decision'] not in DECISIONS:
                 raise Refusal('Unknown design response')
-            if reply.get('waiveRendered') \
-                    and reply['decision'] not in ('autonomous', 'approve-remaining'):
+            phase = question['phase']
+            if reply['decision'] == 'autonomous' and phase != 'design':
+                raise Refusal('Autonomy is chosen before construction; approve or revise '
+                              'rendered output')
+            if reply.get('waiveRendered') and not (
+                    phase == 'design' and reply['decision'] in ('autonomous',
+                                                                'approve-remaining')):
                 raise Refusal('Only explicit whole-plan/autonomous authorization can waive the '
                               'rendered checkpoint')
-            session['responses'].append({**reply, 'phase': 'design',
-                                         'slides': question['slides'], 'at': _now()})
+            accepted = _findings_on(session, [slide['id'] for slide in session['plan']['slides']]
+                                    if reply['decision'] == 'approve-remaining'
+                                    else question['slides']) \
+                if phase == 'rendered' and reply['decision'] in ('approve',
+                                                                 'approve-remaining') else []
+            session['responses'].append({**reply, 'phase': phase,
+                                         'slides': question['slides'],
+                                         **({'acceptedFindings': accepted} if accepted else {}),
+                                         'at': _now()})
             if reply['decision'] == 'batch':
                 session['mode'] = 'batch'
             elif reply['decision'] == 'revise':
-                session['feedback'].append({'phase': 'design', 'slides': question['slides'],
+                session['feedback'].append({'phase': phase, 'slides': question['slides'],
                                             'text': reply['feedback'],
                                             'revision': session['revision'],
-                                            'renderRevision': None})
+                                            'renderRevision': (session.get('rendered') or {})
+                                            .get('revision')})
                 session['awaitingRevision'] = True
                 for ident in question['slides']:
                     session['approvals'].pop(ident, None)
                 session['rendered'], session['waiveRendered'] = None, False
+            elif phase == 'rendered':
+                chosen = [slide['id'] for slide in session['plan']['slides']] \
+                    if reply['decision'] == 'approve-remaining' else question['slides']
+                session['rendered']['approved'] = list(dict.fromkeys(
+                    [*session['rendered']['approved'], *chosen]))
             else:
                 every = reply['decision'] in ('approve-remaining', 'autonomous')
                 for slide in session['plan']['slides']:
@@ -525,6 +666,78 @@ class Session:
                                                      session['waiveRendered'])
             return self._save(root, session)
         return self._locked(act)
+
+    def _rendered_holds(self, root: Path, session: dict, message: str) -> None:
+        """checkRendered: the review a rendered question rests on, checked again. A deck
+        presented with findings stays current only while its assessment leaves those."""
+        from stand_ins import review as reviewing
+        rendered = session['rendered']
+        record = reviewing.Review(root / rendered['review'], None, None, None).verify()
+        accepted = rendered.get('findings')
+        creative = bool(record.get('creativeAssessment')) and canonical_digest(
+            reviewing.findings(record)) == canonical_digest(accepted) if accepted \
+            else record.get('creativeReviewComplete')
+        if record['revision'] != rendered['revision'] or (record.get('creativeQuality') or {}) \
+                .get('revision') != rendered['qualityRevision'] \
+                or not record.get('visualReviewComplete') or not creative:
+            raise Refusal(message, {'code': 'rendered-review-stale'})
+
+    def present(self, review, revision: str | None) -> dict:
+        """presentDesign with acceptFindings: put a review whose assessment is complete, or
+        leaves findings unresolved, to the person as the rendered question."""
+        from stand_ins import review as reviewing
+
+        def act(root: Path) -> dict:
+            session = self._needed(root)
+            self.approved()
+            folder = Path(os.path.abspath(review))
+            try:
+                record = json.loads((folder / 'review.json').read_text(encoding='utf-8'))
+            except FileNotFoundError:
+                raise Refusal(f"ENOENT: no such file or directory, lstat "
+                              f"'{folder / 'review.json'}'", {'code': 'input-missing'})
+            if record.get('revision') != revision or not record.get('visualReviewComplete') \
+                    or record.get('designRevision') != session['revision'] \
+                    or not record.get('designBinding'):
+                raise Refusal('Present requires current pixel inspection and structured '
+                              'creative review bound to this design')
+            if not record.get('creativeReviewComplete') and not record.get('creativeAssessment'):
+                raise Refusal('Present requires current pixel inspection and structured '
+                              'creative review bound to this design', {
+                                  'code': 'rendered-review-stale', 'next': 'Record the '
+                                  'assessment with review --assessment, then design present'})
+            reviewing.Review(folder, None, None, None).verify(record)
+            found = [] if record.get('creativeReviewComplete') else reviewing.findings(record)
+            images = {}
+            for slide in record['slides']:
+                ident = next((entry['planId'] for entry in record['designBinding']
+                              if entry['nativeId'] == slide['id']), None)
+                if not ident or ident in images:
+                    raise Refusal('Rendered slides must map once to the approved design')
+                images[ident] = _kept(folder / slide['image'], root)
+            if len(images) != len(session['plan']['slides']):
+                raise Refusal('Rendered coverage differs from the approved plan')
+            quality = record['creativeQuality']['revision']
+            made = digest([revision, quality, images, found] if found
+                          else [revision, quality, images])
+            now = session.get('rendered')
+            if not now or now['binding'] != made:
+                session['rendered'] = {
+                    'revision': revision, 'binding': made, 'qualityRevision': quality,
+                    'review': _kept(folder, root), 'images': images,
+                    'approved': [], 'waived': False if found else session['waiveRendered'],
+                    **({'findings': found} if found else {})}
+            return self._save(root, session)
+        return self._locked(act)
+
+
+def _kept(path: Path, root: Path) -> str:
+    """recordedPath: a path inside the project relative to it, with '/'; one outside it
+    absolute."""
+    path = Path(os.path.abspath(path))
+    if root == path or root in path.parents:
+        return path.relative_to(root).as_posix() or '.'
+    return str(path)
 
 
 def order_problem(planned: list, ids: list, section: bool) -> dict | None:
@@ -551,10 +764,14 @@ def order_problem(planned: list, ids: list, section: bool) -> dict | None:
     return None
 
 
-def bound(slides: list, project, section: bool = False) -> dict | None:
+def bound(slides: list, project, section: bool = False,
+          canonical: bool = False) -> dict | None:
     """requireSceneDesign: a build's slides, each {'id', 'title', 'intent'?}, held to the
     design approved in `project` now. Without a project nothing is checked, unless a slide
-    carries an intent. Returns {'plan', 'revision', 'scope', 'slides'}, or None."""
+    carries an intent. With `canonical`, as a tool with `canonical-digests`, an intent is
+    compared whatever the order of its keys. Returns {'plan', 'revision', 'scope',
+    'slides'}, or None."""
+    same = canonical_digest if canonical else digest
     if not project:
         if any(slide.get('intent') for slide in slides):
             raise Refusal('New creative authoring needs --design-project and actual design '
@@ -572,7 +789,7 @@ def bound(slides: list, project, section: bool = False) -> dict | None:
             problems.append({'code': 'design-mismatch', 'slide': ident, 'detail': (
                 f'{ident}: its title differs from the approved design; revise the proposal '
                 'before construction')})
-        elif slide.get('intent') and digest(slide['intent']) != digest(want['intent']):
+        elif slide.get('intent') and same(slide['intent']) != same(want['intent']):
             problems.append({'code': 'design-mismatch', 'slide': ident, 'detail': (
                 f'{ident}: its intent differs from the approved design; revise the proposal '
                 'before construction')})

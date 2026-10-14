@@ -274,6 +274,17 @@ const DELETE_UNDO = 'This cannot be undone from this page. Its history stays in 
   + 'someone who knows git can bring it back.';
 const DELETE_DRIVE = 'Training Studio never deletes anything in your Google Drive. Remove '
   + 'these yourself if you no longer want them:';
+// Drawing a deck again from a design: what its card and its confirmation say. The runner says
+// which decks may be; these are the words around them.
+const REDESIGN_SAYS = 'This deck was approved before decks were drawn from a design. Training '
+  + 'Studio can draw it again from one: each slide planned to show what it teaches.';
+const REDESIGN_DOES = ['What the deck says is written again, with how each slide is drawn, '
+  + 'from the words you approved. You review both together, as for a new deck.',
+'Then it is drawn, rendered and reviewed again, and comes back to you to approve.',
+'Nothing else in the training changes.'];
+const REDESIGN_KEEPS = ['The deck you approved, as it is, until the new one replaces it. Then '
+  + 'it stays in the training’s history.', 'What you approved it should say, and when.'];
+const REDESIGN_COSTS = 'It costs about what drawing the deck cost the first time.';
 // Where a finished training's index is, in its folder.
 const UPDATE_SAYS = 'Each is fetched from its own repository at the one revision this '
   + 'Training Studio was made with, and checked file for file before any of it is run. Then '
@@ -321,8 +332,9 @@ const view = {
   // has each training, a look for teammates' work and what it brought, and the switch for
   // the computer's own notifications while it is being changed.
   status: null, shelf: null, issued: null, adopted: null, noticed: {},
-  // What deleting the open training would do, as the runner said when its sheet was opened.
-  leaving: null,
+  // What deleting the open training would do, as the runner said when its sheet was opened,
+  // and the deck whose redesign the sheet asks about.
+  leaving: null, redesigning: null,
   // Looking online for newer releases, while it is switched, and why switching it was refused.
   turningLook: false, lookRefused: '',
   // The versions Home last told of, when set-up was last read, and the restart in hand.
@@ -1156,6 +1168,7 @@ function closeSheet() {
   view.after = null;
   view.deciding = null;
   view.leaving = null;
+  view.redesigning = null;
   drawSheet();
   if (view.gate) paintGate(false);
   else if (view.screen === 'run' && view.run) paintRun(false);
@@ -1269,7 +1282,7 @@ function drawSheet() {
   const holder = byId('sheet');
   const shown = view.after || (view.sheet && (view.gate || view.deciding || outlined()
     || TEAM_SHEETS.includes(view.sheet)
-    || ['delete', 'companions', 'upgrade'].includes(view.sheet)));
+    || ['delete', 'companions', 'upgrade', 'redesign'].includes(view.sheet)));
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
@@ -1285,6 +1298,7 @@ function drawSheet() {
   else if (view.sheet === 'delete') body = deleteSheet();
   else if (view.sheet === 'companions') body = updateSheet();
   else if (view.sheet === 'upgrade') body = upgradeSheet();
+  else if (view.sheet === 'redesign') body = redesignSheet();
   else if (TEAM_SHEETS.includes(view.sheet)) body = teamSheet(view.sheet);
   else if (FORMS[view.sheet]) body = noteSheet(view.sheet);
   else body = confirmSheet(view.sheet);
@@ -1663,6 +1677,15 @@ function computerItem(item) {
   for (const found of list(item.facts)) facts.append(fact(found, item.optional));
   add(node, facts);
   if (item.fix) add(node, make('p', item.optional ? 'fix fix-optional' : 'fix', item.fix));
+  // What a newer release would put right is updated from the versions, on this same screen.
+  if (item.versions) {
+    add(node, add(make('div', 'bar'), capsule('See the versions', 'quiet', () => {
+      const found = byId('versions');
+      if (found && found.scrollIntoView) {
+        found.scrollIntoView({ block: 'start', behavior: calm() ? 'auto' : 'smooth' });
+      }
+    }, 'versions-' + item.id)));
+  }
   return node;
 }
 
@@ -4916,6 +4939,8 @@ function paintRun(fresh) {
     // What this computer runs for a team can be handed over, for anyone to take.
     !theirs && driver && driver.here ? ['mine', [driver, title, run.kept],
       () => minePart(driver, run.kept)] : null,
+    !theirs && list(run.redesign).length ? ['redesign', [run.redesign, run.state],
+      () => redesignCard(run)] : null,
     deletable(run) ? ['delete', [title], () => deleteCard()] : null,
   ], fresh);
   tickSteps(run);
@@ -5773,6 +5798,76 @@ async function settleDelete(title, problem, pressed) {
   toast('Deleted ' + title + '.' + (found && found.notice ? ' ' + found.notice : ''));
   show('home', null, true);
   refresh();
+}
+
+// --- a deck drawn again from a design ------------------------------------------------------
+// Offered for each deck of the run that was drawn without a design. Nothing happens until the
+// person says yes in the sheet: it is never done for them, after an update or otherwise.
+
+function redesignCard(run) {
+  const node = card('Draw a deck again from a design');
+  add(node, make('p', '', REDESIGN_SAYS));
+  for (const found of list(run.redesign)) {
+    const pressed = capsule(list(run.redesign).length > 1 ? 'Redesign ' + lower(found.label)
+      : 'Redesign', '', () => {
+      view.redesigning = found;
+      openSheet('redesign', 'redesign-' + (found.level || 'deck'))();
+      paintRun(false);
+    }, 'redesign-' + (found.level || 'deck'));
+    pressed.disabled = run.state === 'working';
+    add(node, add(make('div', 'bar'), pressed));
+    if (!found.may && found.why) add(node, make('p', 'quiet', found.why));
+  }
+  if (run.state === 'working') {
+    add(node, make('p', 'quiet', 'Pause the training, or wait until it stops for you, to ask '
+      + 'for this.'));
+  }
+  return node;
+}
+
+function redesignSheet() {
+  const found = view.redesigning || {};
+  const head = sheetTitle('Redesign ' + lower(found.label || 'the slide deck') + '?');
+  const cancel = capsule('Cancel', 'quiet', closeSheet, 'cancel');
+  if (!found.may) {
+    return [head, make('p', '', (found.why || 'This computer cannot draw a deck from a design '
+      + 'yet.') + ' Nothing was changed.'), add(make('div', 'bar'), cancel)];
+  }
+  const problem = problemLine();
+  const confirm = capsule('Redesign it', 'filled', () => settleRedesign(found, problem,
+    confirm), 'send');
+  return [head, make('h3', 'sheet-part', 'What happens'), bullets(REDESIGN_DOES),
+    make('h3', 'sheet-part', 'What is kept'), bullets(REDESIGN_KEEPS),
+    make('p', 'quiet', REDESIGN_COSTS), problem, add(make('div', 'bar'), confirm, cancel)];
+}
+
+// Ask for it. A refusal is said in the sheet, in the runner's own words; once it is asked, the
+// run is shown as the runner now has it, writing what the deck says again.
+async function settleRedesign(found, problem, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  view.busy = true;
+  pressed.disabled = true;
+  let run;
+  try {
+    run = await send('redesign', { path: view.path, level: found.level || null });
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    say(problem, failure.message);
+    pressed.disabled = false;
+    pressed.focus();
+    return;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  view.sheet = '';
+  view.redesigning = null;
+  if (run) view.run = run;
+  drawSheet();
+  toast(found.label + ' is being drawn again from a design. What it says comes back to you '
+    + 'first.');
+  paintRun(false);
 }
 
 // --- with a team: every run at once ----------------------------------------------------

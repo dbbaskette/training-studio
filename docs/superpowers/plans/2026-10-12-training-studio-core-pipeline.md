@@ -365,6 +365,8 @@ Each row is one test in `tests/test_workspace.py` or, where it names `check`, `t
 | 111 | The home folder; a folder holding `skills/training-studio/SKILL.md`, or inside one | `init` | refused, each in words of its own; no record written |
 | 112 | A stale artifact; a missing reason; an upstream not approved | `approve A`; `approve A --accept-stale` or `skip S` with no `--reason`; `approve A` | refused, naming what changed and `--accept-stale --reason`, then `--reason`, then the artifact to approve first. On the page the same refusals name no flag |
 
+A deck the runner makes has rows of its own for its design, its assets, its review and its upgrade: V01 to V14 in the [visual teaching plan's matrix](2026-10-14-visual-teaching-in-decks.md#state-transition-matrix), each a test of its name in `tests/test_runner_deck.py`. Rows 11, 20 and 21 above still hold for such a deck: what the runner saves is the core's `deck`, and a deck drawn again from a design (V11) is saved through `save`, so its history keeps the deck it replaces.
+
 ### A8. Guidance
 
 Guidance names no harness-specific tools. `training.py` in the references is shorthand for `python3 "<skill>/scripts/training.py"`, defined once in `SKILL.md`. Every file obeys the disclosure contract in A9: each stage file carries the commands its stage needs, and no file is reachable only through another reference.

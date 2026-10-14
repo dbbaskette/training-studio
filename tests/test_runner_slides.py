@@ -340,6 +340,15 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(refused.exception.left,
                          {'fileId': 'file-9', 'url': 'https://docs.example.com/d/file-9/edit'})
 
+    def test_a_review_that_failed_after_its_upload_says_what_it_left_in_drive(self):
+        self.answers = [(1, '', 'Google Slides could not render the deck: export failed The '
+                         'review deck is in Drive (https://docs.example.com/d/file-7/edit); '
+                         'retry with --renderer google --file-id file-7.\n')]
+        with self.assertRaises(slides.Refused) as refused:
+            self.slides.review_prepare('/d/compiled', '/d/review', '/d/project', 'drive')
+        self.assertEqual(refused.exception.left,
+                         {'fileId': 'file-7', 'url': 'https://docs.example.com/d/file-7/edit'})
+
     def test_an_answer_that_is_not_json_is_not_trusted(self):
         for answer in ('Usage: node scripts/harness-slides.mjs ...', '[1, 2]', ''):
             self.answers = [(0, answer, '')]
@@ -2150,6 +2159,254 @@ class ReviewTests(unittest.TestCase):
                          (['renderer-unavailable'], 'libreoffice'))
         self.assertTrue((self.root / 'review-local' / 'deck.pptx').is_file())
         self.assertEqual(self.tool.calls[-1][-1], '--json')
+
+
+class CurrentTests(unittest.TestCase):
+    """Harness Slides 0.14.1 through the wrapper, against the contract fixture: each thing it
+    lists in `version` beyond 0.14.0, and the tool without it, which the stand-in plays by
+    taking that one name out of what it lists. The real 0.14.1 answers each call here the
+    same way (checked against a worktree of its v0.14.1 tag)."""
+
+    def setUp(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.root = Path(holder.name).resolve()
+        self.slides = slides_stand_in.stand_in(current=True)
+        self.tool = self.slides.run
+        self.skill = brand_stand_in.stand_in()   # kept: its library is the brand's source
+        self.brand = self.skill.export(self.root / 'brand', 'example', 'light')['contract']
+        self.plan = json.loads((CONTRACT / 'proposal.json').read_text(encoding='utf-8'))
+        self.ids = [slide['id'] for slide in self.plan['slides']]
+        self.made = 0
+
+    def without(self, name: str) -> None:
+        """The same tool, built without one thing it lists."""
+        self.tool.listed.discard(name)
+        self.slides = slides.Slides(runtime=Path('stand-in'), run=self.tool,
+                                    read=self.tool.read)
+
+    def file(self, value, name: str = 'file') -> Path:
+        self.made += 1
+        path = self.root / f'{name}-{self.made}.json'
+        path.write_text(json.dumps(value), encoding='utf-8')
+        return path
+
+    def project(self) -> Path:
+        self.made += 1
+        folder = self.root / f'project-{self.made}'
+        folder.mkdir()
+        return folder
+
+    def approved(self, plan: dict | None = None, brand: Path | None = None) -> Path:
+        project = self.project()
+        proposed = self.slides.design_propose(project, self.file(plan or self.plan), brand=brand)
+        self.slides.design_respond(project, {
+            'questionId': proposed['question']['id'], 'planRevision': proposed['revision'],
+            'decision': 'approve', 'feedback': 'Approve the whole plan'})
+        return project
+
+    def refused(self, call, *args, **named) -> slides.Refused:
+        with self.assertRaises(slides.Refused) as refused:
+            call(*args, **named)
+        return refused.exception
+
+    def built(self, project: Path, composition: dict | None = None) -> Path:
+        self.made += 1
+        folder = self.root / f'compiled-{self.made}'
+        made = composition or json.loads((CONTRACT / 'composition.json').read_text(
+            encoding='utf-8'))
+        self.slides.compile(self.file(made, 'composition'), self.brand, folder,
+                            design=project)
+        return folder
+
+    def reviewed(self, project: Path, issues=(), **renderer) -> tuple[Path, dict, list]:
+        """A review prepared, looked at and assessed, every criterion passing but `issues`."""
+        self.made += 1
+        output = self.root / f'review-{self.made}'
+        made = self.slides.review_prepare(self.built(project), output, project, **renderer)
+        packets = [{'slide': slide['packet']} for slide
+                   in self.slides.review_packets(output)['slides']]
+        kept, problems = deck.judged(runner_support.judgements(packets, issues), packets)
+        self.assertEqual(problems, [])
+        self.slides.review_mark(output, made['revision'], [1, 2, 3], deck.MARKED)
+        self.slides.review_assess(output, made['revision'], deck.assessment(
+            kept, packets, made['assessmentBinding'], sources=False))
+        return output, made, packets
+
+    def test_what_it_has_is_read_from_its_version_and_named_for_a_person(self):
+        self.assertEqual(self.slides.version(), slides.RELEASE)
+        self.assertEqual(self.slides.capabilities(), frozenset(slides_stand_in.CURRENT))
+        self.assertEqual(self.slides.lacks(), [])
+        self.assertTrue(self.slides.has('review-packets'))
+        self.assertEqual(sorted(slides.NAMES), sorted(slides_stand_in.CURRENT),
+                         'every name 0.14.1 lists can be said to a person')
+        self.assertTrue(set(slides.NEEDED) <= set(slides_stand_in.CAPABILITIES),
+                        'a new deck needs nothing 0.14.0 did not list')
+        pins = json.loads((Path(__file__).resolve().parents[1] / 'installer'
+                           / 'companions.json').read_text(encoding='utf-8'))
+        self.assertEqual(pins['companions']['harness-slides']['version'], slides.RELEASE,
+                         'a person is told to update to the release the installer pins')
+        older = slides_stand_in.stand_in(assets=True)
+        self.assertEqual((older.lacks(), older.has('review-packets')), ([], False))
+        self.without('compose-review')
+        self.assertEqual(self.slides.lacks(), ['compose-review'])
+
+    def test_a_tool_that_lists_nothing_is_asked_what_a_new_deck_needs(self):
+        for tool, lacking in ((slides_stand_in.stand_in(), list(slides.NEEDED)),
+                              (slides_stand_in.stand_in(design=True),
+                               ['assets', 'compose-review'])):
+            self.assertIsNone(tool.capabilities())
+            self.assertEqual(tool.lacks(), lacking)
+            self.assertFalse(tool.has('design-batch'), 'it lists nothing, so it has none')
+            asked = [call[:2] for call in tool.run.calls if call not in (['--version'],
+                                                                         ['version'])]
+            self.assertEqual(asked, [['design', 'propose'], ['compose', 'compile'],
+                                     ['assets', 'status']], 'one probe each, nothing else')
+
+    def test_an_icon_named_by_its_library_id_is_checked_against_the_brand(self):
+        plan = copy.deepcopy(self.plan)
+        candidates = plan['slides'][0]['asset']['candidates']
+        candidates[0].update(ref='ex-cloud', refType='library-id')
+        candidates[1].update(ref='ex-nothing', refType='library-id')
+        project = self.project()
+        wrong = self.refused(self.slides.design_propose, project, self.file(plan),
+                             brand=self.brand)
+        self.assertEqual([(problem['code'], problem['slide'], problem['asset'])
+                          for problem in wrong.found],
+                         [('asset-unresolved', 'operator_architecture', 'icon_pod')])
+        self.assertEqual(self.tool.calls[-1][-2:], ['--brand', str(self.brand)])
+        candidates[1].update(ref='ex-database')
+        project = self.approved(plan, self.brand)
+        # Approved, every candidate of the plan is still checked, the exact icon with its ID.
+        missing = self.refused(self.slides.asset_check, project, self.brand, project)
+        self.assertEqual([(problem['code'], problem['asset']) for problem in missing.found],
+                         [('asset-unresolved', 'icon_kubernetes'),
+                          ('asset-unresolved', 'icon_pod')])
+        self.assertIn('assets icon ex-cloud --id icon_kubernetes --brand',
+                      missing.found[0]['next'])
+        self.slides.asset_icon(project, 'ex-cloud', 'icon_kubernetes', brand=self.brand)
+        self.slides.asset_icon(project, 'ex-gears', 'icon_pod', brand=self.brand)
+        conflict = self.refused(self.slides.asset_check, project, self.brand, project)
+        self.assertEqual([(problem['code'], problem['asset']) for problem in conflict.found],
+                         [('asset-conflict', 'icon_pod')])
+        status = self.slides.asset_status(project, project)
+        self.assertEqual([(item['assetId'], item.get('ref')) for item
+                          in status['candidates']['resolved']],
+                         [('icon_kubernetes', 'ex-cloud')])
+        # Before 0.14.1 a library ID is not taken, and an approved design has no candidates.
+        self.without('design-icon-ids')
+        self.assertEqual(self.refused(self.slides.design_propose, self.project(),
+                                      self.file(plan)).codes, ['invalid-proposal'])
+        self.without('assets-approved-candidates')
+        self.assertEqual(self.slides.asset_check(project, design=project)['candidates'],
+                         {'resolved': [], 'pending': []})
+
+    def test_a_recorded_icon_is_placed_by_its_asset_id(self):
+        project = self.approved()
+        self.slides.asset_icon(project, 'ex-database', 'icon_kubernetes', brand=self.brand)
+        made = json.loads((CONTRACT / 'composition.json').read_text(encoding='utf-8'))
+        row = made['slides'][0]['canvas']['children'][1]['children']
+        row.insert(0, {'type': 'icon', 'id': 'arch_k8s', 'asset': 'icon_kubernetes'})
+        folder = self.built(project, made)
+        report = json.loads((folder / 'compose-report.json').read_text(encoding='utf-8'))
+        self.assertEqual(report['inputs']['assets'], [
+            {'object': 'arch_k8s', 'slide': 'operator_architecture', 'asset': 'icon_kubernetes',
+             'kind': 'icon', 'ref': 'ex-database',
+             'sha256': self.slides.asset_status(project)['assets'][0]['sha256']}])
+        row[0]['asset'] = 'icon_nothing'
+        wrong = self.refused(self.slides.compile, self.file(made), self.brand, design=project)
+        self.assertEqual([(problem['code'], problem['asset']) for problem in wrong.found],
+                         [('asset-unresolved', 'icon_nothing')])
+        self.without('compose-icon-assets')
+        wrong = self.refused(self.slides.compile, self.file(made), self.brand, design=project)
+        self.assertIn('unsupported node field', wrong.problems[0])
+
+    def test_every_packet_comes_in_one_call_and_sources_are_the_slides_own(self):
+        project = self.approved()
+        output, made, packets = self.reviewed(project)
+        one = [self.slides.review_slide(output, ident)['slide'] for ident in self.ids]
+        self.assertEqual([packet['slide'] for packet in packets], one)
+        found = self.slides.review_packets(output)
+        self.assertEqual(([slide['number'] for slide in found['slides']],
+                          [slide['planId'] for slide in found['slides']],
+                          found['revision'], found['assessmentBinding']),
+                         ([1, 2, 3], self.ids, made['revision'], made['assessmentBinding']))
+        self.assertTrue(all(Path(slide['image']).is_file() for slide in found['slides']))
+        self.assertTrue(found['creativeReviewComplete'])
+        record = json.loads((output / 'review.json').read_text(encoding='utf-8'))
+        self.assertEqual(record['creativeAssessment']['slides'][0]['checks'][0]['sources'],
+                         self.plan['slides'][0]['sources'], 'taken from the slide')
+        self.without('review-sources-from-slide')
+        with self.assertRaises(slides.Refused) as refused:
+            self.reviewed(project)
+        self.assertEqual(refused.exception.codes, ['input-invalid'])
+        self.assertIn('retained sources', refused.exception.problems[0])
+        self.without('review-packets')
+        self.assertEqual(self.refused(self.slides.review_packets, output).problems,
+                         ['--packets is not valid for this command'])
+
+    def test_a_review_is_rendered_through_drive_into_one_file(self):
+        project = self.approved()
+        self.tool.local = False
+        output, made, _ = self.reviewed(project, renderer='drive')
+        self.assertEqual(list(self.tool.files), [made['fileId']])
+        prepared = next(call for call in self.tool.calls if '--compiled' in call)
+        self.assertEqual(prepared[-5:], ['--design-project', str(project), '--renderer',
+                                         'google', '--json'])
+        again = self.slides.review_prepare(self.built(project), self.root / 'again', project,
+                                           renderer='drive', file_id=made['fileId'])
+        self.assertEqual((again['fileId'], list(self.tool.files)),
+                         (made['fileId'], [made['fileId']]), 'the same file, written again')
+        self.assertEqual(self.tool.files[made['fileId']]['uploads'], 2)
+        self.without('review-google-renderer')
+        wrong = self.refused(self.slides.review_prepare, self.built(project),
+                             self.root / 'local', project, renderer='drive')
+        self.assertEqual(wrong.problems, ['--renderer is not valid for this command'])
+
+    def test_a_reviewed_deck_is_put_to_the_person_with_its_findings(self):
+        project = self.approved()
+        reason = 'The loop is drawn, but nothing shows that acting leads back to observing.'
+        output, made, _ = self.reviewed(project, [{
+            'slide': 'reconcile_loop', 'criterion': 'visual-relationship',
+            'severity': 'minor', 'about': 'drawing', 'reason': reason}])
+        status = self.slides.design_present(project, output, made['revision'])
+        question = status['question']
+        self.assertEqual((question['phase'], question['slides'], question['options'][0]),
+                         ('rendered', self.ids, 'Approve these slides with the findings listed'))
+        self.assertEqual([(found['slide'], found['criterion'], found['detail'])
+                          for found in question['findings']],
+                         [('reconcile_loop', 'visual-relationship', reason)])
+        self.assertEqual(self.tool.calls[-1][-2:], ['--accept-findings', '--json'])
+        self.assertEqual(self.slides.design_status(project)['renderedFindings'],
+                         question['findings'])
+        answered = self.slides.design_respond(project, {
+            'questionId': question['id'], 'planRevision': status['revision'],
+            'decision': 'approve', 'feedback': question['options'][0]})
+        self.assertEqual((answered['renderedAcceptance'], answered['question']), (True, None))
+        session = json.loads((project / '.harness-slides' / 'design' / 'session.json')
+                             .read_text(encoding='utf-8'))
+        self.assertEqual(session['responses'][-1]['acceptedFindings'], question['findings'])
+        # A deck reviewed again with another assessment must be presented again.
+        output, made, _ = self.reviewed(project)
+        self.assertEqual(self.refused(self.slides.design_present, project, output,
+                                      'another').codes, ['rendered-review-stale'])
+        self.without('design-present-findings')
+        self.assertEqual(self.refused(self.slides.design_present, project, output,
+                                      made['revision']).problems,
+                         ['Unknown command/action; run --help'])
+
+    def test_an_intent_is_compared_whatever_the_order_of_its_keys(self):
+        project = self.approved()
+        made = json.loads((CONTRACT / 'composition.json').read_text(encoding='utf-8'))
+        made['slides'][0]['intent'] = json.loads(json.dumps(
+            self.plan['slides'][0]['intent'], sort_keys=True))
+        self.assertNotEqual(list(made['slides'][0]['intent']),
+                            list(self.plan['slides'][0]['intent']))
+        self.slides.compile(self.file(made), self.brand, design=project)
+        self.without('canonical-digests')
+        wrong = self.refused(self.slides.compile, self.file(made), self.brand, design=project)
+        self.assertEqual([(problem['code'], problem['slide']) for problem in wrong.found],
+                         [('design-mismatch', 'operator_architecture')])
 
 
 if __name__ == '__main__':

@@ -4,12 +4,12 @@ as Harness Slides has them after 0.13.1.
 
     add_supplied(project, file, alt, source, restrictions=None, ident=None, kind='supplied')
     record_icon(project, icon, ident=None, alt=None, brand=None)
-    status(project, design=None, env=None)       # each asset with its state
-    check(project, design=None, brand=None, env=None)
+    status(project, design=None, env=None, every=False)   # each asset with its state
+    check(project, design=None, brand=None, env=None, every=False)
     images_status(env)                           # whether an image provider is set up
     generate(project, ident, prompt, output, alt=None, slide=None, env=None, made=None)
-    resolve(comp, project)                       # (composition, uses, problem lines)
-    place(scene, base, uses)                     # (inputs.assets, copies to write)
+    resolve(comp, project, icons=False)          # (composition, uses, problem lines, icons)
+    place(scene, base, uses, structure=None, icons=None)   # (inputs.assets, copies)
     verify(folder)                               # a build's copies, before it is rendered
 
 It keeps the tool's own rules, messages and codes, ported from scripts/lib/assets.mjs,
@@ -23,9 +23,13 @@ simpler than the real thing:
   with the same brief finds its picture in the deck and returns it, and one with another
   brief is refused as the tool refuses it.
 - A picture's size is read from its header: PNG, JPEG and GIF, as the tool takes them.
-- With `design`, the candidates are read from `design status`, as the tool reads them. So,
-  as in the tool, an approved design has no candidates to sort: status answers only the
-  slides of the question waiting now.
+- With `design`, the candidates are read from `design status`, as the tool on `main` before
+  #64 reads them. So an approved design has no candidates to sort: status answers only the
+  slides of the question waiting now. With `every`, as a tool with
+  `assets-approved-candidates`, they are read from the stored plan, approved or not; and
+  with a brand too, an icon candidate named by its library ID is checked against it.
+- With `icons`, as a tool with `compose-icon-assets`, an icon node may name a recorded icon
+  by `asset`, which resolves to its library ID and is listed with the build's assets.
 """
 from __future__ import annotations
 
@@ -505,17 +509,34 @@ def _problem_of(base: Path, entry: dict) -> dict | None:
     return None
 
 
-def _candidates(manifest: dict, design, env) -> tuple[list, list, list]:
+def _candidates(manifest: dict, design, env, every: bool = False,
+                entries: list | None = None) -> tuple[list, list, list]:
     """Design candidates matched to the manifest by asset ID. Those missing are pending;
-    generated art also needs a provider. Read from `design status`, as the tool reads them."""
-    plan = designs.Session(design).status()
+    generated art also needs a provider. Read from `design status`, or with `every` from
+    the stored plan. `entries` is the brand's icon index, given with --brand."""
+    session = designs.Session(design)
+    slides = session._needed(session.project)['plan']['slides'] if every \
+        else session.status()['slides']
+    named = designs.candidate_icon_problems(slides, entries) if entries is not None else []
     resolved, pending, problems = [], [], []
-    for slide in plan['slides']:
+    for slide in slides:
         for candidate in (slide.get('asset') or {}).get('candidates') or []:
             entry = next((item for item in manifest['assets']
                           if item['assetId'] == candidate['assetId']), None)
+            exact = candidate['kind'] == 'icon' and candidate.get('refType') == 'library-id'
             item = {'slide': slide['id'], 'assetId': candidate['assetId'],
-                    'kind': candidate['kind'], 'concept': candidate['concept']}
+                    'kind': candidate['kind'], 'concept': candidate['concept'],
+                    **({'ref': candidate['ref']} if exact else {})}
+            if entry and exact and entry['kind'] == 'icon' and entry.get('ref') \
+                    != candidate['ref']:
+                problems.append({
+                    'code': 'asset-conflict', 'slide': slide['id'], 'asset': candidate['assetId'],
+                    'detail': f"{slide['id']}: candidate {candidate['assetId']} names icon "
+                              f"{candidate['ref']}, but the manifest records icon {entry['ref']}",
+                    'next': f"Record icon {candidate['ref']} under another asset ID and use "
+                            f"that, or propose icon {entry['ref']} for approval"})
+                pending.append(item)
+                continue
             if entry and entry['kind'] != candidate['kind']:
                 problems.append({
                     'code': 'asset-conflict', 'slide': slide['id'], 'asset': candidate['assetId'],
@@ -529,14 +550,20 @@ def _candidates(manifest: dict, design, env) -> tuple[list, list, list]:
                 resolved.append(item)
                 continue
             pending.append(item)
-            if candidate['kind'] == 'generated' and not api_key(env):
+            wrong = next((problem for problem in named if problem['slide'] == slide['id']
+                          and problem['asset'] == candidate['assetId']), None)
+            if wrong:
+                problems.append(wrong)
+            elif candidate['kind'] == 'generated' and not api_key(env):
                 problems.append({
                     'code': 'provider-missing', 'slide': slide['id'],
                     'asset': candidate['assetId'], 'provider': 'gemini-api',
                     'detail': f"{slide['id']}: candidate {candidate['assetId']} is generated "
                               'art, and no Gemini API key is set to generate it'})
             else:
-                then = {'icon': f"Record it with assets icon ICON_ID --id {candidate['assetId']}",
+                then = {'icon': f"Record it with assets icon {candidate['ref']} --id "
+                                f"{candidate['assetId']} --brand brand-contract.json" if exact
+                        else f"Record it with assets icon ICON_ID --id {candidate['assetId']}",
                         'generated': 'Generate it with images generate once its slide is '
                                      'approved'}.get(candidate['kind'],
                                                      'Record it with assets add-supplied FILE '
@@ -550,7 +577,7 @@ def _candidates(manifest: dict, design, env) -> tuple[list, list, list]:
     return resolved, pending, problems
 
 
-def status(project, design=None, env=None) -> dict:
+def status(project, design=None, env=None, every: bool = False) -> dict:
     base = _root(project)
     manifest, listed = read_manifest(base), []
     for entry in manifest['assets']:
@@ -558,12 +585,14 @@ def status(project, design=None, env=None) -> dict:
         listed.append({**entry, 'state': STATES[found['code']] if found else 'ok'})
     result = {'manifest': MANIFEST, 'assets': listed}
     if design:
-        resolved, pending, _ = _candidates(manifest, design, env)
+        resolved, pending, _ = _candidates(manifest, design, env, every)
         result['candidates'] = {'resolved': resolved, 'pending': pending}
     return result
 
 
-def check(project, design=None, brand=None, env=None) -> dict:
+def check(project, design=None, brand=None, env=None, every: bool = False,
+          entries: list | None = None) -> dict:
+    """`entries` stands for a brand's icon index where no brand contract is given."""
     base = _root(project)
     manifest, problems = read_manifest(base), []
     for entry in manifest['assets']:
@@ -587,7 +616,7 @@ def check(project, design=None, brand=None, env=None) -> dict:
                                          'icon --brand'})
     sorted_ = None
     if design:
-        sorted_ = _candidates(manifest, design, env)
+        sorted_ = _candidates(manifest, design, env, every, entries if every else None)
         problems += sorted_[2]
     if problems:
         raise Refusal(problems[0]['detail'] if len(problems) == 1 else
@@ -675,15 +704,19 @@ def generate(project, ident, prompt, output, alt=None, slide=None, env=None,
 
 # --- a composition's images ----------------------------------------------------------------
 
-def resolve(comp, project) -> tuple[dict, dict, list[str]]:
+def resolve(comp, project, icons: bool = False) -> tuple[dict, dict, list[str], dict]:
     """Each image a composition names by asset ID, resolved to the project's file, with its
-    recorded alt text when the composition gives none. Problems are composition lines."""
-    out, uses, problems, wanted = json.loads(json.dumps(comp)), {}, [], []
+    recorded alt text when the composition gives none; with `icons`, each icon named by asset
+    ID, resolved to its recorded library ID. Problems are composition lines. The icons come
+    back by node ID, as {'assetId', 'ref', 'sha256'}, or None for one that did not resolve."""
+    out, uses, problems, wanted, placed = json.loads(json.dumps(comp)), {}, [], [], {}
 
     def walk(node) -> None:
         if not isinstance(node, dict):
             return
         if node.get('type') == 'image' and 'asset' in node and 'src' not in node:
+            wanted.append((node, node.get('id'), node.get('id')))
+        if icons and node.get('type') == 'icon' and 'asset' in node and 'icon' not in node:
             wanted.append((node, node.get('id'), node.get('id')))
         for kid in [*(node.get('children') if isinstance(node.get('children'), list)
                       else []), node.get('hub')]:
@@ -698,13 +731,34 @@ def resolve(comp, project) -> tuple[dict, dict, list[str]]:
         if isinstance(picture, dict) and 'asset' in picture and 'src' not in picture:
             wanted.append((picture, f"{slide.get('id')}_picture", slide.get('id')))
     if not wanted:
-        return out, uses, problems
+        return out, uses, problems, placed
     base = _root(project) if project else None
     manifest = read_manifest(base) if base else None
     for node, ident, where in wanted:
         asset, line = node['asset'], None
         entry = next((item for item in manifest['assets'] if item['assetId'] == asset),
                      None) if manifest else None
+        if node.get('type') == 'icon':
+            if not isinstance(asset, str) or not asset:
+                line = f'{where}: asset must be an asset ID from assets status'
+            elif not base:
+                line = (f'{where}: icon asset {asset} needs the project that records it; pass '
+                        '--asset-project DIR')
+            elif not entry:
+                line = (f"{where}: asset {asset} is not in the project's asset manifest; "
+                        f'record it with assets icon ICON_ID --id {asset} --brand '
+                        'brand-contract.json')
+            elif entry['kind'] != 'icon':
+                line = (f"{where}: asset {asset} is a {entry['kind']} image, not an icon; place "
+                        f'it as an image node with asset {asset}')
+            del node['asset']
+            if line:   # a stand-in ID keeps the node compiling; the icon check passes it by
+                problems.append(line)
+                node['icon'], placed[ident] = 'unresolved-asset', None
+                continue
+            node['icon'] = entry['ref']
+            placed[ident] = {'assetId': asset, 'ref': entry['ref'], 'sha256': entry['sha256']}
+            continue
         if not isinstance(asset, str) or not asset:
             line = f'{where}: asset must be an asset ID from assets status'
         elif not base:
@@ -715,7 +769,8 @@ def resolve(comp, project) -> tuple[dict, dict, list[str]]:
                     'with assets add-supplied or images generate')
         elif entry['kind'] == 'icon':
             line = (f"{where}: asset {asset} is a brand icon; place it as an icon node with "
-                    f"icon {entry['ref']}")
+                    + (f"asset {asset}, or icon {entry['ref']}" if icons
+                       else f"icon {entry['ref']}"))
         else:
             found = _problem_of(base, entry)
             if found:
@@ -739,13 +794,21 @@ def resolve(comp, project) -> tuple[dict, dict, list[str]]:
         node['alt'] = alt if alt is not None else 'missing alt'
         uses[ident] = {'assetId': asset, 'kind': entry['kind'], 'path': node['src'],
                        'source': entry['path'], 'sha256': entry['sha256']}
-    return out, uses, problems
+    return out, uses, problems, placed
 
 
-def place(scene: dict, base: Path, uses: dict) -> tuple[list[dict], dict]:
+def place(scene: dict, base: Path, uses: dict, structure: dict | None = None,
+          icons: dict | None = None) -> tuple[list[dict], dict]:
     """The images of a compiled scene: a file named by src keeps its absolute path; an asset
-    is copied into OUTPUT/assets and named relatively. Returns inputs.assets and the copies."""
+    is copied into OUTPUT/assets and named relatively. Each icon placed by asset ID is listed
+    too, with its library ID and no copy. Returns inputs.assets and the copies."""
     assets, copies = [], {}
+    for icon in (structure or {}).get('icons') or ():
+        found = (icons or {}).get(icon['id'])
+        if found:
+            assets.append({'object': icon['id'], 'slide': icon['slide'],
+                           'asset': found['assetId'], 'kind': 'icon', 'ref': found['ref'],
+                           'sha256': found['sha256']})
     for slide in scene['slides']:
         for element in slide['elements']:
             if element.get('type') != 'image' or str(element.get('src')).startswith('https://'):

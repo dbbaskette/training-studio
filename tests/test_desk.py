@@ -2292,7 +2292,7 @@ MODELS = {'GET /api/models?agent=claude': [ok(CLAUDE_MODELS)],
           'GET /api/models?agent=codex': [ok(CODEX_MODELS)]}
 RUN_FIELDS = {'state', 'sentence', 'agent', 'model', 'effort', 'steps', 'workers', 'spent',
               'question', 'problem', 'documents', 'copies', 'deck_left', 'finished', 'outline',
-              'deck'}
+              'deck', 'redesign'}
 OUTLINE_FIELDS = {'level', 'waiting', 'slides', 'sha256', 'checked', 'worth', 'note',
                   'design'}
 OUTLINE_SLIDE_FIELDS = {'id', 'kind', 'title', 'subtitle', 'understand', 'points', 'caveat',
@@ -2328,7 +2328,8 @@ def a_run(state: str, sentence: str, **more) -> dict:
     run = {'state': state, 'sentence': sentence, 'agent': 'claude', 'model': None,
            'effort': None, 'steps': [], 'workers': [], 'spent': {'dollars': None, 'tokens': None},
            'question': None, 'problem': None, 'documents': None, 'copies': [],
-           'deck_left': None, 'finished': None, 'outline': None, 'deck': None, **more}
+           'deck_left': None, 'finished': None, 'outline': None, 'deck': None,
+           'redesign': [], **more}
     assert set(run) == RUN_FIELDS, run
     return ok(run)
 
@@ -5994,6 +5995,110 @@ def leaving(path: str, state: str, **more) -> dict:
              'drive': [], **more}
     assert set(found) == LEAVING_FIELDS, found
     return ok(found)
+
+
+REDESIGN_FIELDS = {'level', 'artifact', 'label', 'may', 'why'}
+
+
+def a_redesign(may: bool = True, why: str | None = None) -> dict:
+    """A deck drawn without a design, as a run offers it to be drawn again from one."""
+    found = {'level': None, 'artifact': 'deck', 'label': 'The slide deck', 'may': may,
+             'why': why}
+    assert set(found) == REDESIGN_FIELDS, found
+    return found
+
+
+@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
+class RedesignScreenTests(ScriptedPage, PageCase):
+    """Drawing a deck again from a design, from its run: it is offered for a deck drawn without
+    one, the confirmation says what happens and what is kept, nothing is sent until its button
+    is pressed, and a computer that cannot do it says why and sends nothing."""
+
+    answers = RunnerScreenTests.answers
+    posts = RunnerScreenTests.posts
+    started = RunnerScreenTests.started
+    listed = RunnerScreenTests.listed
+    detail = RunnerScreenTests.detail
+
+    def test_a_deck_is_drawn_again_from_a_design_only_after_a_yes(self):
+        self.started()
+        done = 'Finished as far as the runner takes it.'
+        finished = a_run('done', done, steps=steps(*('done',) * 7),
+                         redesign=[a_redesign()])
+        again = a_run('working', 'Writing what the slide deck says again, with its design.',
+                      steps=steps(*('done',) * 7))
+        path = str(self.root)
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('in-progress', done)],
+            'GET /api/training': [self.detail('in-progress', done)],
+            'GET /api/run': [finished],
+            'POST /api/redesign': [again]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
+            {'click': 'Redesign'}, {'snapshot': 'asked'},
+            {'click': 'Cancel'}, {'snapshot': 'cancelled'},
+            {'click': 'Redesign'}, {'click': 'Redesign it'}, {'snapshot': 'asked again'},
+        ])
+        shots = result['snapshots']
+        self.assertEqual(self.posts(result), [('/api/redesign', {'path': path, 'level': None})])
+        self.assertIn('This deck was approved before decks were drawn from a design.',
+                      shots['run']['text'])
+        self.assertNotIn('Redesign', shots['run']['filled'], 'never the thing to do first')
+        asked = shots['asked']
+        for said in ('Redesign the slide deck?', 'What happens', 'What is kept',
+                     'from the words you approved', 'Nothing else in the training changes.',
+                     'until the new one replaces it'):
+            self.assertIn(said, asked['sheet'])
+        self.assertEqual((asked['focus'], asked['posts']), ('sheet', 0))
+        self.assertEqual((shots['cancelled']['sheet'], shots['cancelled']['posts']), ('', 0))
+        self.assertIn('is being drawn again from a design', ' '.join(
+            shots['asked again']['toasts']))
+
+    def test_a_computer_that_cannot_says_why_and_sends_nothing(self):
+        self.started()
+        why = ('A deck is drawn from a design only where this computer can make one, and it '
+               'cannot yet. Update Harness Slides to 0.14.1 or newer from Versions on the '
+               'Status screen.')
+        done = 'Finished as far as the runner takes it.'
+        finished = a_run('done', done, steps=steps(*('done',) * 7),
+                         redesign=[a_redesign(False, why)])
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('in-progress', done)],
+            'GET /api/training': [self.detail('in-progress', done)],
+            'GET /api/run': [finished]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
+            {'click': 'Redesign'}, {'snapshot': 'asked'}])
+        shots = result['snapshots']
+        self.assertIn(why, shots['run']['text'])
+        self.assertIn(why + ' Nothing was changed.', shots['asked']['sheet'])
+        self.assertNotIn('Redesign it', shots['asked']['buttons'])
+        self.assertEqual(self.posts(result), [])
+
+    def test_the_status_screen_says_what_a_new_deck_lacks_and_points_to_the_versions(self):
+        self.started()
+        update = ('A new deck is proposed with how each slide is drawn, and the slides tool on '
+                  'this computer, version 0.13.1, lacks what that needs: a whole deck reviewed '
+                  'against its approved design. Update Harness Slides to 0.14.1 or newer from '
+                  'Versions on the Status screen, then check this computer again.')
+        item = {'id': 'deck-slides', 'name': 'The slides tool', 'state': 'problem',
+                'facts': [{'label': 'Installed', 'state': 'ok', 'detail': '0.13.1'},
+                          {'label': 'What a new deck needs', 'state': 'problem',
+                           'detail': 'missing a whole deck reviewed against its approved '
+                                     'design'}],
+                'fix': update, 'optional': False, 'versions': True}
+        checked = {'ready': False, 'wrong': ['The slides tool'], 'items': [item],
+                   'checked_at': '2026-10-14T09:00:00Z'}
+        answers = self.answers(**{'POST /api/computer': [ok({'computer': checked})]})
+        result = self.run_page(answers, [
+            {'click': 'Status'}, {'click': 'Check this computer'}, {'snapshot': 'checked'},
+            {'click': 'See the versions'}, {'snapshot': 'pointed'}])
+        shots = result['snapshots']
+        for said in ('What a new deck needs: missing a whole deck reviewed against its '
+                     'approved design', update):
+            self.assertIn(said, shots['checked']['text'])
+        self.assertIn('See the versions', shots['checked']['buttons'])
+        self.assertEqual(shots['pointed']['heading'], 'Status')
 
 
 @unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
