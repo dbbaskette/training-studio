@@ -26,11 +26,16 @@ if sys.version_info < (3, 11):
 import argparse
 import json
 import os
+import re
 import signal
 from contextlib import contextmanager
 from pathlib import Path
 
 if not __package__:  # started by its path
+    # Through `current`, the first place Python looks is that link: it is made this
+    # version's own folder, so a later version installed while this one runs is never read.
+    if sys.path and Path(sys.path[0]).resolve() == Path(__file__).resolve().parent:
+        sys.path[0] = str(Path(__file__).resolve().parent)
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import runner  # noqa: F401,E402  puts the core on the import path
 import cmd_desk  # noqa: E402
@@ -39,6 +44,9 @@ from workspace import WorkspaceError  # noqa: E402
 
 from runner import engine as engines  # noqa: E402
 from runner import gitstate, page, setup, upkeep as upkeeping  # noqa: E402
+
+RESTART = 'TRAINING_STUDIO_RESTART'   # the key, from a runner opening a newer version
+KEY = re.compile(r'[A-Za-z0-9_-]{32,128}')
 
 
 @contextmanager
@@ -70,21 +78,44 @@ def only_runner():
         path.unlink(missing_ok=True)
 
 
-def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show, keeper=None) -> int:
+def handed_over() -> str | None:
+    """The key a runner that stopped to open a newer version handed to this one, taken out
+    of the environment at once so nothing this runner starts is given it."""
+    kept = os.environ.pop(RESTART, None)
+    try:
+        token = json.loads(kept)['token'] if kept else None
+    except (ValueError, KeyError, TypeError):
+        return None
+    return token if isinstance(token, str) and KEY.fullmatch(token) else None
+
+
+def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show, keeper=None,
+          execv=os.execv) -> int:
     """Print one line of JSON, then serve until interrupted. `keeper` makes what looks
-    after the skills here, given what to call once it has changed them."""
+    after the skills here, given what to call once it has changed them. When it stops to
+    open a newer version, it runs `execv` with the command that opens Training Studio, on
+    the same port and with the same key, so the page that is open carries on."""
     out = out or sys.stdout
+    token = handed_over()
     space = gitstate.current()
     if space is not None:
         gitstate.identity(space.repo)  # nothing can be recorded without one; says the fix
     with only_runner():
         engine = make()
         engine.upkeep = (keeper or upkeeping.Upkeep)(after=engine.look_again)
-        server = page.Studio(engine, args.port)
+        try:
+            server = page.Studio(engine, args.port, token=token)
+        except OSError:
+            if not token:
+                raise
+            token, server = None, page.Studio(engine, 0)   # the port was taken meanwhile
+        engine.upkeep.leave = server.leave
         signal.signal(signal.SIGTERM, cmd_desk.interrupt)
         try:
-            print(json.dumps(cmd_desk.announce(server, out.isatty(), opener)), file=out,
-                  flush=True)
+            # Opened again in its own place, the page that is open already has the key.
+            shown = cmd_desk.announce(server, out.isatty(),
+                                      (lambda url: False) if token else opener)
+            print(json.dumps(shown), file=out, flush=True)
             if out.isatty() and getattr(args, 'open', False):
                 opener(server.url)   # the person's own terminal, and their own browser
             engine.resume(wait=False)   # the page answers while the workspace is fetched
@@ -94,6 +125,17 @@ def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show, keeper=None
             pass
         finally:
             server.stop()
+    command = getattr(engine.upkeep, 'restarting', None)
+    if not command:
+        return 0
+    os.environ[RESTART] = json.dumps({'token': server.token})
+    try:
+        execv(command[0], [*command, '--port', str(server.port)])
+    except OSError as failure:
+        os.environ.pop(RESTART, None)
+        print(json.dumps({'error': f'Training Studio could not open again by itself '
+                                   f'({failure}). Open it again.'}), file=out, flush=True)
+        return 2
     return 0
 
 

@@ -530,6 +530,22 @@ class RunnerTests(InstallerCase):
         self.assertEqual(self.run_installer('check')['runner']['serving'], os.getpid())
         self.assertNotEqual(first['version'], Path(before).name)
 
+    def test_the_runner_may_ask_for_a_new_version_beside_the_one_it_runs(self):
+        first = self.run_installer('install', '--yes')
+        (self.root / 'runner.pid').write_text(f'{os.getpid()}\n')   # this test is "serving"
+        running = self.root / 'versions' / first['version']
+        later = self.copy_of_the_skill('9.9.9')
+        second = self.run_installer('install', '--yes', '--while-open', '--source', str(later))
+        for refused in (['rollback'], ['uninstall'], ['install', '--link', '--source', str(later)]):
+            said = self.run_installer(*refused, '--yes', '--while-open', expect=1)['error']
+            self.assertIn('Training Studio is open on this computer', said)
+        self.assertEqual(os.readlink(self.root / 'current'),
+                         str(self.root / 'versions' / second['version']))
+        self.assertTrue((running / 'runner' / 'studio.py').is_file(),
+                        'the version the runner runs from is still whole')
+        self.assertEqual(install.read_state(self.root)['history'],
+                         [first['version'], second['version']])
+
     def test_a_runner_that_ended_without_saying_so_is_not_counted(self):
         self.run_installer('install', '--yes')
         (self.root / 'runner.pid').write_text(f'{self.a_stopped_process()}\n')

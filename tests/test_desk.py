@@ -6048,10 +6048,45 @@ class DeleteScreenTests(ScriptedPage, PageCase):
         self.assertEqual(self.posts(result), [])
 
 
+def row(name: str, installed, newest, state: str, says: str, **more) -> dict:
+    """One row of the versions, in `upkeep.report`'s shape."""
+    return {'name': name, 'installed': installed, 'newest': newest, 'pinned': None,
+            'next': None, 'target': None, 'beyond': None, 'reports': None,
+            'known_at': '2026-10-14T09:00:00Z', 'state': state, 'says': says, **more}
+
+
+SLIDES_MISSING = row('harness-slides', '0.13.1', '0.13.1', 'missing',
+                     'harness-slides is not installed for Codex, and everything is built '
+                     'except the slide deck without it. This Training Studio was made with '
+                     '0.13.1.', pinned='0.13.1', target='0.13.1')
+RESEARCH_CURRENT = row('harness-research', '0.8.0', '0.8.0', 'current',
+                       'harness-research 0.8.0 is what this Training Studio is made with.',
+                       pinned='0.8.0')
+
+
+def versions(own: dict | None = None, upgrade: dict | None = None, **changes) -> dict:
+    """The versions: by default Training Studio 0.19.0 is out, offered from the page, and
+    harness-slides is missing for Codex."""
+    own = own or row('training-studio', '0.18.0', '0.19.0', 'update',
+                     'Training Studio 0.19.0 is out, and this is 0.18.0.', target='0.19.0')
+    rows = [own, RESEARCH_CURRENT, SLIDES_MISSING]
+    wanted = [one for one in rows if one['state'] in ('update', 'missing')]
+    return {'rows': rows, 'at': '2026-10-14T09:00:00Z', 'checkout': False, 'command': None,
+            'key': ', '.join(f"{one['name']} {one['target']}" for one in wanted) or None,
+            'dismissed': False,
+            'upgrade': upgrade or {'offered': own['state'] == 'update', 'version':
+                                   own['target'], 'from': 'tag', 'state': None,
+                                   'since': None, 'says': None, 'restart': False},
+            **changes}
+
+
+CURRENT = row('training-studio', '0.18.0', '0.18.0', 'current',
+              'Training Studio 0.18.0 is the newest.')
+
+
 def kept(**changes) -> dict:
     """What the runner found of Training Studio and its skills, in `upkeep.report`'s shape:
     harness-slides missing for Codex, and a newer Training Studio out."""
-    command = 'cd /Users/pat/training-studio && git pull && sh installer/install.sh'
     found = {
         'checking': False, 'checked_at': '2026-10-14T09:00:00Z', 'version': '0.18.0',
         'mode': 'managed', 'problem': None,
@@ -6083,11 +6118,8 @@ def kept(**changes) -> dict:
         'guidance': {'commit': 'abcdef012345', 'at': '2026-10-14T08:00:00Z',
                      'says': 'New trainings follow the guidance from revision abcdef012345 of '
                              'main, the newest when guidance was last fetched.'},
-        'releases': {'on': True, 'at': '2026-10-14T09:00:00Z', 'problem': None, 'newer': [
-            {'name': 'training-studio', 'version': '0.19.0', 'have': '0.18.0',
-             'command': command, 'link': None,
-             'says': 'Training Studio 0.19.0 is out, and this is 0.18.0. Close Training '
-                     'Studio, then run this in a terminal:'}]}}
+        'releases': {'on': True, 'at': '2026-10-14T09:00:00Z', 'problem': None},
+        'versions': versions()}
     found.update(changes)
     return found
 
@@ -6104,14 +6136,16 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
 
     def test_home_says_what_needs_updating_and_asks_before_anything_is_brought(self):
         self.started()
-        running = kept(update={'offered': False, 'state': 'running',
+        found = kept(versions=versions(CURRENT))
+        running = kept(versions=versions(CURRENT),
+                       update={'offered': False, 'state': 'running',
                                'since': '2026-10-14T09:01:00Z',
                                'says': 'Bringing harness-slides. This can take a few minutes.'})
         down = 'A training on this computer is working now, and a step in hand keeps using ' \
                'the skill it started with. Pause it, or wait until it stops for you, then ' \
                'update.'
         answers = self.answers(**{
-            'GET /api/setup': [ok({**SET_UP, 'upkeep': kept()})] * 4
+            'GET /api/setup': [ok({**SET_UP, 'upkeep': found})] * 4
             + [ok({**SET_UP, 'upkeep': running})],
             'POST /api/companions': [refused(down), ok({'upkeep': running})]})
         result = self.run_page(answers, [
@@ -6124,15 +6158,15 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
         ])
         shots = result['snapshots']
         home = shots['home']
-        for said in ('Updates', 'harness-slides is not installed for Codex, and everything is '
-                     'built except the slide deck without it.',
-                     'Training Studio 0.19.0 is out, and this is 0.18.0. Close Training '
-                     'Studio, then run this in a terminal:',
-                     'cd /Users/pat/training-studio && git pull && sh installer/install.sh'):
+        for said in ('Updates', 'Newer versions are ready for this computer:',
+                     'harness-slides 0.13.1, which is missing',
+                     'harness-slides is not installed for Codex, and everything is '
+                     'built except the slide deck without it.'):
             self.assertIn(said, home['text'])
-        self.assertIn('Copy the command', home['buttons'])
         self.assertNotIn('harness-research 0.8.0', home['text'], 'what is fine is not said')
         self.assertNotIn('Update the skills', home['filled'])
+        self.assertNotIn('Upgrade', home['buttons'])
+        self.assertTrue(home['title'].startswith('(1) '), 'Home counts it')
 
         asked = shots['asked']
         for said in ('Update the companion skills?', 'What is brought',
@@ -6161,7 +6195,8 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
         self.started()
         fine = kept(companions=[], update={'offered': False, 'state': None, 'since': None,
                                            'says': None},
-                    releases={'on': True, 'at': None, 'problem': None, 'newer': []})
+                    releases={'on': True, 'at': None, 'problem': None},
+                    versions={**versions(CURRENT), 'key': None})
         result = self.run_page(self.answers(setup={**SET_UP, 'upkeep': fine}),
                                [{'snapshot': 'home'}])
         self.assertNotIn('Updates', result['snapshots']['home']['text'])
@@ -6170,8 +6205,7 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
         self.started()
         failed = 'The last look for newer releases did not reach harness-slides (Could not ' \
                  'resolve host: github.com). It is tried again in a day.'
-        found = kept(releases={'on': True, 'at': '2026-10-14T09:00:00Z', 'problem': failed,
-                               'newer': []},
+        found = kept(releases={'on': True, 'at': '2026-10-14T09:00:00Z', 'problem': failed},
                      update={'offered': False, 'state': 'failed', 'since': None,
                              'says': 'harness-slides 0.13.1 was not installed: its installer '
                                      'needs Node 20 or newer.'})
@@ -6198,7 +6232,7 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
         self.assertNotIn('Update the skills', result['snapshots']['status']['buttons'],
                          'not offered: the runner said so')
 
-        off = kept(releases={'on': False, 'at': None, 'problem': None, 'newer': []})
+        off = kept(releases={'on': False, 'at': None, 'problem': None})
         result = self.run_page(self.answers(setup={**SET_UP, 'upkeep': off}),
                                [{'click': 'Status'}, {'snapshot': 'status'}])
         shot = result['snapshots']['status']
@@ -6238,6 +6272,148 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
                       shots['off']['toasts'])
         self.assertIn('The disk is full. Nothing was changed.', shots['refused']['text'])
         self.assertIn('Off', shots['refused']['pressed'])
+        result = self.run_page(self.answers(setup=on), [
+            {'click': 'Settings'}, {'click': 'See the versions'}, {'snapshot': 'versions'}])
+        self.assertEqual(result['snapshots']['versions']['heading'], 'Status')
+
+    def upgrade(self, state: str, says: str, restart: bool = False) -> dict:
+        return {'offered': False, 'version': '0.19.0', 'from': 'tag', 'state': state,
+                'since': '2026-10-14T09:01:00Z', 'says': says, 'restart': restart}
+
+    def test_home_offers_the_upgrade_asks_first_and_restarts_when_told(self):
+        self.started()
+        installing = 'Fetching Training Studio 0.19.0, checking it and installing it beside ' \
+                     'this one. This can take a few minutes.'
+        installed = 'Training Studio 0.19.0 is installed, checked and in place. Restart to ' \
+                    'use it. This page comes back by itself.'
+        running = kept(versions=versions(upgrade=self.upgrade('running', installing)))
+        waiting = kept(versions=versions(upgrade=self.upgrade('restart', installed, True)))
+        restarting = kept(versions=versions(upgrade=self.upgrade(
+            'restarting', 'Restarting with Training Studio 0.19.0.')))
+        down = 'A training on this computer is working now. Pause it, or wait until it stops ' \
+               'for you, then upgrade.'
+        answers = self.answers(**{
+            'GET /api/capabilities': [RUNNER, refused('Not yet.'),
+                                      ok({'runner': True, 'version': '0.18.0'}),
+                                      ok({'runner': True, 'version': '0.19.0'})],
+            'GET /api/setup': [ok({**SET_UP, 'upkeep': kept()}),
+                              ok({**SET_UP, 'upkeep': waiting})],
+            'POST /api/upgrade': [refused(down), ok({'upkeep': running})],
+            'POST /api/restart': [ok({'upkeep': restarting})]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'},
+            {'click': 'Upgrade everything'}, {'snapshot': 'asked'},
+            {'click': 'Upgrade now'}, {'snapshot': 'refused'},
+            {'click': 'Upgrade now'}, {'snapshot': 'upgrading'},
+            {'poll': True}, {'snapshot': 'installed'},
+            {'click': 'Restart'}, {'snapshot': 'restarting'},
+            {'timer': 'comeBack'}, {'timer': 'comeBack'}, {'snapshot': 'old'},
+            {'timer': 'comeBack'},
+        ])
+        shots = result['snapshots']
+        home = shots['home']
+        for said in ('Newer versions are ready for this computer:',
+                     'training-studio 0.18.0 → 0.19.0', 'harness-slides 0.13.1, which is missing',
+                     'Training Studio 0.19.0 is out, and this is 0.18.0.'):
+            self.assertIn(said, home['text'])
+        self.assertIn('Dismiss', home['buttons'])
+        self.assertNotIn('Update the skills', home['buttons'], 'Training Studio comes first')
+
+        asked = shots['asked']['sheet']
+        for said in ('Upgrade Training Studio to 0.19.0?', 'What happens',
+                     'Training Studio 0.19.0 is fetched from its release in Training Studio’s '
+                     'own repository, and its own installer checks it.',
+                     'It is installed beside 0.18.0. The version you have now is kept beside '
+                     'it, so trainings carry on where they are, and nothing of yours is '
+                     'touched.',
+                     'Then you restart Training Studio to use it.', 'Then the skills',
+                     'After the restart, Home offers the companion skills Training Studio '
+                     '0.19.0 is made with, to bring with one more yes:',
+                     'harness-slides 0.13.1, which is missing'):
+            self.assertIn(said, asked)
+        self.assertEqual(shots['asked']['posts'], 0, 'nothing before the yes')
+        self.assertIn(down + ' Nothing was changed.', shots['refused']['sheet'])
+        self.assertEqual(shots['upgrading']['sheet'], '')
+        self.assertIn('Upgrading Training Studio. Home and the Status screen say how it goes.',
+                      shots['upgrading']['toasts'])
+        self.assertIn(installing, shots['upgrading']['text'])
+        self.assertNotIn('Upgrade everything', shots['upgrading']['buttons'])
+        self.assertIn(installed, shots['installed']['text'])
+        self.assertIn('Restart', shots['installed']['buttons'])
+        self.assertIn('Restarting Training Studio. This page comes back by itself.',
+                      shots['restarting']['toasts'])
+        self.assertEqual(self.posts(result), [('/api/upgrade', {'version': '0.19.0'}),
+                                              ('/api/upgrade', {'version': '0.19.0'}),
+                                              ('/api/restart', {})])
+        self.assertEqual(result['reloads'], 1, 'once the newer version answers, and not before')
+
+    def test_versions_can_be_dismissed_until_a_newer_one_is_out(self):
+        found = kept(versions=versions(CURRENT))
+        gone = kept(versions={**versions(CURRENT), 'dismissed': True})
+        answers = self.answers(**{
+            'GET /api/setup': [ok({**SET_UP, 'upkeep': found})] * 2
+            + [ok({**SET_UP, 'upkeep': gone})],
+            'POST /api/versions': [ok({'upkeep': gone})]})
+        result = self.run_page(answers, [{'snapshot': 'home'}, {'click': 'Dismiss'},
+                                         {'snapshot': 'dismissed'}])
+        shots = result['snapshots']
+        self.assertTrue(shots['home']['title'].startswith('(1) '))
+        self.assertEqual(self.posts(result), [('/api/versions',
+                                               {'dismiss': 'harness-slides 0.13.1'})])
+        self.assertNotIn('Updates', shots['dismissed']['text'])
+        self.assertFalse(shots['dismissed']['title'].startswith('('))
+        self.assertIn('Dismissed. Home says so again when a newer version is out.',
+                      shots['dismissed']['toasts'])
+
+    def test_a_newer_version_is_told_once_in_a_notification_and_opens_home(self):
+        fine = kept(versions={**versions(CURRENT), 'key': None})
+        answers = self.answers(**{'GET /api/setup': [ok({**SET_UP, 'upkeep': fine})] * 2
+                                  + [ok({**SET_UP, 'upkeep': kept()})]})
+        result = self.run_page(answers, [{'click': 'Settings'}, {'poll': True},
+                                         {'poll': True}, {'notification': 0},
+                                         {'snapshot': 'opened'}], notifications='granted')
+        self.assertEqual(result['notifications'], [{
+            'title': 'Training Studio can be upgraded', 'closed': True,
+            'body': 'training-studio 0.18.0 → 0.19.0; harness-slides 0.13.1, which is missing'}])
+        self.assertEqual(result['snapshots']['opened']['heading'], 'Home')
+
+    def test_status_shows_each_version_installed_newest_and_pinned(self):
+        slides = {**SLIDES_MISSING, 'next': '0.14.0', 'newest': '0.15.0',
+                  'beyond': 'harness-slides 0.15.0 is out, newer than Training Studio supports '
+                            'yet. It is offered once a Training Studio made with it is out.',
+                  'reports': 'The tool in use says it is 0.13.1, and that it can do: assets, '
+                             'sections.'}
+        found = versions()
+        found['rows'] = [found['rows'][0], RESEARCH_CURRENT, slides]
+        offline = kept(versions=found, releases={
+            'on': True, 'at': '2026-10-15T09:00:00Z', 'problem': 'The last look for newer '
+            'releases did not reach training-studio (Could not resolve host: github.com). It '
+            'is tried again in a day.'})
+        answers = self.answers(setup={**SET_UP, 'upkeep': offline})
+        result = self.run_page(answers, [{'click': 'Status'}, {'snapshot': 'status'}])
+        text = result['snapshots']['status']['text']
+        for said in ('Versions', 'Skill', 'Installed', 'Newest', 'Pinned to',
+                     'training-studio', 'Update available', 'harness-research', 'Up to date',
+                     '0.13.1, 0.14.0 with the newest Training Studio', 'Missing',
+                     slides['beyond'], slides['reports'],
+                     'Could not resolve host: github.com', 'What is shown was last known'):
+            self.assertIn(said, text)
+        self.assertIn('Upgrade everything', result['snapshots']['status']['buttons'])
+
+        checkout = versions(row('training-studio', '0.18.0', '0.19.0', 'update',
+                                'Training Studio 0.19.0 is out, and this is 0.18.0. This one '
+                                'runs from a copy of its repository, so it is upgraded there '
+                                'with git pull, not from here.', target='0.19.0'),
+                            checkout=True, command='cd /Users/pat/training-studio && git pull')
+        checkout['upgrade']['offered'] = False
+        result = self.run_page(self.answers(setup={**SET_UP, 'upkeep': kept(
+            versions=checkout)}), [{'click': 'Status'}, {'snapshot': 'status'}])
+        shot = result['snapshots']['status']
+        self.assertIn('cd /Users/pat/training-studio && git pull', shot['text'])
+        self.assertIn('upgraded there with git pull, not from here', shot['text'])
+        self.assertIn('Copy the command', shot['buttons'])
+        self.assertNotIn('Upgrade everything', shot['buttons'])
+        self.assertNotIn('Upgrade', shot['buttons'])
 
 
 MARKUP_TITLE = '<img src=x onerror=alert(1)>'

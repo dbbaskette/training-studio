@@ -174,7 +174,7 @@ runner/
   slides.py                 the harness-slides command line, called from Python
   brand.py                  a brand skill on this computer, called from Python
   team.py                   sharing a workspace: the driver, notifications, publishing, bringing in
-  upkeep.py                 on start: the installer's links put back, the companions, the releases
+  upkeep.py                 on start: links put back, the companions, the versions, the upgrade
   briefs/                   what a worker is told for each kind of job
 ```
 
@@ -218,6 +218,9 @@ No test starts a real agent, the real harness-research, the slides tool or a bra
 - **The runner asks the installer.** Each installed version also holds `installer/install.py` and the `companions.json` it was installed with, the same layout as a checkout's. `runner/upkeep.py` loads that file and uses its own `read_state`, `replace_link`, `companion_found`, `wanting` and `write_launchers`. It does not use a second copy of them.
   - Its Update runs `install.py companions --while-open` as a command of its own, under `companion.supervise`.
   - The online look is `git ls-remote --tags` through `hub.run`, at most once a day. Its result is kept in `updates.json` in the data folder.
+  - Its Upgrade fetches the newest revision by name with `sync_guidance`'s isolated git into a temporary folder and runs that revision's own `install.py install --while-open`. The pins of the newest version are read from the guidance cache, never fetched for themselves.
+  - Restart stops the runner; `studio serve` then runs the installer's `studio` command in its place, handing the page's key over once through `TRAINING_STUDIO_RESTART`.
+  - `tests/test_runner_page.py` upgrades an older install to a newer one through the page, from a local bare repository holding this checkout at a higher version.
   - `tests/test_runner_upkeep.py` installs into a temporary home against the installer tests' stand-in companions and bare repositories with tags.
   - `studio serve` and `studio status` are the only places an `Upkeep` is made, so no other test reads a real home or asks the network.
 

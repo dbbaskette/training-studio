@@ -43,9 +43,9 @@ class Server:
     """A stand-in for the runner's server that opens no port."""
     made = []
 
-    def __init__(self, engine, port: int = 0):
+    def __init__(self, engine, port: int = 0, token: str | None = None):
         self.engine, self.port, self.did = engine, port or 8765, []
-        self.token = 'the-key'
+        self.token = token or 'the-key'
         self.address = f'http://127.0.0.1:{self.port}/'
         self.url = f'{self.address}#token={self.token}'
         Server.made.append(self)
@@ -55,6 +55,9 @@ class Server:
 
     def stop(self) -> None:
         self.did.append('stop')
+
+    def leave(self) -> None:
+        self.did.append('leave')
 
 
 class Keeper:
@@ -147,6 +150,59 @@ class ServeTests(StudioCase):
                          'once it changes the skills, the computer is looked at again')
         self.engine.close()
         self.assertEqual(keeper.did, ['start', 'close'], 'closing ends an update in hand')
+
+    def test_after_an_upgrade_it_opens_the_newer_version_in_its_own_place(self):
+        ran, key = [], 'k' * 43
+
+        def restarted(server):
+            server.did.append('serve')
+            keeper = Keeper.made[-1]
+            self.assertEqual(keeper.leave, server.leave, 'the keeper can stop it')
+            keeper.restarting = ['/bin/sh', '/home/pat/studio', 'serve']
+
+        def execv(path, argv):
+            ran.append((path, argv, os.environ.get(studio.RESTART)))
+
+        with mock.patch.object(Server, 'serve', restarted), \
+                mock.patch.dict(os.environ, {}):
+            out = Terminal(False)
+            chosen = studio.parser().parse_args(['serve', '--port', '9001'])
+            self.assertEqual(studio.serve(chosen, make=lambda: self.engine, out=out,
+                                          opener=self.opened.append, execv=execv), 0)
+            self.assertEqual(ran, [('/bin/sh', ['/bin/sh', '/home/pat/studio', 'serve',
+                                                '--port', '9001'],
+                                    json.dumps({'token': 'the-key'}))])
+            self.assertEqual(Server.made[-1].did, ['serve', 'stop'],
+                             'stopped whole before the newer one is opened')
+            self.assertFalse((self.base / 'data' / 'runner.pid').exists())
+
+        # The newer one takes the key from the environment, once, and opens no page.
+        with mock.patch.dict(os.environ, {}):
+            self.opened.clear()
+            os.environ[studio.RESTART] = json.dumps({'token': key})
+            printed = self.serve(False, '--port', '9001')
+            self.assertNotIn(studio.RESTART, os.environ, 'nothing it starts is given the key')
+            self.assertEqual((Server.made[-1].token, printed['opened'], self.opened),
+                             (key, False, []))
+            os.environ[studio.RESTART] = json.dumps({'token': 'short'})
+            self.serve(False)
+            self.assertEqual(Server.made[-1].token, 'the-key', 'a key of the wrong shape')
+
+    def test_when_the_newer_version_cannot_be_opened_it_says_so(self):
+        def restarted(server):
+            Keeper.made[-1].restarting = ['/bin/sh', '/gone/studio', 'serve']
+
+        def execv(path, argv):
+            raise FileNotFoundError(2, 'No such file or directory')
+
+        with mock.patch.object(Server, 'serve', restarted), mock.patch.dict(os.environ, {}):
+            out = Terminal(True)
+            chosen = studio.parser().parse_args(['serve'])
+            self.assertEqual(studio.serve(chosen, make=lambda: self.engine, out=out,
+                                          execv=execv), 2)
+            self.assertNotIn(studio.RESTART, os.environ)
+        said = json.loads(out.getvalue().splitlines()[-1])['error']
+        self.assertIn('Training Studio could not open again by itself', said)
 
     def test_starting_picks_every_training_up_where_its_files_say_it_is(self):
         self.workers.then('research-plan', fails())

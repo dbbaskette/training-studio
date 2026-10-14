@@ -11,7 +11,8 @@
 // {notification: which one} for a click on a notification the page showed, {attach: the
 // label of a file picker, files: what is chosen in it}, {polls: how many} for the page's own
 // refresh asked for that many times at once, {hidden: true or false} for the tab put behind
-// another or brought back, and {hold: the name of a control} to follow that very node: each
+// another or brought back, {timer: a function's name} for the last timer the page set to
+// call it, and {hold: the name of a control} to follow that very node: each
 // snapshot then says, in `still`, which of those held are still on the page, and in `asked`
 // how many requests had been made by then. A box that is filled is left as a
 // person leaves it, unless the step says {stay: true}: then they are still typing in it. A chosen file is {name, text} or {name,
@@ -35,7 +36,7 @@ const vm = require('vm');
 const PAGE = path.join(__dirname, '..', 'skills', 'training-studio', 'scripts', 'desk');
 const NATIVE = ['BUTTON', 'A', 'SUMMARY', 'INPUT', 'TEXTAREA', 'SELECT'];
 const report = { errors: [], requests: [], notifications: [], strayListeners: [], paces: [],
-  released: [] };
+  released: [], reloads: 0 };
 // Each notification the page showed, to be clicked by a step.
 const shown = [];
 // The pictures the page holds in memory: the address it made up for each, and what it is of.
@@ -583,7 +584,8 @@ async function app(file) {
   const window = {
     document,
     Notification,
-    location: { hash: plan.hash === undefined ? '#token=the-test-key' : plan.hash },
+    location: { hash: plan.hash === undefined ? '#token=the-test-key' : plan.hash,
+      reload() { report.reloads += 1; } },
     history: {
       state: null,
       earlier: [],
@@ -670,6 +672,7 @@ async function app(file) {
       }
       if (step.see !== undefined) see(step.see);
       if (step.poll) await timers.filter((timer) => timer.name === 'refresh').pop()();
+      if (step.timer) await timers.filter((timer) => timer.name === step.timer).pop()();
       if (step.polls) {
         const refresh = timers.filter((timer) => timer.name === 'refresh').pop();
         await Promise.all(Array.from({ length: step.polls }, () => refresh()));

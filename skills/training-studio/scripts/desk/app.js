@@ -271,6 +271,15 @@ const UPDATE_WAITS = 'It takes a few minutes, while you carry on. The Status scr
 const LOOK_SAYS = 'Once a day, Training Studio asks where it and its two skills are kept which '
   + 'releases there are, and says on Home when a newer one is out. It only reads their names: '
   + 'nothing is downloaded or run, and nothing is installed without your yes.';
+const UPGRADE_KEEPS = 'The version you have now is kept beside it, so trainings carry on where '
+  + 'they are, and nothing of yours is touched.';
+const UPGRADE_WAITS = 'It takes a minute or two, while you carry on. Nothing is changed while a '
+  + 'training is working.';
+// How each row of the versions is said: its bead and its words.
+const VERSION_STATES = { current: ['done', 'Up to date'], update: ['review', 'Update available'],
+  missing: ['late', 'Missing'], unknown: ['none', 'Not known'] };
+const COME_BACK_TRIES = 90;   // one a second, while the runner opens its newer version
+const SETUP_HIDDEN = 600000;  // how often a tab nobody looks at reads what was found of versions
 const INDEX = 'README.md';
 const HALTED = 'This training is not running, so nothing more happens until you resume it or '
   + 'try again.';
@@ -304,6 +313,8 @@ const view = {
   leaving: null,
   // Looking online for newer releases, while it is switched, and why switching it was refused.
   turningLook: false, lookRefused: '',
+  // The versions Home last told of, when set-up was last read, and the restart in hand.
+  versionsTold: undefined, setupAt: 0, restarting: false, comingBack: null,
   fetching: false, fetched: null, notifying: false, unnotified: '',
   // Why moving where a training is decided was refused, by training, and why bringing a stage
   // back was, by stage: each is said until it is tried again or the screen is left. And what
@@ -1048,14 +1059,16 @@ function focusKey(key) {
 }
 
 // The tab's title leads with how many things need the person, so it shows from another tab.
+// Versions Home tells of count as one more thing.
 function setTitle(name) {
   if (name !== undefined) view.named = name;
-  const waiting = view.needs ? '(' + view.needs + ') ' : '';
+  const needs = view.needs + (versionsNotice() ? 1 : 0);
+  const waiting = needs ? '(' + needs + ') ' : '';
   document.title = waiting + (view.named ? view.named + ' · ' : '') + 'Training Studio';
   const badge = byId('needs-count');
-  badge.replaceChildren(String(view.needs), make('span', 'offscreen',
-    view.needs === 1 ? ' thing needs you' : ' things need you'));
-  badge.hidden = !view.needs;
+  badge.replaceChildren(String(needs), make('span', 'offscreen',
+    needs === 1 ? ' thing needs you' : ' things need you'));
+  badge.hidden = !needs;
 }
 
 // Everything a list screen is drawn from. When none of it has changed, nothing is redrawn.
@@ -1234,7 +1247,8 @@ function afterSheet() {
 function drawSheet() {
   const holder = byId('sheet');
   const shown = view.after || (view.sheet && (view.gate || view.deciding || outlined()
-    || TEAM_SHEETS.includes(view.sheet) || ['delete', 'companions'].includes(view.sheet)));
+    || TEAM_SHEETS.includes(view.sheet)
+    || ['delete', 'companions', 'upgrade'].includes(view.sheet)));
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
@@ -1249,6 +1263,7 @@ function drawSheet() {
   if (view.after) body = afterSheet();
   else if (view.sheet === 'delete') body = deleteSheet();
   else if (view.sheet === 'companions') body = updateSheet();
+  else if (view.sheet === 'upgrade') body = upgradeSheet();
   else if (TEAM_SHEETS.includes(view.sheet)) body = teamSheet(view.sheet);
   else if (FORMS[view.sheet]) body = noteSheet(view.sheet);
   else body = confirmSheet(view.sheet);
@@ -1683,6 +1698,7 @@ function drawStatus(fresh) {
     ['teammates', [Boolean(view.runner), Boolean(view.status), theirs, teamSpace(),
       view.fetching, view.fetched], teammatesCard],
     trainingsTable(),
+    ['versions', [upkeepOf(), view.restarting], versionsCard],
     ['skills', [upkeepOf()], skillsCard],
     ['computer', [view.computer, Boolean(view.runner)], computerCard]], fresh);
   // With the runner, every run and who runs what is asked for as the screen opens.
@@ -5909,37 +5925,277 @@ function updateBar(found) {
     'update-skills'), 'update-skills'));
 }
 
-// A newer release, with the exact command that installs it, or where it is.
-function newerParts(one) {
-  const parts = [add(make('p', ''), state('review', one.says))];
-  if (one.command) {
-    parts.push(make('p', 'sentence', one.command), add(make('div', 'bar'),
-      copyButton('Copy the command', 'Command copied', one.command, 'copy-update ' + one.name)));
-  } else if (one.link && WEB_LINK.test(String(one.link))) {
-    const link = make('a', 'link', one.link);
-    link.href = one.link;
-    link.rel = 'noopener noreferrer';
-    link.target = '_blank';
-    link.setAttribute('aria-label', 'Where ' + one.name + ' is kept, in a new tab');
-    parts.push(add(make('p', 'quiet'), link));
-  } else if (one.link) {
-    parts.push(make('p', 'quiet', one.link));
+// --- versions: what is installed, the newest, and upgrading Training Studio -----------------
+// The runner works out every row; the page only says it. Training Studio is upgraded only
+// once the person says yes in the sheet, and restarted only when they press Restart.
+
+function versionsOf() {
+  const found = upkeepOf();
+  return found && found.versions ? found.versions : null;
+}
+
+function upgradeOf(found) {
+  return (found && found.upgrade) || {};
+}
+
+// Whether Home tells of the versions: an upgrade in hand or waiting for a restart, or
+// something newer or missing, until it is dismissed.
+function versionsNotice() {
+  const found = versionsOf();
+  if (!found) return false;
+  if (['running', 'restart', 'restarting', 'failed'].includes(upgradeOf(found).state)) return true;
+  return Boolean(found.key && !found.dismissed);
+}
+
+function wantedRows(found) {
+  return list(found && found.rows).filter((row) => ['update', 'missing'].includes(row.state));
+}
+
+// One row's versions in a few words: from what is here to what it would be.
+function versionStep(row) {
+  if (row.state === 'missing') return row.name + ' ' + row.target + ', which is missing';
+  return row.name + ' ' + row.installed + ' → ' + row.target;
+}
+
+// What the upgrade in hand is doing, or how it went, with Restart once it is installed.
+function upgradeParts(found) {
+  const upgrade = upgradeOf(found);
+  if (!upgrade.state) return [];
+  const shape = { running: 'current', restart: 'done', restarting: 'current' }[upgrade.state]
+    || 'late';
+  const parts = [add(make('p', ''), state(shape, upgrade.says || ''))];
+  if (upgrade.state === 'restart' && upgrade.restart) {
+    const go = capsule('Restart', 'quiet', () => restartNow(go), 'restart');
+    parts.push(add(make('div', 'bar'), go));
   }
   return parts;
 }
 
-// Home: said only when there is something to do or to know.
+// The ways on from the versions: upgrade, the companions' own update, or the command a
+// checkout is upgraded with.
+function versionsBar(found, dismiss) {
+  const upkeep = upkeepOf();
+  const upgrade = upgradeOf(found);
+  const buttons = [];
+  if (upgrade.offered) {
+    const companions = wantedRows(found).some((row) => row.name !== 'training-studio');
+    buttons.push(capsule(companions ? 'Upgrade everything' : 'Upgrade', '',
+      openSheet('upgrade', 'upgrade'), 'upgrade'));
+  } else if (!upgrade.state && upkeep && upkeep.update && upkeep.update.offered) {
+    buttons.push(capsule('Update the skills', '', openSheet('companions', 'update-skills'),
+      'update-skills'));
+  }
+  if (dismiss && found.key && !upgrade.state) {
+    buttons.push(capsule('Dismiss', 'quiet', () => dismissVersions(found.key), 'dismiss'));
+  }
+  const parts = buttons.length ? [add(make('div', 'bar'), ...buttons)] : [];
+  if (found.checkout && found.command && wantedRows(found).length) {
+    parts.unshift(make('p', 'sentence', found.command));
+    parts.push(add(make('div', 'bar'), copyButton('Copy the command', 'Command copied',
+      found.command, 'copy-update')));
+  }
+  return parts;
+}
+
+// Home: said only when something is newer or missing, or an upgrade is in hand.
 function updatesCard() {
-  const found = upkeepOf();
-  if (!found) return null;
-  const wanted = wantedCompanions(found);
-  const newer = list(found.releases && found.releases.newer);
-  if (!wanted.length && !newer.length && !updating(found)) return null;
+  const upkeep = upkeepOf();
+  if (!upkeep) return null;
+  const found = versionsOf();
+  if (!versionsNotice() && !updating(upkeep)) return null;
   const node = card('Updates');
-  for (const one of wanted) add(node, add(make('p', ''), state('late', one.says)));
-  add(node, updating(found) ? updateLine(found) : updateBar(found));
-  for (const one of newer) add(node, ...newerParts(one));
+  if (found && versionsNotice()) {
+    const wanted = wantedRows(found);
+    if (wanted.length && !['restart', 'restarting'].includes(upgradeOf(found).state)) {
+      add(node, make('p', '', 'Newer versions are ready for this computer:'),
+        bullets(wanted.map(versionStep)));
+      for (const row of wanted) add(node, add(make('p', ''), state('review', row.says)));
+    }
+    add(node, ...upgradeParts(found));
+  }
+  if (updating(upkeep)) add(node, updateLine(upkeep));
+  else if (found && versionsNotice()) add(node, ...versionsBar(found, true));
   return node;
+}
+
+// Status: a row for each of the three, with everything that was said of it.
+function versionsCard() {
+  const found = versionsOf();
+  if (!found) return null;
+  const node = card('Versions');
+  node.id = 'versions';
+  const table = make('table', 'table');
+  const head = make('tr');
+  for (const title of ['Skill', 'Installed', 'Newest', 'Pinned to', 'State']) {
+    const top = make('th', '', title);
+    top.scope = 'col';
+    head.append(top);
+  }
+  const body = make('tbody');
+  for (const row of list(found.rows)) {
+    const name = make('th', '', row.name);
+    name.scope = 'row';
+    const [shape, words] = VERSION_STATES[row.state] || VERSION_STATES.unknown;
+    const pinned = row.pinned ? row.pinned + (row.next && row.next !== row.pinned
+      ? ', ' + row.next + ' with the newest Training Studio' : '') : '—';
+    body.append(add(make('tr'), name, cell('Installed', row.installed || 'not installed'),
+      cell('Newest', row.newest || 'not known'), cell('Pinned to', pinned),
+      cell('State', state(shape, words))));
+  }
+  add(node, add(table, add(make('thead'), head), body));
+  const facts = make('ul', 'facts');
+  for (const row of list(found.rows)) {
+    for (const said of [row.says, row.beyond, row.reports]) {
+      if (said) facts.append(add(make('li', 'fact'), bead(said === row.says
+        ? (VERSION_STATES[row.state] || VERSION_STATES.unknown)[0] : 'none'),
+      make('span', '', said)));
+    }
+  }
+  add(node, facts, ...upgradeParts(found), ...versionsBar(found, false));
+  const releases = (upkeepOf() || {}).releases || {};
+  const known = (list(found.rows)[0] || {}).known_at;
+  add(node, releasesLine(upkeepOf()));
+  if (releases.problem && known && !Number.isNaN(Date.parse(known))) {
+    add(node, add(make('p', 'quiet'), 'What is shown was last known ', when(known), '.'));
+  }
+  return node;
+}
+
+// The sheet that asks before Training Studio is upgraded: what, from where, and what next.
+function upgradeSheet() {
+  const found = versionsOf();
+  const upgrade = upgradeOf(found);
+  const cancel = capsule('Cancel', 'quiet', closeSheet, 'cancel');
+  if (!upgrade.offered) {
+    return [sheetTitle('Upgrade Training Studio?'), make('p', '', upgrade.says
+      || 'There is nothing to upgrade now.'), add(make('div', 'bar'), cancel)];
+  }
+  const own = list(found.rows)[0] || {};
+  const companions = wantedRows(found).filter((row) => row.name !== 'training-studio');
+  const problem = problemLine();
+  const confirm = capsule('Upgrade now', 'filled', () => settleUpgrade(problem, confirm),
+    'send');
+  const parts = [sheetTitle('Upgrade Training Studio to ' + upgrade.version + '?'),
+    make('h3', 'sheet-part', 'What happens'),
+    bullets(['Training Studio ' + upgrade.version + ' is fetched from '
+      + (upgrade.from === 'tag' ? 'its release' : 'the newest version on ' + upgrade.from)
+      + ' in Training Studio’s own repository, and its own installer checks it.',
+    'It is installed beside ' + (own.installed || 'this version') + '. ' + UPGRADE_KEEPS,
+    'Then you restart Training Studio to use it. This page comes back by itself.'])];
+  if (companions.length) {
+    parts.push(make('h3', 'sheet-part', 'Then the skills'),
+      make('p', '', 'After the restart, Home offers the companion skills Training Studio '
+        + upgrade.version + ' is made with, to bring with one more yes:'),
+      bullets(companions.map(versionStep)));
+  }
+  return [...parts, make('p', 'quiet', UPGRADE_WAITS), problem,
+    add(make('div', 'bar'), confirm, cancel)];
+}
+
+async function settleUpgrade(problem, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  view.busy = true;
+  pressed.disabled = true;
+  let answered;
+  try {
+    answered = await send('upgrade', { version: upgradeOf(versionsOf()).version });
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    say(problem, failure.message + ' Nothing was changed.');
+    pressed.disabled = false;
+    pressed.focus();
+    return;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  if (view.setup && answered) view.setup = { ...view.setup, upkeep: answered.upkeep };
+  closeSheet();
+  toast('Upgrading Training Studio. Home and the Status screen say how it goes.');
+  draw(false);
+}
+
+async function dismissVersions(key) {
+  try {
+    const answered = await send('versions', { dismiss: key });
+    if (view.setup && answered) view.setup = { ...view.setup, upkeep: answered.upkeep };
+  } catch (failure) {
+    toast(failure.message);
+    return;
+  }
+  toast('Dismissed. Home says so again when a newer version is out.');
+  setTitle();
+  draw(false);
+}
+
+// Restart: the runner stops and opens its newer version, on the same address and with the
+// same key, so this page waits for it and then loads the newer page.
+async function restartNow(pressed) {
+  if (view.restarting) return;
+  const version = upgradeOf(versionsOf()).version;
+  pressed.disabled = true;
+  let answered;
+  try {
+    answered = await send('restart', {});
+  } catch (failure) {
+    pressed.disabled = false;
+    toast(failure.message);
+    return;
+  }
+  if (view.setup && answered) view.setup = { ...view.setup, upkeep: answered.upkeep };
+  view.restarting = true;
+  view.comingBack = { version, tries: 0 };
+  toast('Restarting Training Studio. This page comes back by itself.');
+  draw(false);
+  window.setTimeout(comeBack, 1000);
+}
+
+// Asked once a second: whether the newer version answers yet. Once it does, its page is
+// loaded. If it never does, the person is told to open it again.
+async function comeBack() {
+  const waiting = view.comingBack;
+  if (!waiting) return;
+  try {
+    const found = await ask('capabilities');
+    if (found && found.version === waiting.version) {
+      window.location.reload();
+      return;
+    }
+  } catch (failure) {
+    // Not there yet, while it stops and starts again.
+  }
+  waiting.tries += 1;
+  if (waiting.tries < COME_BACK_TRIES) {
+    window.setTimeout(comeBack, 1000);
+    return;
+  }
+  view.restarting = false;
+  view.comingBack = null;
+  notify('Training Studio did not come back by itself. Open it again with its command or '
+    + 'its launcher.');
+}
+
+// What set-up says, and a browser notification once for each newer version Home tells of.
+function tookSetup(found) {
+  view.setup = found;
+  view.setupAt = Date.now();
+  const versions = versionsOf();
+  const key = versions && versions.key && !versions.dismissed ? versions.key : null;
+  const before = view.versionsTold;
+  view.versionsTold = key;
+  if (before === undefined || !key || key === before || alerts() !== 'granted') return;
+  try {
+    const note = new Notification('Training Studio can be upgraded',
+      { body: wantedRows(versions).map(versionStep).join('; '), tag: 'versions' });
+    note.onclick = () => {
+      window.focus();
+      note.close();
+      show('home');
+    };
+  } catch (failure) {
+    // A browser that will not show one still has the count in the tab title.
+  }
 }
 
 function linkWords(link) {
@@ -5989,9 +6245,7 @@ function skillsCard() {
       add(node, add(make('p', ''), state('done', said)));
     }
   }
-  add(node, updateLine(found), updating(found) ? null : updateBar(found), releasesLine(found));
-  for (const one of list(found.releases && found.releases.newer)) add(node, ...newerParts(one));
-  return node;
+  return add(node, updateLine(found), updating(found) ? null : updateBar(found));
 }
 
 // The sheet that asks before the companions are brought: what, from where, and how.
@@ -6066,7 +6320,8 @@ function lookCard() {
         'look')));
   const problem = alertLine('look-problem');
   say(problem, view.lookRefused);
-  return add(node, problem);
+  return add(node, problem, add(make('div', 'bar'),
+    capsule('See the versions', 'quiet', () => show('status'), 'see-versions')));
 }
 
 // --- with a team: what is published ------------------------------------------------------
@@ -6276,10 +6531,17 @@ async function refresh() {
 // Read what has changed and draw it. A tab nobody is looking at reads only the list, for the
 // count in its title and what to tell; the rest is read when it is looked at again.
 async function catchUp() {
+  // While the runner opens its newer version, it is not there to be asked.
+  if (view.restarting) return;
   try {
     if (view.runner === undefined) await discover();
     if (document.hidden && view.listing) {
-      took(await ask('trainings'));
+      // Set-up is read now and then too, for a newer version to be told of.
+      const setup = Boolean(view.runner) && Date.now() - view.setupAt > SETUP_HIDDEN;
+      const [found, listing] = await Promise.all([setup ? ask('setup') : null,
+        ask('trainings')]);
+      if (setup) tookSetup(found);
+      took(listing);
       notify('');
       setTitle();
       return;
@@ -6287,7 +6549,7 @@ async function catchUp() {
     // Set-up is read where it is shown, and once to begin with.
     const setup = Boolean(view.runner) && (!view.setup || SET_UP_SHOWN.includes(view.screen));
     const [found, listing] = await Promise.all([setup ? ask('setup') : null, ask('trainings')]);
-    if (setup) view.setup = found;
+    if (setup) tookSetup(found);
     took(listing);
     await Promise.all([readAsks(),
       view.computer === undefined
