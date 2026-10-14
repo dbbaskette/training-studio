@@ -30,13 +30,14 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
 from workspace import WorkspaceError
+
+from runner import companion
 
 VARIABLE = 'HARNESS_RESEARCH_RUNTIME'
 SCRIPT = Path('scripts') / 'harness-research.mjs'
@@ -66,28 +67,14 @@ class Refused(WorkspaceError):
 def locations() -> list[Path]:
     """Where an installed harness-research may be. The override, when set, is the only
     place looked."""
-    override = os.environ.get(VARIABLE)
-    if override:
-        return [Path(override).expanduser()]
-    user = Path.home()
-    return [user / 'Library' / 'Application Support' / 'Harness Research' / 'current',
-            user / '.local' / 'share' / 'harness-research' / 'current',
-            user / '.claude' / 'skills' / 'harness-research',
-            user / '.agents' / 'skills' / 'harness-research',
-            user / '.cursor' / 'skills' / 'harness-research']
+    return companion.locations(VARIABLE, 'harness-research', 'Harness Research')
 
 
 def find_runtime() -> Path:
     """The installed harness-research, with links followed so one version is used
     throughout. Refuses when there is none."""
-    for place in locations():
-        if (place / SCRIPT).is_file():
-            return place.resolve()
-    if os.environ.get(VARIABLE):
-        raise WorkspaceError(f'{VARIABLE} names {os.environ[VARIABLE]}, which does not hold '
-                             'harness-research. Point it at the installed skill, or unset it.')
-    raise WorkspaceError('The harness-research skill is not installed on this computer, so '
-                         'research cannot run. Install it, then try again.')
+    return companion.find_runtime(locations(), SCRIPT, VARIABLE, 'harness-research',
+                                  'research cannot run')
 
 
 def unlock(project: Path) -> bool:
@@ -101,14 +88,7 @@ def unlock(project: Path) -> bool:
 
 def run_command(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
     """Run the command line once: (exit code, standard output, standard error)."""
-    try:
-        done = subprocess.run(command, cwd=cwd, capture_output=True, timeout=TIMEOUT,
-                              stdin=subprocess.DEVNULL, encoding='utf-8', errors='replace')
-    except subprocess.TimeoutExpired:
-        raise WorkspaceError(f'harness-research did not answer in {TIMEOUT} seconds.')
-    except OSError as failure:
-        raise WorkspaceError(f'harness-research could not be started ({failure}).')
-    return done.returncode, done.stdout, done.stderr
+    return companion.run_command(command, cwd, TIMEOUT, 'harness-research')
 
 
 class Research:

@@ -102,7 +102,7 @@ Your documents stay on this computer. Passages quoted from them appear in the re
 A training's run shows every step, how long each took and what it cost, and what each agent at work is doing now. From there you can:
 
 - **Pause.** The step in hand finishes; nothing new starts until you resume.
-- **Stop.** The agents at work are ended. Everything already kept stays. Resume carries on from there.
+- **Stop.** The agents at work are ended, and so is anything a step is running, such as a slide preview. Nothing they started is left running. Everything already kept stays. Resume carries on from there.
 - **Try again**, when a step failed. A step is tried up to three times, with the reason for the last failure given to the next try. Then the training stops and says what went wrong and what was kept.
 - **Answer a question.** An agent that needs something only you know can ask. The run waits for your answer.
 

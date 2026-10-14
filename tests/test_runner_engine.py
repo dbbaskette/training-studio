@@ -14,11 +14,12 @@ from pathlib import Path
 from unittest import mock
 
 import helpers  # noqa: F401
-from runner_support import FORM, FOUR, QUESTIONS, StudioCase, asks, fails
+from runner_support import (FORM, FOUR, LEAVES, QUESTIONS, StudioCase, asks, fails,
+                            still_running, written)
 
 import home
 import workspace
-from runner import agents, gitstate, pipeline, research, settings, worker_tools
+from runner import agents, companion, gitstate, pipeline, research, settings, worker_tools
 from runner.agents import Outcome
 from runner.engine import ACTIONS
 from workspace import WorkspaceError
@@ -802,6 +803,45 @@ class HaltTests(StudioCase):
         self.assertEqual(self.state(root), 'paused')
         self.assertEqual(self.engine.act(root, 'stop')['state'], 'stopped')
         self.assertEqual(self.engine.act(root, 'resume')['state'], 'waiting')
+
+    def test_stopping_ends_a_command_a_step_is_running_and_everything_it_started(self):
+        # A step that runs the slides tool or a brand skill runs it as this worker does.
+        pids, said = self.base / 'pids', []
+
+        def runs_a_command(tools, job):
+            companion.run_command(['sh', '-c', LEAVES, 'sh', str(pids)], None, 60, 'A tool')
+
+        def stops():
+            written(pids)
+            said.append(self.engine.act(self.space.training('rolling-restarts'), 'stop'))
+
+        self.workers.then('research-plan', runs_a_command)
+        stopping = threading.Thread(target=stops)
+        stopping.start()
+        started = time.monotonic()
+        root = self.start()
+        stopping.join(10)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(still_running(written(pids)), [])
+        view = self.view(root)
+        self.assertEqual((said[0]['state'], view['state'], view['sentence'], view['problem']),
+                         ('stopped', 'stopped', 'Stopped. Everything kept so far is still '
+                          'here.', None))
+        self.assertEqual(self.engine.act(root, 'resume')['state'], 'waiting')
+        self.assertEqual(workspace.status(root)['gate'], 'research-plan')
+
+    def test_a_stop_reaches_the_questions_researched_at_once(self):
+        seen = []
+
+        def looks(tools, job):
+            seen.append(companion.STOP.get())
+            self.workers.question(tools, job)
+
+        self.engine = self.make(at_once=2)
+        root = self.start()
+        self.workers.then('question', *[looks] * len(FOUR['items']))
+        self.decide(root, 'research-plan')
+        self.assertEqual(seen, [self.engine._run(root).stop] * len(FOUR['items']))
 
     def test_a_run_stopped_on_a_problem_can_be_resumed_as_well_as_tried_again(self):
         with mock.patch.object(research, 'locations', return_value=[self.base / 'nowhere']):
