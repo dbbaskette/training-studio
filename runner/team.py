@@ -15,6 +15,7 @@ What a caller needs to know
 
     team.publish(space, ident, title, ready, by)   # the next revision, as a tag; never moved
     team.published(space)                    # each training's latest revision
+    team.revisions(space, ident)             # how many of one training's there are
     team.taken(folder)                       # who took a training from this computer
     team.fetch_tags(space); team.send_tags(space)  # with the shared repository
 
@@ -247,6 +248,11 @@ def published(space: gitstate.Workspace) -> list[dict]:
                     'current': entry['tag'] in same}
                    for entry in latest.values()),
                   key=lambda entry: str(entry['at']), reverse=True)
+
+
+def revisions(space: gitstate.Workspace, ident: str) -> int:
+    """How many revisions of one training this copy knows were published."""
+    return sum(entry['id'] == ident for entry in _tags(space))
 
 
 def _unchanged(space: gitstate.Workspace, entries: list[dict]) -> set[str]:

@@ -109,6 +109,17 @@ A training's run shows every step, how long each took and what it cost, and what
 - **Try again**, when a step failed. A step is tried up to three times, with the reason for the last failure given to the next try. Then the training stops and says what went wrong and what was kept.
 - **Answer a question.** An agent that needs something only you know can ask. The run waits for your answer.
 
+### Deleting a training
+
+"Delete this training", at the foot of its run and of its own screen, removes a training you no longer want, whatever state it is in. A confirmation says what goes and what stays, and nothing happens until you press the button that names the training.
+
+- **A training that is working is stopped first.** Its agents and anything a step is running are ended, as Stop does, and nothing more of it is kept. One waiting for its turn leaves the queue.
+- **What goes:** its folder in the workspace, removed in one commit that says who deleted it and when, and shared as any change is; and what only this computer kept for it: the documents you supplied, the pages saved for its research, its previews and its run record. It goes from Home, Trainings and Status at once.
+- **What stays:** its published revisions, which stay in the workspace's history and are no longer listed; and anything in your Google Drive, which the runner never deletes. The confirmation lists those files with their addresses, so that you can.
+- **It cannot be undone from the page.** Every commit stays, so someone who knows git can bring it back from the history.
+
+A training you started in a conversation is never deleted by the runner, and is not offered.
+
 A training that has spent what it may stops and asks before it spends more. Claude Code says what each step cost. Codex reports tokens and not dollars, so the money limit cannot stop it: the page says so, and the limit on time still applies.
 
 ## With a team
@@ -124,6 +135,8 @@ A computer knows only what was last shared about a teammate's training. So the p
 **Taking over.** "Take it over" on a teammate's training makes it yours. The page first says whose it is, since when, and that their runner will stop working on it. Their runner learns of it the next time it shares or looks for teammates' work. It stops that training and says who took it and when. Anything it had made and not yet shared is kept on that computer, out of the way, and can be brought back with git; the page says where. If someone else took the training since you last looked, the page says who has it now and asks again.
 
 **Handing over.** "Hand over" lets go of a training, so that anyone on your team may take it. Until someone does, nothing more happens to it. A finished training is handed over by itself: nobody runs it. It can be read and published from any computer, and "Take it" makes it yours again when something in it should change.
+
+**Deleting.** Only the computer that runs a training can delete it, and anyone can delete a finished one, since nobody runs it. A teammate's training must be taken over first. With sharing after each decision, your team sees it gone at once; with sharing only when you ask, the next time you press "Share now". A teammate's runner drops it from every list the next time it looks, and removes what that computer kept for it. If a teammate took the training before your deletion was shared, their version stands and nothing of theirs is deleted: the page says so, and the training is listed under "Run by your teammates".
 
 A runner that is closed still holds its trainings. Nothing passes to someone else on its own: a person takes over when they mean to.
 
@@ -145,7 +158,7 @@ A training that is not ready can still be published, and the revision says that 
 
 "Published", on the Trainings screen, lists each training at its latest revision: when, by whom, whether it was ready, and its index to read. Where a training has changed on this computer since, the list says so, because the index it opens is the training as it stands now.
 
-Published while your team's repository cannot be reached, a revision is kept on this computer and goes with the next share.
+Published while your team's repository cannot be reached, a revision is kept on this computer and goes with the next share. A training that is deleted keeps its revisions in the workspace's history, and is no longer listed.
 
 This is separate from the older [team hub](team-hub.md), which is used from a conversation and is unchanged.
 
@@ -161,6 +174,7 @@ The original folder is left exactly as it was, with nothing deleted. From then o
 - **An agent cannot touch your files.** Each agent works in an empty folder outside your trainings, with no shell and no file tools. It can read what the runner gives it, search the web when the job is research, and hand back a draft or a finding. The runner checks what is handed back before anything is kept.
 - **Quotes are real.** The runner fetches each source itself and keeps a copy. A finding is kept only when every quote in it is found, word for word, in the saved page.
 - **Everything is recorded.** Each step, decision and request is a commit in the workspace, saying what happened. The pages a finding quotes stay on your computer; they are not shared.
+- **Nothing is deleted unless you ask.** Deleting a training is confirmed first, removes only that training and what this computer kept for it, and never touches a folder it does not run or anything in your Google Drive.
 
 ## Good to know
 

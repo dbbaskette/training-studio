@@ -78,6 +78,38 @@ It is refused, with a sentence, for a training that is already in the workspace,
 - Bringing a training in: the copy, the original untouched, each refusal, and the run carrying on at a waiting gate.
 - The page's new parts through their own controls.
 
+## 9. Deleting a training
+
+Added after the milestone, for issue #42. Deleting changes no artifact's status, approval, inputs or readiness, so the core's state-transition matrix (A7 of the plan) is unchanged; what Delete does to a runner training is specified here, and each row below is a test in `tests/test_runner_delete.py` or, for the page, `DeleteScreenTests` in `tests/test_desk.py`.
+
+- **Who may.** The computer that runs a training, in any state; anyone, for a finished training nobody runs. Anything else is refused with a sentence and nothing is changed: a teammate's training is taken over first, and a handed-over one that is not finished is taken first. The page sends the title it showed, and another title is refused.
+- **Stopped first.** A run that works is stopped as Stop and taking over stop it: what the step in hand would write is not kept, and every agent and command it started is ended. One waiting for its turn leaves the queue. The deletion waits until no thread, step or slot of it is left; after 30 seconds the training is left stopped and nothing is deleted.
+- **What goes.** The folder is taken out of the branch in one commit, `<title>: <name> deletes this training, on <day> at <time> UTC`, shared as any change is. Then what only this computer kept for it: its ignored files (supplied documents, saved pages, a deck's builds and pictures), its job folders, its notes in the data folder and its place in the registry.
+- **What stays.** Published revisions, as tags; the Published list no longer shows a training that is gone. Files in Google Drive, which are listed in the confirmation with their addresses. What `set_aside` kept, which is never deleted.
+- **A teammate at the same moment.** A deletion not yet shared, of a training a teammate takes meanwhile, is set aside when that is learned, like any unshared change of a training taken from this computer; their version comes back whole, and the training's `notice`, or the refusal of Delete itself when it shares at once, says so.
+- **A teammate learns of it.** A fetch that brings in a deletion lets the training go on that computer too: its leftovers, its notes and its place in the lists. A teammate with unshared changes to it gets "changed on two computers" instead, and nothing is removed.
+- **A conversation's training** is never deleted by the runner, and the page offers nothing for one.
+
+| From | Delete does | Test |
+| --- | --- | --- |
+| Paused, this computer's | Deleted, with what only this computer kept | `DeleteTests.test_a_paused_training_is_deleted_with_everything_this_computer_kept_for_it` |
+| Stopped, this computer's | Deleted | `DeleteTests.test_a_stopped_training_is_deleted` |
+| Waiting at a gate, this computer's | Deleted | `DeleteTests.test_a_training_waiting_at_a_gate_is_deleted` |
+| Working, a command in hand | Stopped, every process ended, then deleted; the step keeps nothing | `DeleteTests.test_deleting_ends_a_command_its_step_is_running_and_everything_it_started`, `LiveDeleteTests.test_a_working_training_is_stopped_first_and_deleted_once_nothing_of_it_runs` |
+| Waiting its turn | Leaves the queue at once, then deleted | `LiveDeleteTests.test_a_training_waiting_its_turn_leaves_the_queue_at_once` |
+| Working, and not ended in time | Left stopped; nothing deleted | `LiveDeleteTests.test_a_run_that_does_not_end_in_time_is_left_stopped_and_nothing_is_deleted` |
+| Finished and published | Deleted; revisions and Drive files stay | `DeleteTests.test_a_finished_published_training_is_deleted_and_its_revisions_and_drive_files_stay` |
+| Finished, nobody's, from another computer | Deleted | `TeamDeleteTests.test_a_finished_training_is_deleted_from_any_computer` |
+| A teammate's | Refused; nothing changed | `TeamDeleteTests.test_a_teammates_training_cannot_be_deleted_here` |
+| Handed over, not finished | Refused until taken | `TeamDeleteTests.test_a_training_handed_over_before_it_finished_is_taken_before_it_is_deleted` |
+| Any, with another title, or while the runner is still looking | Refused; nothing changed | `DeleteTests.test_the_title_must_be_the_one_the_page_showed`, `DeleteTests.test_nothing_is_deleted_while_the_runner_is_still_looking` |
+| Deleted here, sharing after each decision | Shared at once; a teammate's lists drop it | `TeamDeleteTests.test_deleting_shares_at_once_and_a_teammate_drops_it_without_fuss` |
+| Deleted here, sharing only when asked | Gone here; shared with "Share now" | `TeamDeleteTests.test_with_sharing_only_when_asked_the_deletion_waits_for_share_now` |
+| Taken by a teammate before the deletion was shared | Their version stands; the page says so | `TeamDeleteTests.test_a_teammate_who_took_it_first_keeps_their_work`, `TeamDeleteTests.test_a_teammate_who_took_it_before_share_now_keeps_their_work` |
+| A conversation's training | Not offered; 404 | `DeleteTests.test_a_folder_the_runner_does_not_drive_is_never_deleted`, `TeamDeleteTests.test_a_training_from_a_conversation_is_never_deleted_by_the_page` |
+
+`GET /api/delete?path=` answers {"path", "title", "state", "may", "why", "stops", "share", "revisions", "documents", "drive"}, `drive` being [{"what", "name", "url"}]. `POST /api/delete` with {"path", "title"} answers {"deleted", "title", "shared", "notice"}.
+
 ## Done when
 
 - The suite passes and `validate_package.py` prints `ok`.

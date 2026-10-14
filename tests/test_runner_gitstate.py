@@ -636,6 +636,37 @@ class DiscardTests(WorkspaceCase):
         self.assertTrue((workspace.repo / 'README.md').exists())
 
 
+class RemoveTests(WorkspaceCase):
+    """Taking one training out of the branch, as deleting it does."""
+
+    def test_one_training_is_taken_out_in_one_commit_and_ignored_files_are_left(self):
+        workspace = self.join()
+        self.write(workspace, 'rolling-restarts/intake.md', 'As committed.\n')
+        self.write(workspace, 'health-checks/intake.md', 'As committed.\n')
+        gitstate.commit(workspace, 'Keep two trainings')
+        self.assertTrue(gitstate.known(workspace, 'rolling-restarts'))
+        self.assertFalse(gitstate.known(workspace, 'blue-green'))
+        self.write(workspace, 'rolling-restarts/intake.md', 'Half written.\n')
+        self.write(workspace, 'rolling-restarts/notes.md', 'Never committed.\n')
+        self.write(workspace, 'rolling-restarts/sources/page.txt', 'A saved page.\n')
+        (workspace.repo / 'README.md').write_text('# Another tool\n')
+        self.assertTrue(gitstate.remove(workspace, 'rolling-restarts',
+                                        'Rolling restarts: Alex deletes it'))
+        self.assertEqual(git(workspace.repo, 'log', '-1', '--format=%s'),
+                         'Rolling restarts: Alex deletes it')
+        self.assertEqual(self.committed(workspace.repo),
+                         ['trainings/rolling-restarts/intake.md'])
+        root = workspace.training('rolling-restarts')
+        self.assertEqual([path.relative_to(root).as_posix() for path in root.rglob('*')
+                          if path.is_file()], ['sources/page.txt'])
+        self.assertEqual(gitstate.changed(workspace), [])
+        self.assertEqual((workspace.repo / 'README.md').read_text(), '# Another tool\n')
+        self.assertTrue(gitstate.known(workspace, 'rolling-restarts'), 'it was here once')
+        self.assertFalse(gitstate.remove(workspace, 'rolling-restarts', 'Again'))
+        with self.assertRaisesRegex(WorkspaceError, 'outside trainings/'):
+            gitstate.remove(workspace, '../README.md', 'No')
+
+
 class SyncTests(WorkspaceCase):
     def two_people(self):
         """Alex and Blake share a workspace; each has a clone of their own."""

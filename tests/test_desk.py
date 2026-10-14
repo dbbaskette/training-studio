@@ -1572,6 +1572,7 @@ class PageFileTests(unittest.TestCase):
             every = [shade for shades in surfaces.values() for shade in shades]
             pairs = {
                 'a filled button': (colour['on-accent'], [colour['accent']], 4.5),
+                'a button that deletes': (colour['paper'], [colour['late']], 4.5),
                 'what is yours, on its wash': (colour['yours'], [colour['yours-wash']], 4.5),
                 'what is late, on its wash': (colour['late'], [colour['late-wash']], 4.5),
                 'quiet words on a wash': (colour['quiet'], [colour['yours-wash'],
@@ -5733,6 +5734,186 @@ class TeamScreenTests(ScriptedPage, PageCase):
                         self.assertNotIn('Published', shot['buttons'])
                 else:
                     self.assertIn('Review the blueprint', result['snapshots']['open']['buttons'])
+
+
+LEAVING_FIELDS = {'path', 'title', 'state', 'may', 'why', 'stops', 'share', 'revisions',
+                  'documents', 'drive'}
+NOTHING_LISTED = ok({'trainings': [], 'needs': 0})
+
+
+def leaving(path: str, state: str, **more) -> dict:
+    """What the runner says deleting a training would do, as `GET /api/delete` answers."""
+    found = {'path': path, 'title': 'Rolling restarts', 'state': state, 'may': True,
+             'why': None, 'stops': False, 'share': None, 'revisions': 0, 'documents': 0,
+             'drive': [], **more}
+    assert set(found) == LEAVING_FIELDS, found
+    return ok(found)
+
+
+@unittest.skipUnless(NODE, 'Node is needed to run the page scripts without a browser')
+class DeleteScreenTests(ScriptedPage, PageCase):
+    """Deleting a training from its own screens: the confirmation says what goes and what
+    stays, nothing is sent until the button that names the training is pressed, a refusal
+    is said in the sheet, and once it is done the page goes home."""
+
+    answers = RunnerScreenTests.answers
+    posts = RunnerScreenTests.posts
+    asked = RunnerScreenTests.asked
+    started = RunnerScreenTests.started
+    listed = RunnerScreenTests.listed
+    detail = RunnerScreenTests.detail
+    driven = TeamScreenTests.driven
+    shown = TeamScreenTests.shown
+    as_the_runner_lists_it = TeamScreenTests.as_the_runner_lists_it
+
+    def test_a_paused_training_is_deleted_after_a_confirmation_and_the_page_goes_home(self):
+        self.started()
+        held = 'Paused. Nothing new starts until you resume.'
+        paused = a_run('paused', held, steps=steps('done', 'done', 'done', 'to-do'))
+        path = str(self.root)
+        answers = self.answers(**{
+            'GET /api/trainings': [self.listed('paused', held), NOTHING_LISTED],
+            'GET /api/training': [self.detail('paused', held)],
+            'GET /api/run': [paused],
+            'GET /api/delete': [leaving(path, 'paused', documents=2)],
+            'POST /api/delete': [ok({'deleted': True, 'title': 'Rolling restarts',
+                                     'shared': None, 'notice': None})]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
+            {'click': 'Delete this training'}, {'snapshot': 'asked'},
+            {'click': 'Cancel'}, {'snapshot': 'cancelled'},
+            {'click': 'Delete this training'}, {'key': 'Escape'}, {'snapshot': 'escaped'},
+            {'click': 'Delete this training'},
+            {'click': 'Delete Rolling restarts'}, {'snapshot': 'deleted'},
+        ])
+        shots = result['snapshots']
+        self.assertEqual(self.posts(result), [('/api/delete', {'path': path,
+                                                               'title': 'Rolling restarts'})])
+        self.assertEqual(len([request for request in result['requests']
+                              if request['method'] == 'GET'
+                              and request['address'].startswith('/api/delete?')]), 3,
+                         'what would go is asked afresh each time')
+        run = shots['run']
+        self.assertIn('Delete this training', run['buttons'])
+        self.assertIn('If you no longer want this training, delete it.', run['text'])
+        self.assertEqual(run['filled'], ['Resume'], 'deleting is never the thing to do first')
+
+        asked = shots['asked']
+        for said in ('Delete Rolling restarts?', 'What goes',
+                     'Its folder in your workspace, with every file in it.',
+                     'What only this computer kept for it: 2 documents you supplied, the pages '
+                     'saved for its research, its previews and its run record.', 'What stays',
+                     'This cannot be undone from this page. Its history stays in git, where '
+                     'someone who knows git can bring it back.'):
+            self.assertIn(said, asked['sheet'])
+        for absent in ('working now', 'Google Drive', 'published revision', 'Your team'):
+            self.assertNotIn(absent, asked['sheet'])
+        # A modal sheet: everything behind it is out of reach, and the focus is on the sheet,
+        # not on the button that deletes, so Enter alone deletes nothing.
+        self.assertEqual((asked['focus'], asked['inert'], asked['posts']),
+                         ('sheet', ['sidebar', 'toolbar', 'main'], 0))
+        self.assertEqual(asked['filled'], [], 'nothing filled invites a press')
+        self.assertIn('Delete Rolling restarts', asked['buttons'])
+        for put_away in ('cancelled', 'escaped'):
+            self.assertEqual((shots[put_away]['sheet'], shots[put_away]['focus'],
+                              shots[put_away]['inert'], shots[put_away]['posts']),
+                             ('', 'Delete this training', [], 0), put_away)
+
+        done = shots['deleted']
+        self.assertEqual((done['heading'], done['sheet'], done['inert']), ('Home', '', []))
+        self.assertIn('Deleted Rolling restarts.', done['toasts'])
+        self.assertNotIn('Rolling restarts', done['text'].replace('Deleted Rolling restarts.',
+                                                                  ''))
+
+    def test_a_working_training_says_it_is_stopped_first_and_a_refusal_is_said_in_the_sheet(self):
+        self.started()
+        going = 'Doing the research.'
+        here = a_driver('Dana', True, days=1)
+        working = a_team_run('working', going, here, True,
+                             steps=steps('done', 'done', 'done', 'working'))
+        path = str(self.root)
+        drive = [{'what': 'Preview presentation', 'name': 'Preview: Rolling restarts',
+                  'url': 'https://docs.google.com/presentation/d/p1/edit'},
+                 {'what': 'Google Doc', 'name': 'The learner guide',
+                  'url': 'https://docs.google.com/document/d/d1/edit'}]
+        took = ('Pat took this training on 2026-10-14 at 09:00 UTC, before your deletion of it '
+                'was shared, so it was not deleted. It is as they shared it.')
+        answers = self.answers(**{
+            'GET /api/trainings': [self.driven('working', going, here)],
+            'GET /api/training': [self.detail('working', going)],
+            'GET /api/run': [working],
+            'GET /api/delete': [leaving(path, 'working', stops=True, share='asked',
+                                        revisions=2, drive=drive)],
+            'POST /api/delete': [refused(took)]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'},
+            {'click': 'Delete this training'}, {'snapshot': 'asked'},
+            {'click': 'Delete Rolling restarts'}, {'snapshot': 'refused'},
+        ])
+        shots = result['snapshots']
+        asked = shots['asked']
+        for said in ('It is working now. Deleting it stops it first, and ends everything it '
+                     'is running.',
+                     'Your team sees it gone the next time you press Share now.',
+                     '2 published revisions. They stay in your workspace’s history, and the '
+                     'page no longer lists them.',
+                     'Training Studio never deletes anything in your Google Drive. Remove '
+                     'these yourself if you no longer want them:'):
+            self.assertIn(said, asked['sheet'])
+        links = {link['name']: link for link in asked['links']}
+        for entry in drive:
+            link = links[f"{entry['what']}: {entry['name']}, in a new tab"]
+            self.assertEqual((link['href'], link['rel'], link['target']),
+                             (entry['url'], 'noopener noreferrer', '_blank'))
+        refusal = shots['refused']
+        self.assertIn(took, refusal['sheet'])
+        self.assertNotIn('Nothing was deleted.', refusal['sheet'], 'it says what happened')
+        self.assertEqual((refusal['focus'], refusal['heading']),
+                         ('Delete Rolling restarts', 'Rolling restarts'))
+        self.assertEqual(refusal['toasts'], [])
+
+    def test_only_a_training_this_computer_may_delete_offers_it(self):
+        self.started()
+        pat = a_driver('Pat', False, hours=3)
+        last = last_shared('Then, the next step was to do the research.', hours=1)
+        says = their_says('Pat', last)
+        theirs = a_team_run('elsewhere', says, pat, False, last_shared=last,
+                            steps=steps('done', 'done', 'done', 'to-do'))
+        over = 'Finished, and ready to use.'
+        done = a_team_run('done', over, None, False, steps=steps(*['done'] * 7),
+                          finished={'ready': True, 'limitations': [], 'blocking': [],
+                                    'index': 'README.md'})
+        refusal = ('Pat runs this training from another computer, so it cannot be deleted from '
+                   'here. Take it over first if you mean to delete it.')
+        for name, run, listing, offered in (
+                ('theirs', theirs, self.driven('elsewhere', says, pat, last=last), False),
+                ('finished', done, self.driven('done', over, None), True)):
+            with self.subTest(name):
+                answers = self.answers(**{
+                    'GET /api/trainings': [listing],
+                    'GET /api/training': [self.shown('done', over, None) if offered
+                                          else self.shown('elsewhere', says, pat, last=last)],
+                    'GET /api/run': [run],
+                    'GET /api/delete': [leaving(str(self.root), 'done')]})
+                result = self.run_page(answers, [
+                    {'click': 'Open Rolling restarts'}, {'snapshot': 'run'},
+                    {'click': 'Everything about this training'}, {'snapshot': 'training'}])
+                for screen in ('run', 'training'):
+                    self.assertEqual('Delete this training'
+                                     in result['snapshots'][screen]['buttons'], offered, screen)
+        # Asked anyway, the runner's refusal is what the sheet says.
+        answers = self.answers(**{
+            'GET /api/trainings': [self.driven('done', over, None)],
+            'GET /api/training': [self.shown('done', over, None)],
+            'GET /api/run': [done],
+            'GET /api/delete': [leaving(str(self.root), 'done', may=False, why=refusal)]})
+        result = self.run_page(answers, [
+            {'click': 'Open Rolling restarts'}, {'click': 'Delete this training'},
+            {'snapshot': 'asked'}])
+        asked = result['snapshots']['asked']
+        self.assertIn(refusal + ' Nothing was deleted.', asked['sheet'])
+        self.assertNotIn('Delete Rolling restarts', asked['buttons'])
+        self.assertEqual(self.posts(result), [])
 
 
 MARKUP_TITLE = '<img src=x onerror=alert(1)>'
