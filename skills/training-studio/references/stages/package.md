@@ -33,7 +33,7 @@ If `ready` is false, resolve what you can, tell the user what remains, and do no
 
 Tell the user in a few lines: what was produced, whether it is ready, what is blocking, the limitations and the open gaps.
 
-Then `training.py checkpoint --stage done --next "Nothing pending"`. The marker records where the run stopped. It does not prove the training stays complete: a later edit makes `ready` false again, so run `check` whenever the user comes back.
+Then `training.py checkpoint --stage done --next "Nothing pending"`.
 
 ## Afterwards
 

@@ -4,26 +4,26 @@ This page explains what Training Studio does behind the conversation. For the fu
 
 ## The stages
 
-| # | Stage | Done by | Produces |
+| Stage | Done by | Produces | Gate |
 | --- | --- | --- | --- |
-| 0 | Intake | Training Studio | `intake.md` and your settings |
-| 1 | Research plan | Training Studio | Up to 30 focused questions |
-| 2 | Research | The harness-research skill | A cited report |
-| 3 | Blueprint | Training Studio | Objectives, modules, assessment and practice plans |
-| 4 | Document | Training Studio | The learner guide |
-| 5 | Brief | Training Studio | A product or competitive brief |
-| 6 | Deck | The harness-slides skill | Google Slides or PowerPoint |
-| 7 | Scenario | You and Training Studio | Scenario files |
-| 7a | Yoodli, optional | Training Studio | A Yoodli scenario for each scenario file |
-| 8 | Package | Training Studio | The index and a readiness report |
+| Intake | Training Studio | `intake.md` and your settings | |
+| Research plan | Training Studio | Up to 30 focused questions | 1 |
+| Research | The harness-research skill | A cited report | 2 |
+| Blueprint | Training Studio | Objectives, modules, assessment and practice plans | 3 |
+| Document | Training Studio | The learner guide | 4 |
+| Brief | Training Studio | A product or competitive brief | 5 |
+| Deck | The harness-slides skill | Google Slides or PowerPoint | 6 |
+| Scenario | You and Training Studio | Scenario files | 7 |
+| Yoodli, optional | Training Studio | A Yoodli scenario for each scenario file | 8 |
+| Package | Training Studio | The index and a readiness report | |
 
-Stages 1 to 7 each end at a gate where you approve, ask for changes, have it rebuilt, or skip. With levels, stages 0 to 2 happen once, all the blueprints are reviewed together, and stages 4 to 7 then run one level at a time.
+At each gate you approve, ask for changes, have it rebuilt, or skip. With levels, intake and research happen once, all the blueprints are reviewed together, and gates 4 to 8 then repeat for one level at a time.
 
 The blueprint is the hub. The document and brief are written from it, and the deck is built from the blueprint and the document. A Yoodli scenario is built from your scenario file, the brief and the blueprint.
 
 ## Where facts come from
 
-Every claim in the blueprint and the brief names the research finding it rests on. A finding is supported, contradicted, or unresolved. Only supported findings can back a claim. Where the research could not establish something, the training says so under open gaps and the brief lists it under Unknowns. Nothing is filled in from the assistant's memory.
+Every claim in the blueprint and the brief names the research finding it rests on. A finding is supported, contradicted, insufficient or unavailable; the last two are called unresolved. Only a supported finding can back a claim. A contradicted one can back the correction of a misconception, or the answer to an objection. Where the research could not establish something, the training says so under open gaps and the brief lists it under Unknowns. Nothing is filled in from the assistant's memory.
 
 ## Approval, and what "stale" means
 
@@ -55,7 +55,7 @@ Every decision at a gate is recorded with where it was made, and written into th
 - **In the conversation.** You tell your assistant, and it records your decision. This is the default.
 - **On the page.** You decide on [the page](desk.md) in your browser. The helper then refuses `approve` and `skip` from the command line, so your assistant cannot record a decision you did not make. Asking for changes or a rebuild leaves a request your assistant acts on when you return to it; the request closes when the file is rebuilt or approved, and an open request keeps the training from being ready.
 
-Moving a training to the page raises the bar; it does not make forgery impossible. An assistant with a shell that set out to rewrite the session record could still do so. The guidance forbids it, and the planned runner, which keeps the assistant away from the training's folder altogether, is what will prevent it.
+Moving a training to the page raises the bar; it does not make forgery impossible. An assistant with a shell that set out to rewrite the session record could still do so. The guidance forbids it, but only [the runner](runner.md) prevents it: there, each agent works in an empty folder outside your trainings, with no shell, and has no way to approve.
 
 ## Ready, or not
 
@@ -114,7 +114,7 @@ The skill drives a small command-line helper, `skills/training-studio/scripts/tr
 | `status` | The stage, what is waiting, and the status of every file |
 | `check` | Runs every check that applies and reports readiness |
 | `save`, `approve` | Record a version, and record your approval of it |
-| `export` | Records a Word or PDF copy, when you asked for them |
+| `export` | Records a Word copy, when you asked for them |
 | `google` | Sends the guide or the brief to a Google Doc and brings edits back |
 | `skip` | Leaves a stage out, or brings it back |
 | `checkpoint` | Records where the run stopped and what is at the gate, and changes settings such as which copies to keep |
