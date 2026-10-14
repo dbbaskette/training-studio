@@ -50,7 +50,7 @@ SLIDE = {'cover': ('subtitle', 'detail'), 'section': ('subtitle',), 'closing': (
          'content': ('understand', 'relation', 'focal', 'rhythm', 'points', 'caveat',
                      'source', 'sources')}
 COMPOSED = ('id', 'title', 'sources', 'canvas', 'connect', 'notes', 'layout', 'subtitle',
-            'detail', 'picture', 'brief', 'caveat', 'source')
+            'detail', 'picture', 'brief', 'caveat', 'source', 'intent')
 NODES = {'stack': ('direction', 'gap', 'align', 'children'),
          'grid': ('columns', 'gap', 'children'), 'free': ('children',),
          'box': ('text', 'shape', 'fill', 'color', 'textRole', 'align', 'children', 'gap',
@@ -95,19 +95,33 @@ NO_DRIVE = ('Google API request failed (HTTP {}). Check account, Drive scopes, f
             'and organization policy.')
 OPTIONS = {'outline contract': ('brand',), 'outline check': ('file', 'brand'),
            'outline start': ('file', 'brand', 'output'), 'compose contract': ('brand',),
-           'compose layouts': ('brand',), 'compose compile': ('file', 'brand', 'output'),
+           'compose layouts': ('brand',),
+           'compose compile': ('file', 'brand', 'output', 'design-project'),
            'compose merge': ('file', 'output'),
            'compose preview': ('file', 'output', 'slide', 'file-id', 'renderer'),
            'compose critique': ('file', 'assessment'), 'compose render': ('file', 'output'),
            'drive check': (), 'drive import': ('file', 'name', 'folder-id'),
            'design propose': ('project', 'file', 'expected'), 'design status': ('project',),
            'design check': ('project',), 'design respond': ('project', 'file')}
-# What the design commands take after 0.13.1: the question mode, and refusals as JSON.
+# What the design commands take after 0.13.1: the question mode, and refusals as JSON; and
+# what compile and preview take: a section checked against the design, and refusals as JSON.
 LATER = {'design propose': ('mode', 'json'), 'design status': ('json',),
-         'design check': ('json',), 'design respond': ('json',)}
-FLAGS = ('json',)   # options that take no value
-UNKNOWN = ("Unknown option '--mode'. To specify a positional argument starting with a '-', "
-           "place it at the end of the command after '--', as in '-- \"--mode\"")
+         'design check': ('json',), 'design respond': ('json',),
+         'compose compile': ('section', 'json'),
+         'compose preview': ('design-project', 'section', 'json')}
+FLAGS = ('json', 'section')     # options that take no value
+NEWER = ('mode', 'section')     # options 0.13.1 does not parse, for any command
+UNKNOWN = ("Unknown option '--{}'. To specify a positional argument starting with a '-', "
+           "place it at the end of the command after '--', as in '-- \"--{}\"")
+# How a composition's problem lines are sorted into the tool's codes, as refusals.mjs does.
+SORTED = ((re.compile(r'unknown icon|is a picture, not native|no drawing in the library|'
+                      r'hashed icon library'), 'icon-unavailable'),
+          (re.compile(r'template layout|no layout named|subtitle placeholders|no picture slot|'
+                      r'layout with a title'), 'layout-unavailable'))
+COUNTED = re.compile(r'^\d+ problems to fix:\n')
+SECTION_ALONE = ('--section needs --design-project: a section is checked against the '
+                 'approved design')
+WHERE = re.compile(r'^([\w-]+)(?:/([\w-]+))?: ')
 PICTURE = 320   # how wide the stand-in draws a slide, in pixels
 BRIEF = (   # what the tool writes for the worker of one section, word for word
     '# Section {number} of {title}\n\n'
@@ -195,6 +209,17 @@ def _compact(value) -> str:
 
 def _pretty(value) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False) + '\n'
+
+
+def _recorded(base: Path, target, project) -> str:
+    """recordedPath: a file a record names, relative to the record's folder when both lie in
+    the project, and absolute otherwise."""
+    target = Path(os.path.abspath(target))
+    if project:
+        root = Path(os.path.abspath(project))
+        if root in (base, *base.parents) and root in (target, *target.parents):
+            return Path(os.path.relpath(target, base)).as_posix()
+    return str(target)
 
 
 def _tidy(number: float):
@@ -508,9 +533,16 @@ class _Compiler:
             if self.tight:
                 self.problems += self.tight
                 continue
+            if s.get('intent'):   # the scene's own check, as slide-decisions.mjs makes it
+                try:
+                    designs.decision(s['intent'], s['sources'])
+                except ValueError as wrong:
+                    self.problems.append(str(wrong))
+                    continue
             scene['slides'].append({'id': sid, 'title': s['title'], 'sources': s['sources'],
                                     'elements': self.elements,
-                                    **({'notes': s['notes']} if 'notes' in s else {})})
+                                    **({'notes': s['notes']} if 'notes' in s else {}),
+                                    **({'intent': s['intent']} if s.get('intent') else {})})
         return scene, self.structure
 
     # --- the rules ---
@@ -1188,6 +1220,7 @@ class StandIn:
         self.fails: dict[str, str] = {}
         self.drive, self.local, self.pause, self.at_once = True, True, 0.0, 0
         self.design = False
+        self.composed = None    # the composition last compiled, to sort its problems by slide
         self._busy, self._renders, self._guard = 0, 0, threading.Lock()
 
     def __call__(self, command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
@@ -1224,8 +1257,8 @@ class StandIn:
         options, rest = {}, args[2:]
         while rest:
             key = rest.pop(0).removeprefix('--')
-            if key == 'mode' and not self.design:
-                raise _Said(UNKNOWN)    # 0.13.1 parses no such option, for any command
+            if key in NEWER and not self.design:
+                raise _Said(UNKNOWN.format(key, key))   # 0.13.1 parses no such option
             if key not in allowed:
                 raise _Said(f'--{key} is not valid for this command')
             options[key] = True if key in FLAGS else rest.pop(0) if rest else None
@@ -1233,7 +1266,15 @@ class StandIn:
             raise _Said(self.fails[name])
         if name.startswith('design '):
             return self._design(name.partition(' ')[2], options)
-        return getattr(self, '_' + name.replace(' ', '_'))(options)
+        act = getattr(self, '_' + name.replace(' ', '_'))
+        if name not in ('compose compile', 'compose preview'):
+            return act(options)
+        try:
+            return act(options)
+        except (_Said, designs.Refusal) as refused:
+            if not options.get('json'):
+                raise _Said(str(refused))
+            return _Blocked(self._composed(refused, name, options))
 
     # --- the brand ---
 
@@ -1495,8 +1536,12 @@ class StandIn:
         if not options.get('file'):
             raise _Said('Provide --file composition.json, and a new --output directory to '
                         'write the build')
+        project = options.get('design-project')
+        if options.get('section') and not project:
+            raise designs.Refusal(SECTION_ALONE, {'code': 'input-invalid'})
         data, contract = _read(options['file']), self.contract(options.get('brand'))
         comp, compiler, compiled = _load(options['file']), _Compiler(contract), None
+        self.composed = comp
         try:
             compiled = compiler.run(comp)
         except _Said as said:
@@ -1506,6 +1551,8 @@ class StandIn:
         if problems:
             raise _said(problems)
         scene, structure = compiled
+        approved = designs.bound(scene['slides'], project, bool(options.get('section'))) \
+            if project or options.get('output') else None
         report = {'schema': 1, 'brandRevision': contract['revision'],
                   'measurement': 'estimated; brand font unavailable',
                   'slides': compiler.summary, 'room': compiler.room}
@@ -1515,17 +1562,21 @@ class StandIn:
                    'icons': len(structure['icons']),
                    'room': {r['slide']: f"{r['needs']} of {r['has']}"
                             for r in compiler.room}}
+        if approved:
+            summary['design'] = {key: approved[key] for key in ('revision', 'scope', 'slides')}
+            report.update(designRevision=approved['revision'], designScope=approved['scope'])
         if not options.get('output'):
             return {'status': 'fits; nothing written. Add a new --output directory to '
                               'write the build', **summary}
+        output = Path(options['output']).resolve()
         report['inputs'] = {
-            'composition': {'path': str(Path(options['file']).resolve()),
+            'composition': {'path': _recorded(output, options['file'], project),
                             'sha256': _digest(data)},
-            'brand': {'path': str(Path(options['brand']).resolve()),
+            'brand': {'path': _recorded(output, options['brand'], project),
                       'sha256': _digest(_read(options['brand']))}, 'assets': []}
         report['sceneDigest'] = _digest(_compact(scene).encode())
         report['structureDigest'] = _digest(_compact(structure).encode())
-        output = _folder(Path(options['output']).resolve())
+        output = _folder(output)
         for name, value in (('scene.json', scene), ('structure.json', structure),
                             ('compose-report.json', report),
                             ('brand-contract.json', contract)):
@@ -1690,19 +1741,29 @@ class StandIn:
         renderer = options.get('renderer') or 'google'
         if renderer not in ('google', 'local'):
             raise _Said('Renderer must be google or local')
+        if options.get('section') and not options.get('design-project'):
+            raise designs.Refusal(SECTION_ALONE, {'code': 'input-invalid'})
         scene, structure = self._compiled(options['file'])
         ids = [slide['id'] for slide in scene['slides']]
         wanted = options.get('slide')
         if wanted is not None and wanted not in ids:
             raise _Said(f"No slide {wanted}; choose one of {', '.join(ids)}")
+        # Checked against the design approved now, before anything is rendered.
+        approved = designs.bound(scene['slides'], options['design-project'],
+                                 bool(options.get('section'))) \
+            if options.get('design-project') else None
         output = _folder(Path(options['output']).resolve())
         with self._guard:
             self._busy += 1
             self.at_once = max(self.at_once, self._busy)
         try:
             time.sleep(self.pause)
-            return self._previewed(output, scene, structure, renderer, wanted,
-                                   options.get('file-id'))
+            shown = self._previewed(output, scene, structure, renderer, wanted,
+                                    options.get('file-id'))
+            if approved:
+                shown['design'] = {key: approved[key]
+                                   for key in ('revision', 'scope', 'slides')}
+            return shown
         except BaseException:
             shutil.rmtree(output, ignore_errors=True)   # the tool clears up after itself
             raise
@@ -1850,6 +1911,52 @@ class StandIn:
                 else 'Fix the major findings in one pass, then preview again. Undo any fix '
                      'that causes a new finding.' if counts['major']
                 else 'Clear to show the user.'}
+
+    def _composed(self, refused: Exception, name: str, options: dict) -> dict:
+        """A refusal of compile or preview as --json prints it. A composition's lines are
+        sorted as refusals.mjs sorts them, each with its slide. The revision is the design
+        project's, or for a preview without one, the build's."""
+        project, revision = options.get('design-project'), None
+        if project:
+            revision = designs.Session(project).revision()
+        elif name == 'compose preview':
+            try:
+                revision = json.loads((Path(options['file']) / 'compose-report.json')
+                                      .read_text(encoding='utf-8')).get('designRevision')
+            except (OSError, ValueError, AttributeError, TypeError, KeyError):
+                revision = None
+        message = str(refused)
+        if isinstance(refused, designs.Refusal) or name != 'compose compile':
+            return designs.refusal(refused, revision)
+        lines = message.split('\n')[1:] if COUNTED.match(message) else [message]
+        slides, owner = set(), {}
+
+        def walk(node, slide):
+            if isinstance(node, dict):
+                if isinstance(node.get('id'), str):
+                    owner[node['id']] = slide
+                for kid in [*(node.get('children') or []), node.get('hub')]:
+                    walk(kid, slide)
+
+        composed = self.composed if isinstance(self.composed, dict) else {}
+        for slide in composed.get('slides') or []:
+            if isinstance(slide, dict) and isinstance(slide.get('id'), str):
+                slides.add(slide['id'])
+                walk(slide.get('canvas'), slide['id'])
+                for edge in slide.get('connect') or []:
+                    if isinstance(edge, dict) and isinstance(edge.get('id'), str):
+                        owner[edge['id']] = slide['id']
+        problems = []
+        for line in lines:
+            where = WHERE.match(line)
+            where = where.group(1) if where else ''
+            code = next((code for pattern, code in SORTED if pattern.search(line)),
+                        'composition-invalid')
+            icon = re.search(r'icon (\S+)', line) if code == 'icon-unavailable' else None
+            problems.append({'code': code, 'detail': line,
+                             'slide': where if where in slides else owner.get(where),
+                             'asset': icon.group(1) if icon else None})
+        return designs.refusal(designs.Refusal(message, *problems), revision)
 
     # --- the design session ---
 

@@ -48,6 +48,19 @@ def with_slide(number: int, **changes) -> dict:
     return outline(slides=slides)
 
 
+def approved_plan() -> dict:
+    """The plan the slides tool keeps once the design of OUTLINE is proposed, as `design
+    check` gives it back: the third slide keeps the limit its caveat states, and the fourth
+    shows the same instance icon as the second, already found."""
+    from stand_ins import design as designs
+    plan = designs.validate(deck.proposal(OUTLINE, runner_support.designed(OUTLINE)))
+    plan['slides'][2]['qualifications'] = ['still drops requests']
+    plan['slides'][3]['asset']['candidates'] = [{
+        'assetId': 'icon_instance', 'kind': 'icon', 'ref': 'server', 'concept': 'An instance',
+        'status': 'resolved'}]
+    return designs.validate(plan)
+
+
 class RuleTests(JobCase):
     def test_a_good_outline_breaks_no_rule(self):
         self.assertEqual(deck.rules(OUTLINE, BLUEPRINT, 90), [])
@@ -131,6 +144,106 @@ class RuleTests(JobCase):
             self.assertIn(told, given)
         self.assertEqual(deck.named_in(written, whole), ['what-it-does', 'when-capacity-holds'])
         self.assertIn('## Return', deck.brief('# A brief with none of the headings\n', whole))
+
+    def test_a_deck_drawn_from_its_design_draws_its_visuals_and_keeps_the_relevance_rules(self):
+        self.assertIn('An icon is optional', deck.HOUSE[-1], 'a deck without a design as before')
+        self.assertEqual(deck.DESIGNED_HOUSE[:-1], deck.HOUSE[:-1])
+        for told in ('Draw what the approved design says', 'names a recognisable thing',
+                     'the same icon for the same concept across the deck',
+                     'never twice on one slide'):
+            self.assertIn(told, deck.DESIGNED_HOUSE[-1])
+        self.assertNotIn('optional', ' '.join(deck.DESIGNED_HOUSE))
+        self.assertEqual(deck.complete(OUTLINE, Slides.LAYOUTS, [])['house'], list(deck.HOUSE))
+        self.assertEqual(deck.complete(OUTLINE, Slides.LAYOUTS, [], designed=True)['house'],
+                         list(deck.DESIGNED_HOUSE))
+
+    def test_a_sections_brief_carries_its_approved_design_and_the_icons_across_the_deck(self):
+        plan = approved_plan()
+        whole = deck.complete(OUTLINE, Slides.LAYOUTS, [], designed=True)
+        written = Slides._brief(whole, 1, whole['slides'][1:3], '/opt/brand/contract.json',
+                                Path('/opt/work'))
+        given = deck.brief(written, whole, design=plan)
+        steps = plan['slides'][1]
+        for told in ('## The approved design', '### `what-it-does`',
+                     '### `when-capacity-holds`', f"- Claim: {OUTLINE['slides'][1]['title']}",
+                     '- Relationship: order',
+                     '- Visual: diagram. Its purpose: Show the points as the parts of one '
+                     'mechanism.', '- How it is drawn: Native boxes for each point',
+                     '- Why: The parts and how they connect are spatial',
+                     '- Weighed against: A list of the points. A list hides how the parts '
+                     'connect.', '- Asset: Native boxes and connectors. (selected: The boxes '
+                     'carry the relation.)', '  - icon "server" for An instance, still to be '
+                     'found', '- Wording it must keep: "still drops requests"',
+                     '```json\n' + json.dumps(steps['intent'], ensure_ascii=False) + '\n```',
+                     'is direct text by decision', 'Only icons can be placed in this version',
+                     '"id", "title", "sources", "intent", "brief"',
+                     "Copy each slide's `id`, `title`, `sources`, `intent`, caveat",
+                     f'- {deck.DESIGNED_HOUSE[-1]}', '## Icons across the deck',
+                     '- An instance: "server", on `what-it-does`, `the-objection`'):
+            self.assertIn(told, given)
+        self.assertNotIn('### `the-objection`', given, 'only its own slides are described')
+        self.assertNotIn(deck.HOUSE[-1], given)
+        self.assertEqual(deck.icons(plan), [{'concept': 'An instance', 'ref': 'server',
+                                             'status': 'resolved', 'slides': [
+                                                 'what-it-does', 'the-objection']}])
+        none = json.loads(json.dumps(plan))
+        for slide in none['slides']:
+            slide['asset'].pop('candidates', None)
+        self.assertIn('The approved design names no icon.', deck.brief(written, whole,
+                                                                       design=none))
+        # A deck without a design is briefed as it always was.
+        plain = deck.complete(OUTLINE, Slides.LAYOUTS, [])
+        before = deck.brief(Slides._brief(plain, 1, plain['slides'][1:3],
+                                          '/opt/brand/contract.json', Path('/opt/work')), plain)
+        for gone in ('## The approved design', '## Icons across the deck', '`intent`'):
+            self.assertNotIn(gone, before)
+        self.assertIn(f'- {deck.HOUSE[-1]}', before)
+
+    def test_a_section_drawn_from_its_design_keeps_its_intent_and_the_approved_copy(self):
+        plan = approved_plan()
+        whole = deck.complete(OUTLINE, Slides.LAYOUTS, [], designed=True)
+        spec = deck.fixed(whole, ['what-it-does', 'when-capacity-holds'], 1, plan)
+        first, second = spec['slides']
+        self.assertEqual((json.loads(first['intent']), second['qualifications']),
+                         (plan['slides'][1]['intent'], ['still drops requests']))
+        self.assertEqual(list(json.loads(first['intent'])), list(plan['slides'][1]['intent']),
+                         'kept as text, the intent keeps the order of its keys')
+        good = drawn(spec)
+        self.assertEqual(deck.kept(good, spec), [])
+        for change, expect in (
+                (lambda made: made['slides'][0].pop('intent'),
+                 'what-it-does: `intent` is copied exactly as it was approved.'),
+                (lambda made: made['slides'][0]['intent']['visual'].update(family='text'),
+                 'what-it-does: `intent` is copied exactly as it was approved.'),
+                (lambda made: made['slides'][1].pop('caveat'),
+                 'when-capacity-holds: the approved design keeps this wording, which is '
+                 'missing or changed: "still drops requests"')):
+            made = json.loads(json.dumps(good))
+            change(made)
+            self.assertIn(expect, ' '.join(deck.kept(made, spec)))
+        # The words are held to the copy the person approved with the design.
+        approved = json.loads(json.dumps(plan))
+        approved['slides'][1]['copy']['points'][0]['text'] = 'Instances restart in batches.'
+        self.assertEqual(deck.kept(good, deck.fixed(whole, ['what-it-does',
+                                                            'when-capacity-holds'], 1,
+                                                    approved)),
+                         ['what-it-does: these approved words are missing or changed: '
+                          '"Instances restart in batches."'])
+        # An intent with its keys in another order is the approved one, written as approved.
+        shuffled = json.loads(json.dumps(good))
+        shuffled['slides'][0]['intent'] = json.loads(json.dumps(
+            shuffled['slides'][0]['intent'], sort_keys=True))
+        self.assertEqual(deck.kept(shuffled, spec), [])
+        self.assertNotEqual(list(shuffled['slides'][0]['intent']),
+                            list(plan['slides'][1]['intent']))
+        self.assertEqual(list(deck.as_approved(shuffled, spec)['slides'][0]['intent']),
+                         list(plan['slides'][1]['intent']))
+        # Without a design, nothing new is fixed or checked.
+        plain = deck.fixed(deck.complete(OUTLINE, Slides.LAYOUTS, []),
+                           ['what-it-does', 'when-capacity-holds'], 1)
+        self.assertEqual(sorted(plain['slides'][0]), ['caveat', 'id', 'notes', 'points',
+                                                      'source', 'sources', 'title'])
+        self.assertIs(deck.as_approved(good, plain), good)
 
     def test_a_section_keeps_what_was_fixed_and_every_approved_word(self):
         whole = deck.complete(OUTLINE, Slides.LAYOUTS, [])
@@ -449,6 +562,40 @@ class SectionToolTests(ToolCase):
         self.assertIn('Not accepted', said)
         self.assertIn('`caveat` stays exactly as it was approved', said)
         self.assertEqual(worker_tools.collect(self.job)['artifacts'], {})
+
+    def test_a_section_drawn_from_its_design_is_checked_and_previewed_against_it(self):
+        project = self.base / 'deck'
+        project.mkdir()
+        proposal = self.base / 'proposal.json'
+        proposal.write_text(json.dumps(deck.proposal(OUTLINE, runner_support.designed(OUTLINE))))
+        asked = self.slides.design_propose(project, proposal)
+        self.slides.design_respond(project, {
+            'questionId': asked['question']['id'], 'planRevision': asked['revision'],
+            'decision': 'approve', 'feedback': 'Approve the whole plan'})
+        plan = self.slides.design_check(project)['plan']
+        whole = deck.complete(OUTLINE, Slides.LAYOUTS, [], designed=True)
+        self.spec = {**self.spec, **deck.fixed(whole, ['what-it-does', 'when-capacity-holds'],
+                                               1, plan), 'design': str(project), 'section': True}
+        tools, good = self.composer(), drawn(self.spec)
+        good['slides'][0]['intent'] = json.loads(json.dumps(good['slides'][0]['intent'],
+                                                            sort_keys=True))
+        self.assertTrue(self.ok(tools.check_section(json.dumps(good))).startswith(
+            'Nothing to put right.'))
+        self.assertEqual(self.slides.calls[-1][-2:], (str(project), 'section=True'))
+        sent = json.loads(Path(self.slides.calls[-1][1]).read_text())
+        self.assertEqual(list(sent['slides'][0]['intent']), list(plan['slides'][1]['intent']),
+                         'the tool is sent the intent as it was approved')
+        self.ok(tools.preview_section(json.dumps(good)))
+        self.assertIn(('preview_design', self.slides.calls[-1][1], str(project), 'section=True'),
+                      self.slides.calls)
+        self.ok(tools.submit_section(json.dumps(good)))
+        # What the tool refuses against the design is given to the composer, slide by slide.
+        changed = json.loads(proposal.read_text())
+        changed['slides'][1]['composition'] = 'Three boxes in a column.'
+        proposal.write_text(json.dumps(changed))
+        self.slides.design_propose(project, proposal, asked['revision'])
+        said = self.ok(tools.check_section(json.dumps(good)))
+        self.assertIn('- Awaiting design approval; show the proposed slide(s)', said)
 
     def test_icons_are_searched_in_the_brands_own_library(self):
         tools = self.composer()
@@ -1025,9 +1172,9 @@ class RepairTests(DeckCase):
 
 class DesignTests(DeckCase):
     """A slides tool with a design session: what a deck says is proposed with how each slide
-    is drawn, and the person's one decision is the tool's answer. Rows V01, V02, V03 and V13
-    of the state-transition matrix in docs/superpowers/plans/
-    2026-10-14-visual-teaching-in-decks.md."""
+    is drawn, the person's one decision is the tool's answer, and the sections are drawn
+    from and built against what was approved. Rows V01, V02, V03, V04, V13 and V14 of the
+    state-transition matrix in docs/superpowers/plans/2026-10-14-visual-teaching-in-decks.md."""
 
     def setUp(self):
         super().setUp()
@@ -1100,6 +1247,113 @@ class DesignTests(DeckCase):
                      'deck/.harness-slides/design/session.json'):
             self.assertIn(f'trainings/rolling-restarts/{kept}', tracked)
         self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def compiled(self) -> list[tuple]:
+        """Every compile and preview the deck asked of the tool against a design, as
+        (call, section or not)."""
+        return [(call[0], call[-1]) for call in self.slides.calls
+                if call[0] in ('compile', 'preview_design') and call[-1].startswith('section=')]
+
+    def test_sections_are_drawn_from_the_approved_design_and_built_against_it(self):
+        root = self.begin()
+        self.drawn(root)
+        plan = self.slides.design_check(root / pipeline.DESIGNS)['plan']
+        start = next((root / 'work' / 'deck').glob('start-*'))
+        kept = json.loads((start / pipeline.APPROVED_DESIGN).read_text())
+        self.assertEqual((kept, list(kept['slides'][1]['intent'])),
+                         (plan, list(plan['slides'][1]['intent'])))
+        self.assertEqual(json.loads((start / 'given' / 'outline.json').read_text())['house'],
+                         list(deck.DESIGNED_HOUSE))
+        sections = [(job, spec) for kind, job, spec in self.workers.jobs if kind == 'section']
+        self.assertEqual(len(sections), 2)
+        # The sections are drawn side by side, so they are told apart by what they hold.
+        approved = {slide['id']: slide['intent'] for slide in plan['slides']}
+        for job, spec in sections:
+            made = spec['artifacts']['section']
+            self.assertEqual(job.guidance, briefs.guidance('deck-section', design=True))
+            self.assertEqual((made['design'], made['section']),
+                             (str(root / pipeline.DESIGNS), True))
+            self.assertEqual({slide['id']: json.loads(slide['intent'])
+                              for slide in made['slides']},
+                             {slide['id']: approved[slide['id']] for slide in made['slides']})
+        self.assertEqual(sorted(slide['id'] for _, spec in sections
+                                for slide in spec['artifacts']['section']['slides']),
+                         sorted(slide['id'] for slide in OUTLINE['slides']
+                                if slide['kind'] == 'content'))
+        brief = (start / 'given' / 'section-1.md').read_text()
+        for told in ('## The approved design', '### `what-it-does`', '## Icons across the deck',
+                     '- An instance: "server", on `what-it-does`', deck.DESIGNED_HOUSE[-1]):
+            self.assertIn(told, brief)
+        self.assertNotIn(str(self.base), brief)
+        # Each section is checked and previewed as a section; the whole deck as the deck.
+        built = self.compiled()
+        self.assertEqual(built[-2:], [('compile', 'section=False'),
+                                      ('preview_design', 'section=False')])
+        self.assertEqual({call for call in built[:-2]},
+                         {('compile', 'section=True'), ('preview_design', 'section=True')})
+        self.assertEqual((len(self.slides.replies), workspace.status(root)['gate']),
+                         (1, 'deck'), 'one decision, and nothing asked of the person since')
+
+    def test_visual_04_fit_repair_preserves_design(self):
+        self.workers.found = [[MAJOR]]
+        root = self.begin()
+        self.drawn(root)
+        approved = self.record(root)['deck']['']['approved']
+        self.assertEqual(self.kinds()[-6:], ['outline', 'section', 'section', 'review',
+                                             'section', 'review'])
+        job, spec = [(job, spec) for kind, job, spec in self.workers.jobs
+                     if kind == 'section'][-1]
+        self.assertEqual(job.guidance, briefs.guidance('deck-section', repair=True,
+                                                       design=True))
+        self.assertTrue(spec['artifacts']['section']['design'])
+        # The approval holds: nothing was asked of the person or the tool again.
+        status = self.session(root)
+        self.assertEqual((len(self.slides.replies), status['revision'], status['pending'],
+                          status['buildAllowed']),
+                         (1, approved['design']['revision'], [], True))
+        self.assertEqual(self.record(root)['deck']['']['approved'], approved)
+        self.assertEqual(self.built(root)['start']['design'], approved['design'])
+        # The section drawn again was built against it, and the deck rendered and reviewed again.
+        rounds = self.built(root)['rounds']
+        self.assertEqual((len(rounds), [bool(made['review']) for made in rounds]),
+                         (2, [True, True]))
+        self.assertNotEqual(rounds[0]['made_from'], rounds[1]['made_from'])
+        self.assertNotEqual(rounds[0]['folder'], rounds[1]['folder'])
+        self.assertEqual(self.compiled()[-6:], [
+            ('compile', 'section=True'), ('compile', 'section=True'),
+            ('preview_design', 'section=True'), ('compile', 'section=True'),
+            ('compile', 'section=False'), ('preview_design', 'section=False')])
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+
+    def test_visual_14_sections_need_a_tool_that_checks_them_against_the_design(self):
+        self.slides.gate = False
+        root = self.begin()
+        shown = self.to_outline(root)['outline']
+        view = self.engine.outline(root, None, 'approve', seen=shown['sha256'],
+                                   design=shown['design']['revision'])
+        self.assertEqual(view['state'], 'stopped')
+        self.assertIn('cannot check a section against it. Update harness-slides',
+                      view['problem']['what'])
+        approved = self.record(root)['deck']['']['approved']
+        self.assertEqual(approved['design']['revision'], shown['design']['revision'])
+        self.assertEqual(([call[0] for call in self.slides.calls].count('outline_start'),
+                          self.kinds().count('section')), (0, 0), 'nothing is started')
+        self.slides.gate = True
+        view = self.engine.act(root, 'retry')
+        self.assertEqual((view['state'], workspace.status(root)['gate']), ('waiting', 'deck'))
+        self.assertEqual(self.record(root)['deck']['']['approved'], approved)
+        self.assertEqual(len(self.slides.replies), 1, 'the approval was not asked for again')
+
+    def test_a_start_that_did_not_keep_the_approved_design_is_made_again(self):
+        self.workers.then('section', *[fails()] * 6)
+        root = self.begin()
+        self.assertEqual(self.drawn(root)['state'], 'failed')
+        found = self.engine._survey(root, self.record(root)).decks[None]
+        self.assertIn('deck-start', found.done)
+        start = next((root / 'work' / 'deck').glob('start-*'))
+        (start / pipeline.APPROVED_DESIGN).unlink()
+        found = self.engine._survey(root, self.record(root)).decks[None]
+        self.assertNotIn('deck-start', found.done)
 
     def test_visual_02_worker_cannot_approve(self):
         root = self.begin()
@@ -1250,6 +1504,35 @@ class CompatibleTests(DeckCase):
         self.slides.design = True
         self.engine.outline(root, None, 'approve', seen=shown['sha256'])
         self.assertEqual((self.slides.replies, workspace.status(root)['gate']), ([], 'deck'))
+        # Its sections are drawn as they always were, though the tool could check them now.
+        self.assert_drawn_as_before(root)
+
+    def assert_drawn_as_before(self, root: Path) -> None:
+        """A deck without a design: its sections are told, held and built as before."""
+        sections = [(job, spec) for kind, job, spec in self.workers.jobs if kind == 'section']
+        self.assertTrue(sections)
+        for job, spec in sections:
+            made = spec['artifacts']['section']
+            self.assertEqual(job.guidance, briefs.guidance('deck-section'))
+            self.assertFalse({'design', 'section'} & set(made))
+            for slide in made['slides']:
+                self.assertEqual(sorted(slide), ['caveat', 'id', 'notes', 'points', 'source',
+                                                 'sources', 'title'])
+        start = next((root / 'work' / 'deck').glob('start-*'))
+        self.assertFalse((start / pipeline.APPROVED_DESIGN).exists())
+        self.assertEqual(json.loads((start / 'given' / 'outline.json').read_text())['house'],
+                         list(deck.HOUSE))
+        brief = (start / 'given' / 'section-1.md').read_text()
+        self.assertIn(f'- {deck.HOUSE[-1]}', brief)
+        self.assertNotIn('## The approved design', brief)
+        self.assertEqual([call for call in self.slides.calls if call[0] == 'preview_design'
+                          or (call[0] == 'compile' and len(call) != 4)], [])
+
+    def test_a_deck_without_a_design_is_drawn_as_it_always_was(self):
+        root = self.begin()
+        self.drawn(root)
+        self.assertEqual(workspace.status(root)['gate'], 'deck')
+        self.assert_drawn_as_before(root)
 
     def test_a_deck_written_with_a_design_stops_where_the_tool_cannot_keep_one(self):
         self.slides.design = True
@@ -1778,6 +2061,7 @@ class BriefTests(JobCase):
                   'deck-review': {'list_inputs', 'read_input', 'look_at_slide',
                                   'submit_assessment', 'submit_coverage'}}
         expect['deck-outline+design'] = expect['deck-outline']
+        expect['deck-section+design'] = expect['deck-section']
         for job, tools in expect.items():
             with self.subTest(job):
                 text = briefs.guidance(job.partition('+')[0], design=job.endswith('+design'))
@@ -1814,8 +2098,35 @@ class BriefTests(JobCase):
                      'offers a native diagram instead'):
             self.assertIn(told, designed)
         self.assertNotIn('nothing about how it is drawn', plain)
-        with self.assertRaisesRegex(WorkspaceError, 'proposes its design'):
-            briefs.guidance('deck-section', design=True)
+        with self.assertRaisesRegex(WorkspaceError, 'are told of its design'):
+            briefs.guidance('deck-review', design=True)
+
+    def test_a_composer_draws_the_approved_design_and_keeps_the_freedom_of_direct_text(self):
+        plain, designed = briefs.guidance('deck-section'), briefs.guidance('deck-section',
+                                                                            design=True)
+        self.assertEqual(plain, briefs.read('deck-section'), 'without a design, as before')
+        for gone in ('whether an icon helps', 'Use an icon only where it names a recognisable '
+                     'thing.'):
+            self.assertIn(gone, plain)
+            self.assertNotIn(gone, designed)
+        for told in ("So is each slide's approved design", "Copy each slide's `intent`",
+                     'Draw the visual the design approved',
+                     'Where it chose direct text, draw text, and add nothing to decorate it',
+                     'Place the icons the design names',
+                     'Add another only where it names a recognisable thing',
+                     'Draw nothing the title does not announce', '`search_icons`'):
+            self.assertIn(told, designed)
+        self.assertEqual(designed.count('## '), plain.count('## '))
+        self.assertLess(designed.index('## How to design'), designed.index('## Hand back'))
+        repair, again = (briefs.guidance('deck-section', repair=True),
+                         briefs.guidance('deck-section', repair=True, design=True))
+        self.assertIn('The words stay as they were approved.', repair)
+        self.assertNotIn('approved design', repair)
+        for told in ('how a slide is drawn, within its approved design',
+                     'another visual concept than the one approved',
+                     'The words and the design stay as they were approved.'):
+            self.assertIn(told, again)
+        self.assertEqual(again.count('## You are drawing this section again'), 1)
 
     def test_naming_rules_are_told_before_how_to_hand_back(self):
         for job, more in (('document', {}), ('brief', {'kind': 'product'}), ('scenario', {})):

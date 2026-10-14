@@ -256,8 +256,8 @@ def png(shade: int = 0) -> bytes:
 
 
 def drawn(spec: dict, wording=None) -> dict:
-    """A section as a composer would hand it in: every approved word, plainly stacked.
-    `wording` changes a piece of text on its way to the slide."""
+    """A section as a composer would hand it in: every approved word, plainly stacked, and
+    each approved intent copied. `wording` changes a piece of text on its way to the slide."""
     wording, slides = wording or (lambda text: text), []
     for slide in spec['slides']:
         stem = f"{spec['prefix']}{slide['id'].replace('-', '_')}"
@@ -270,6 +270,7 @@ def drawn(spec: dict, wording=None) -> dict:
                 'canvas': {'type': 'stack', 'direction': 'column', 'children': texts},
                 'notes': slide['notes']}
         made.update({key: slide[key] for key in ('caveat', 'source') if slide[key]})
+        made.update({'intent': json.loads(slide['intent'])} if 'intent' in slide else {})
         slides.append(made)
     return {'version': 1, 'title': spec['title'], 'direction': spec['direction'],
             'slides': slides}
@@ -440,8 +441,9 @@ class Slides:
         self.budget, self.busy, self.most, self.counting = 90, 0, 0, threading.Lock()
         self.imported, self.took = [], 0.01
         # Whether this tool keeps a design session, as the one after 0.13.1 does, and the
-        # answers it was sent.
-        self.design, self.replies = False, []
+        # answers it was sent. `gate` says whether it checks a section against the design:
+        # None, as it keeps one.
+        self.design, self.replies, self.gate = False, [], None
 
     def _asked(self, name: str, *given) -> None:
         from runner import slides
@@ -567,9 +569,23 @@ class Slides:
                   'you changed after looking, and what still bothers you.', '']
         return '\n'.join(lines)
 
-    def compile(self, composition, brand, folder=None) -> dict:
+    def _bound(self, slides: list, design, section: bool):
+        """A build held to the design approved in `design`, by the design stand-in, which
+        keeps the tool's rules. A refusal comes as JSON would."""
+        from runner import slides as tool
+        from stand_ins import design as designs
+        if design is None:
+            return None
+        try:
+            return designs.bound(slides, design, section)
+        except (designs.Refusal, ValueError) as refused:
+            found = designs.refusal(refused, designs.Session(design).revision())
+            raise tool.Refused([problem['detail'] for problem in found['problems']], found)
+
+    def compile(self, composition, brand, folder=None, design=None, section=False) -> dict:
         from runner import slides
-        self._asked('compile', composition, brand, folder)
+        self._asked('compile', composition, brand, folder,
+                    *([design, f'section={section}'] if design else []))
         made = self._read(composition)
         text = json.dumps(made)
         problems = [f"{slide.get('id')}: nothing is drawn." for slide in made.get('slides', [])
@@ -578,14 +594,15 @@ class Slides:
             if 'TOO LONG TO FIT' in text else []
         if problems:
             raise slides.Refused(problems)
+        self._bound(made['slides'], design, section)
         report = {'sceneDigest': hashlib.sha256(text.encode()).hexdigest(),
                   'slides': len(made['slides']), 'room': {}}
         if folder is None:
             return {**report, 'status': 'compiles'}
         self._new(folder).mkdir(parents=True)
         (Path(folder) / 'scene.json').write_text(json.dumps({'title': made.get('title'), 'slides': [
-            {key: slide.get(key) for key in ('id', 'title', 'sources', 'notes')}
-            for slide in made['slides']]}))
+            {key: slide.get(key) for key in ('id', 'title', 'sources', 'notes', 'intent')
+             if key != 'intent' or key in slide} for slide in made['slides']]}))
         return {**report, 'output': str(folder)}
 
     def merge(self, parts, composition) -> dict:
@@ -598,8 +615,12 @@ class Slides:
             'slides': slides}))
         return {'output': str(composition), 'slides': len(slides)}
 
-    def preview(self, compiled, folder, renderer, file_id=None, slide=None) -> dict:
+    def preview(self, compiled, folder, renderer, file_id=None, slide=None, design=None,
+                section=False) -> dict:
         from runner import slides
+        if design is not None:
+            self._asked('preview_design', compiled, design, f'section={section}')
+            self._bound(self._read(Path(compiled) / 'scene.json')['slides'], design, section)
         with self.counting:
             self.busy += 1
             self.most = max(self.most, self.busy)
@@ -674,6 +695,9 @@ class Slides:
 
     def designs(self) -> bool:
         return self.design
+
+    def sections(self) -> bool:
+        return self.design if self.gate is None else self.gate
 
     def _session(self, name: str, project, act, *given):
         """A design command, played by the design stand-in, which keeps the tool's rules

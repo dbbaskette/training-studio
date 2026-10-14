@@ -274,6 +274,29 @@ class CommandTests(unittest.TestCase):
             ['compose', 'preview', '--file', '/d/compiled', '--output', '/d/q', '--renderer',
              'local']])
 
+    def test_a_build_bound_to_a_design_names_its_project_and_asks_for_json(self):
+        shown = {'deck': '/d/p/deck.pptx', 'deckSha256': 'abc', 'slides': []}
+        self.answers = [(0, '{"status": "fits"}', ''), (0, '{"output": "/d/c"}', ''),
+                        (0, json.dumps(shown), ''), (0, json.dumps(shown), '')]
+        self.slides.compile('/d/section-1.json', '/d/brand.json', design=Path('/d/deck'),
+                            section=True)
+        self.slides.compile('/d/composition.json', '/d/brand.json', '/d/c',
+                            design=Path('/d/deck'))
+        self.slides.preview('/d/c', '/d/p', 'local', design=Path('/d/deck'), section=True)
+        self.slides.preview('/d/c', '/d/q', 'drive', file_id='file-1', design=Path('/d/deck'))
+        self.assertEqual([command[2:] for command in self.ran], [
+            ['compose', 'compile', '--file', '/d/section-1.json', '--brand', '/d/brand.json',
+             '--design-project', '/d/deck', '--section', '--json'],
+            ['compose', 'compile', '--file', '/d/composition.json', '--brand',
+             '/d/brand.json', '--design-project', '/d/deck', '--json', '--output', '/d/c'],
+            ['compose', 'preview', '--file', '/d/c', '--output', '/d/p', '--renderer', 'local',
+             '--design-project', '/d/deck', '--section', '--json'],
+            ['compose', 'preview', '--file', '/d/c', '--output', '/d/q', '--renderer',
+             'google', '--file-id', 'file-1', '--design-project', '/d/deck', '--json']])
+        with self.assertRaisesRegex(WorkspaceError, 'needs the design project'):
+            self.slides.compile('/d/section-1.json', '/d/brand.json', section=True)
+        self.assertEqual(len(self.ran), 4, 'a section alone is never sent')
+
     def test_a_preview_is_rendered_through_drive_or_on_this_computer_and_nothing_else(self):
         with self.assertRaisesRegex(WorkspaceError, 'rendered through drive or local, not '
                                     'google'):
@@ -1381,6 +1404,26 @@ class DesignTests(unittest.TestCase):
         self.tool = self.slides.run
         self.cases = json.loads((CONTRACT / 'cases.json').read_text(encoding='utf-8'))
         self.made = 0
+        # The real tool compiles without a brand; the wrapper always names one.
+        self.skill = brand_stand_in.stand_in()   # kept: its library is the brand's source
+        self.brand = self.skill.export(self.root / 'brand', 'example', 'light')['contract']
+
+    def section(self, *ids: str, **intents) -> Path:
+        """The fixture's composition with only the slides named, in that order, each
+        carrying the intent given for it by its ID."""
+        made = json.loads((CONTRACT / 'composition.json').read_text(encoding='utf-8'))
+        by_id = {slide['id']: slide for slide in made['slides']}
+        made['slides'] = [{**by_id[ident], **({'intent': intents[ident]}
+                                              if ident in intents else {})} for ident in ids]
+        self.made += 1
+        file = self.root / f'section-{self.made}.json'
+        file.write_text(json.dumps(made), encoding='utf-8')
+        return file
+
+    @staticmethod
+    def approved_intent(ident: str) -> dict:
+        plan = json.loads((CONTRACT / 'proposal.json').read_text(encoding='utf-8'))
+        return next(slide['intent'] for slide in plan['slides'] if slide['id'] == ident)
 
     def project(self) -> Path:
         self.made += 1
@@ -1435,6 +1478,9 @@ class DesignTests(unittest.TestCase):
         session = project / '.harness-slides' / 'design' / 'session.json'
         approvals = json.loads(session.read_text())['approvals']
         self.assertEqual(approvals['reconcile_loop']['response'], 'Approve the whole plan')
+        # The session names no folder: it is told its project each time, so it can move.
+        self.assertNotIn('project', json.loads(session.read_text()))
+        self.assertEqual(self.slides.design_status(project)['project'], str(project))
 
     def test_every_refusal_of_a_design_command_in_the_fixture_comes_back_as_its_problems(self):
         calls = {'propose': lambda project, file: self.slides.design_propose(project, file),
@@ -1469,6 +1515,129 @@ class DesignTests(unittest.TestCase):
                 ran.append(case['id'])
         self.assertEqual(ran, ['qualification-missing', 'copy-mismatch', 'asset-unresolved',
                                'awaiting-approval', 'stale-reply'])
+
+    def test_every_refusal_of_a_composition_against_the_design_comes_back_as_its_problems(self):
+        ran = []
+        for case in self.cases['cases']:
+            if case['run'][:2] != ['compose', 'compile'] or '--design-project' not in case['run']:
+                continue    # images and the asset manifest are later issues' (#45, #46)
+            with self.subTest(case['id']):
+                project = self.project()
+                self.given(case['given'], project)
+                run = [part.replace('{project}', str(project)).replace('{fixture}', str(CONTRACT))
+                       .replace('{output}', str(self.root / f"out-{case['id']}"))
+                       for part in case['run']]
+                refusal = self.refused(
+                    self.slides.compile, Path(run[run.index('--file') + 1]), self.brand,
+                    Path(run[run.index('--output') + 1]) if '--output' in run else None,
+                    project, '--section' in run)
+                self.assertEqual([{key: found[key] for key in wanted}
+                                  for found, wanted in zip(refusal.found, case['problems'])],
+                                 case['problems'])
+                self.assertEqual(len(refusal.found), len(case['problems']))
+                self.assertEqual(refusal.revision, self.slides.design_status(project)['revision'])
+                self.assertFalse((self.root / f"out-{case['id']}").exists())
+                ran.append(case['id'])
+        self.assertEqual(ran, ['composition-not-approved', 'composition-reordered',
+                               'composition-reordered-check-only', 'section-missing-slide'])
+
+    def test_a_section_is_compiled_and_previewed_against_the_design_approved_now(self):
+        project = self.project()
+        approved = self.given('approved', project)
+        loop = self.approved_intent('reconcile_loop')
+        section = self.section('reconcile_loop', 'knowledge_check', reconcile_loop=loop)
+        checked = self.slides.compile(section, self.brand, design=project, section=True)
+        self.assertEqual(checked['design'], {'revision': approved['revision'], 'scope': 'section',
+                                             'slides': ['reconcile_loop', 'knowledge_check']})
+        built = self.slides.compile(section, self.brand, self.root / 'built', project, True)
+        self.assertEqual(built['design']['scope'], 'section')
+        report = json.loads((self.root / 'built' / 'compose-report.json').read_text())
+        self.assertEqual((report['designRevision'], report['designScope']),
+                         (approved['revision'], 'section'))
+        self.assertEqual(report['inputs']['composition']['path'], str(section),
+                         'a file outside the project is named as it is')
+        inside = project / 'section.json'
+        inside.write_text(section.read_text())
+        self.slides.compile(inside, self.brand, project / 'built', project, True)
+        report = json.loads((project / 'built' / 'compose-report.json').read_text())
+        self.assertEqual(report['inputs']['composition']['path'], '../section.json',
+                         'one inside it is named from the build, so the project can move')
+        shown = self.slides.preview(self.root / 'built', self.root / 'shown', 'local',
+                                    design=project, section=True)
+        self.assertEqual(shown['design']['scope'], 'section')
+        # A section is never taken for the whole deck, nor a whole deck for a section.
+        whole = self.refused(self.slides.compile, section, self.brand, None, project)
+        self.assertEqual((whole.codes, whole.found[0]['slide']),
+                         (['design-mismatch'], 'operator_architecture'))
+        self.assertIn('approved slide operator_architecture is missing before reconcile_loop',
+                      whole.problems[0])
+        for ids, named in ((('knowledge_check', 'reconcile_loop'), 'reconcile_loop'),
+                           (('reconcile_loop', 'stray_slide'), 'stray_slide')):
+            made = json.loads(section.read_text())
+            made['slides'] = [next((s for s in made['slides'] if s['id'] == ident),
+                                   {**made['slides'][0], 'id': ident}) for ident in ids]
+            section.write_text(json.dumps(made))
+            refused = self.refused(self.slides.compile, section, self.brand, None, project, True)
+            self.assertEqual((refused.codes, refused.found[0]['slide']),
+                             (['design-mismatch'], named))
+        # The intent is compared as the tool writes it: the same keys in another order differ.
+        shuffled = json.loads(json.dumps(loop, sort_keys=True))
+        self.assertEqual(shuffled, loop)
+        refused = self.refused(self.slides.compile,
+                               self.section('reconcile_loop', reconcile_loop=shuffled),
+                               self.brand, None, project, True)
+        self.assertEqual((refused.codes, refused.problems), (['design-mismatch'], [
+            'reconcile_loop: its intent differs from the approved design; revise the proposal '
+            'before construction']))
+        # The build is checked again when it is previewed: here the design has moved on.
+        plan = json.loads((CONTRACT / 'proposal.json').read_text())
+        plan['slides'][1]['composition'] = 'Three boxes in a column.'
+        (self.root / 'moved.json').write_text(json.dumps(plan))
+        self.slides.design_propose(project, self.root / 'moved.json', approved['revision'])
+        moved = self.refused(self.slides.preview, self.root / 'built', self.root / 'again',
+                             'local', None, None, project, True)
+        self.assertEqual(moved.codes, ['design-awaiting-approval'])
+        self.assertFalse((self.root / 'again').exists())
+
+    def test_a_section_needs_its_design_project_and_writes_nothing_without_one(self):
+        code, out, err = self.tool(['node', 'script', 'compose', 'compile', '--file',
+                                    str(self.root / 'none.json'), '--section', '--json'])
+        refusal = json.loads(out)
+        self.assertEqual((code, err, refusal['designRevision'],
+                          [problem['code'] for problem in refusal['problems']]),
+                         (1, '', None, ['input-invalid']))
+        self.assertEqual(refusal['problems'][0]['detail'], '--section needs --design-project: '
+                         'a section is checked against the approved design')
+        # Slides that carry an intent are not written without a design to check them against.
+        section = self.section('reconcile_loop',
+                               reconcile_loop=self.approved_intent('reconcile_loop'))
+        self.slides.compile(section, self.brand)
+        written = self.refused(self.slides.compile, section, self.brand, self.root / 'out')
+        self.assertIn('New creative authoring needs --design-project', written.problems[0])
+        self.assertFalse((self.root / 'out').exists())
+
+    def test_whether_a_tool_checks_a_section_is_asked_of_it_not_read_from_its_version(self):
+        self.assertTrue(self.slides.sections())
+        older = slides_stand_in.stand_in()
+        self.assertFalse(older.sections())
+        for tool in (self.slides, older):
+            tool.sections()
+            probes = [call for call in tool.run.calls if call[:2] == ['compose', 'compile']]
+            self.assertEqual(len(probes), 1, 'asked once, then remembered')
+            self.assertEqual(probes[0][-2:], ['--section', '--json'])
+            self.assertFalse(Path(probes[0][probes[0].index('--file') + 1]).parent.exists())
+        code, out, err = older.run(['node', 'script', 'compose', 'compile', '--file', 'x',
+                                    '--section', '--json'])
+        self.assertEqual((code, out), (1, ''))
+        self.assertIn("Unknown option '--section'", err)
+        # Only a refusal of the section alone, as JSON, is a yes.
+        for answer in ((1, '', "Unknown option '--section'\n"), (0, '{}\n', ''),
+                       (1, json.dumps({'status': 'blocked', 'problems': [
+                           {'code': 'input-missing'}]}), '')):
+            tool = slides.Slides(runtime=Path('/opt/harness-slides'), run=lambda command,
+                                 cwd=None, said=answer: says()(command) if command[2:] == [
+                                     '--version'] else said)
+            self.assertFalse(tool.sections(), answer)
 
     def test_each_design_call_is_run_as_the_command_line_takes_it(self):
         project = self.project()

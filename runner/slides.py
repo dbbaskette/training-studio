@@ -11,9 +11,11 @@ What a caller needs to know
     slides.compose_contract(brand)                 # text a worker is told
     slides.layouts(brand)                          # {'default', 'layouts': [{'name', 'title',
                                                    #                           'subtitles', 'pictures'}]}
-    report = slides.compile(composition, brand, folder=None)   # checks; with a folder, writes
+    report = slides.compile(composition, brand, folder=None, design=None, section=False)
+                                                   # checks; with a folder, writes
     slides.merge(parts, composition)
-    shown = slides.preview(compiled, folder, renderer, file_id=None, slide=None)
+    shown = slides.preview(compiled, folder, renderer, file_id=None, slide=None, design=None,
+                           section=False)
     slides.critique(preview_folder, assessment)
     made = slides.render(compiled, deck)
     slides.cited(compiled)                         # {objective: [slide numbers]}, from the scene
@@ -21,6 +23,7 @@ What a caller needs to know
     slides.drive_check()                           # whether Google access reaches Drive
     slides.drive_import(deck, name)                # {'id', 'name', 'url'}
     slides.designs()                               # whether it keeps a design session
+    slides.sections()                              # whether it checks a section against it
     slides.design_propose(project, proposal, expected=None)   # with its question
     slides.design_status(project)
     slides.design_check(project)                   # {'plan', 'revision', 'buildAllowed'}
@@ -87,6 +90,15 @@ Added to the above
 - `design_respond` sends a person's answer, and nothing else may: no worker is given it.
   The reply names the question and revision that were put to the person, so an answer to
   anything older is refused as `design-revision-stale`.
+- `sections()` asks the tool whether it checks a build against the approved design one
+  section at a time (`--section`), with refusals as JSON. 0.13.1 does not know `--section`.
+  The tool is asked, as for `designs()`: `--section` without a design project is refused as
+  JSON `input-invalid` before any file is read, so nothing is read or written.
+- `compile` and `preview` with `design`, the design project, check the slides against the
+  design approved there now: every approved slide in order, or with `section` a run of
+  neighbouring ones, each with its approved title and, where a slide gives one, its
+  approved `intent`. They then ask for refusals as JSON, so a `design-mismatch` names its
+  slide in `found`. Without `design` the command is as 0.13.1 takes it.
 - `slides.runtime` is the folder the tool is installed in, with links followed. Give it to
   `Slides(runtime=...)` to use that same tool somewhere else, as the worker tools' server
   does. `Slides(read=...)` replaces how a guidance file is read.
@@ -201,6 +213,16 @@ def _problems(err: str, code: int) -> list[str]:
     return lines or [f'it ended with exit code {code}']
 
 
+def _bound(design, section: bool) -> list[str]:
+    """What compile and preview add to be checked against an approved design."""
+    if design is None:
+        if section:
+            raise WorkspaceError('A section is checked against the approved design, so it '
+                                 'needs the design project.')
+        return []
+    return ['--design-project', str(design), *(['--section'] if section else []), '--json']
+
+
 @contextlib.contextmanager
 def _new(path):
     """A file or folder a call is about to make. When the call fails, what it wrote is
@@ -246,6 +268,7 @@ class Slides:
         self.runtime = Path(runtime) if runtime else find_runtime()
         self.node = 'node' if run else shutil.which('node')
         self._designs: bool | None = None
+        self._sections: bool | None = None
         if self.node is None:
             raise WorkspaceError('harness-slides needs Node.js 20 or newer, which was not '
                                  'found on this computer. Install it, then try again.')
@@ -310,10 +333,13 @@ class Slides:
         """The layouts of the brand's template. One with `title` false shows no title."""
         return self._json('compose', 'layouts', '--brand', str(brand))
 
-    def compile(self, composition: Path, brand: Path, folder: Path | None = None) -> dict:
+    def compile(self, composition: Path, brand: Path, folder: Path | None = None,
+                design: Path | None = None, section: bool = False) -> dict:
         """Check a composition, a whole deck or one section. With a new folder, write what
-        a preview and a render are made from."""
-        args = ['compose', 'compile', '--file', str(composition), '--brand', str(brand)]
+        a preview and a render are made from. With `design`, it is checked against the
+        design approved in that project: as the whole deck, or as one `section`."""
+        args = ['compose', 'compile', '--file', str(composition), '--brand', str(brand),
+                *_bound(design, section)]
         if folder is None:
             return self._json(*args)
         with _new(folder):
@@ -326,9 +352,12 @@ class Slides:
                               str(composition))
 
     def preview(self, compiled: Path, folder: Path, renderer: str,
-                file_id: str | None = None, slide: str | None = None) -> dict:
+                file_id: str | None = None, slide: str | None = None,
+                design: Path | None = None, section: bool = False) -> dict:
         """Render what was compiled and return each slide as a picture, in a new folder.
-        `slide` names one slide to draw; the whole deck is still rendered."""
+        `slide` names one slide to draw; the whole deck is still rendered. With `design`,
+        the build is checked first against the design approved there now, as `compile`
+        checks it."""
         if renderer not in RENDERERS:
             raise WorkspaceError(f'A preview is rendered through {RENDERERS[0]} or '
                                  f'{RENDERERS[1]}, not {renderer}.')
@@ -338,6 +367,7 @@ class Slides:
             args += ['--file-id', file_id]
         if slide:
             args += ['--slide', slide]
+        args += _bound(design, section)
         with PREVIEWING, _new(folder):
             shown = self._json(*args)
             if not shown.get('deck') or not isinstance(shown.get('slides'), list):
@@ -393,6 +423,24 @@ class Slides:
                 code, out = 0, ''
             self._designs = code != 0 and _blocked(out) is not None
         return self._designs
+
+    def sections(self) -> bool:
+        """Whether this tool checks a section against the approved design, as a deck drawn
+        from one needs: `--section` beside `--design-project` on compile and preview, with
+        refusals as JSON. Asked as `designs` asks, and kept: `--section` alone is refused as
+        JSON `input-invalid` by a tool that has it, before the file it names is read."""
+        if self._sections is None:
+            try:
+                with tempfile.TemporaryDirectory() as folder:
+                    code, out, _ = self.run([
+                        self.node, str(self.runtime / SCRIPT), 'compose', 'compile', '--file',
+                        str(Path(folder) / 'none.json'), '--section', '--json'])
+            except (WorkspaceError, OSError):
+                code, out = 0, ''
+            found = _blocked(out) if code != 0 else None
+            self._sections = bool(found) and [problem.get('code') for problem
+                                              in found['problems']] == ['input-invalid']
+        return self._sections
 
     def design_propose(self, project: Path, proposal: Path,
                        expected: str | None = None) -> dict:

@@ -14,6 +14,7 @@ What a caller needs to know
     briefs.guidance('deck-outline', design=True)   and proposing how each slide is drawn
     briefs.guidance('deck-section')             drawing one section of a deck
     briefs.guidance('deck-section', repair=True)   drawing it again after a review
+    briefs.guidance('deck-section', design=True)   drawing it from an approved design
     briefs.guidance('deck-review')              reviewing a deck someone else drew
     briefs.guidance('document', naming=True)    for a training with a brand: with its names
     briefs.mode('roleplay')                     the core's own reference for one mode
@@ -30,6 +31,9 @@ What a caller needs to know
   asks of them.
 - A scenario's mode is not part of its brief. The mode's reference is the core's own, and
   goes to the worker as one of the job's inputs.
+- A section of a deck drawn from an approved design is told so where it is told what is
+  its own: the parts of deck-section-design.md replace the parts of the same heading,
+  and the rest is as for a deck without one.
 - A deck's briefs have no example. The format of an outline and of a section is the slides
   tool's own, and goes to the worker as an input, with the brand's limits in it.
 - The writers of a guide, a brief and a scenario are told, when the training has a brand,
@@ -38,6 +42,7 @@ What a caller needs to know
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
@@ -50,6 +55,7 @@ JOBS = ('research-plan', 'research-question', 'blueprint', 'document', 'brief', 
         'yoodli', 'deck-outline', 'deck-section', 'deck-review')
 NAMED = ('document', 'brief', 'scenario')   # the writers a brand's naming rules are given to
 HAND_BACK = '\n## Hand back\n'
+DESIGNED = {'deck-outline': 'deck-design', 'deck-section': 'deck-section-design'}
 EXAMPLES = Path('assets') / 'examples'
 EXAMPLE = {'blueprint': 'blueprint.md', 'document': 'document.md', 'brief': '{kind}-brief.md',
            'scenario': 'scenario.md', 'yoodli': 'yoodli.md'}
@@ -63,6 +69,18 @@ def read(name: str) -> str:
     return (HERE / f'{name}.md').read_text(encoding='utf-8')
 
 
+def _replaced(text: str, parts: str) -> str:
+    """A brief with each part of `parts`, a heading and what is under it, in place of the
+    part of the same heading. A heading the brief does not have is left out."""
+    for part in re.split(r'(?m)^(?=## )', parts):
+        heading = part.partition('\n')[0]
+        if not heading.startswith('## '):
+            continue
+        pattern = re.compile(rf'^{re.escape(heading)}\n.*?(?=^## |\Z)', re.S | re.M)
+        text = pattern.sub(lambda found: part.rstrip('\n') + '\n\n', text, count=1)
+    return text
+
+
 def mode(name: str) -> str:
     """The core's reference for one practice mode, whole."""
     if name not in checks.MODES:
@@ -74,7 +92,8 @@ def guidance(job: str, level: str | None = None, kind: str | None = None,
              naming: bool = False, repair: bool = False, design: bool = False) -> str:
     """The guidance for one kind of job, whole. `naming` says the job has the brand's
     naming rules among its inputs, `repair` that a section is drawn again, and `design`
-    that the writer of what a deck says proposes how each slide is drawn too."""
+    that the writer of what a deck says proposes how each slide is drawn too, or that a
+    section is drawn from the design the person approved."""
     if job not in JOBS:
         raise WorkspaceError('There is a brief for: ' + ', '.join(JOBS) + '.')
     if level is not None and (job not in LEVELLED or level not in workspace.LEVELS):
@@ -84,14 +103,16 @@ def guidance(job: str, level: str | None = None, kind: str | None = None,
         raise WorkspaceError('A brief, and nothing else, is written as one of these kinds: '
                              + ', '.join(workspace.BRIEF_KINDS) + '.')
     if (naming and job not in NAMED) or (repair and job != 'deck-section') \
-            or (design and job != 'deck-outline'):
+            or (design and job not in DESIGNED):
         raise WorkspaceError('Naming rules are given to the writers of a guide, a brief and '
                              'a scenario, only a section of a deck is drawn again, and only '
-                             'the writer of what a deck says proposes its design.')
+                             "a deck's outline and its sections are told of its design.")
     text = read(job)
     for added in ((['naming'] if naming else []) + (['deck-repair'] if repair else [])
-                  + (['deck-design'] if design else [])):
+                  + (['deck-design'] if design and job == 'deck-outline' else [])):
         text = text.replace(HAND_BACK, f'\n{read(added)}{HAND_BACK}', 1)
+    if design and job == 'deck-section':
+        text = _replaced(text, read(DESIGNED[job]))
     if level is not None:
         text += '\n' + read(LEVELLED[job]).replace('{level}', level)
     if job not in EXAMPLE:

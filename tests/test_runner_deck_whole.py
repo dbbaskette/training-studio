@@ -42,6 +42,14 @@ class Composers:
         outline = self.test.workers.outline_said
         return next(slide for slide in outline['slides'] if slide['id'] == ident)
 
+    @staticmethod
+    def intent(brief: str, ident: str) -> dict | None:
+        """The intent a section's brief gives one slide to copy, or None when it gives none."""
+        mine = brief.partition(f'### `{ident}`')[2].partition('\n#')[0]
+        if '`intent`, to copy:' not in mine:
+            return None
+        return json.loads(mine.partition('```json\n')[2].partition('\n```')[0])
+
     def section(self, tools, job):
         test, spec = self.test, tools.job['artifacts']['section']
         listed = test.ok(tools.list_inputs())
@@ -54,6 +62,10 @@ class Composers:
         made = {'version': 1, 'title': spec['title'], 'direction': spec['direction'],
                 'slides': [slides_stand_in.sketch(self.said(slide['id']), spec['prefix'])
                            for slide in spec['slides']]}
+        for slide in made['slides']:   # copied from the brief, its keys in another order
+            intent = self.intent(self.read[spec['prefix']]['brief'], slide['id'])
+            slide.update({'intent': json.loads(json.dumps(intent, sort_keys=True))}
+                         if intent else {})
         if tools.job['look']:   # drawn again after a review: it looks, then draws otherwise
             for slide in tools.job['look']:
                 test.ok(tools.look_at_slide(slide['number']))
@@ -114,6 +126,10 @@ class WholeDeckTests(WholeCase):
                          'a fresh render would be another file than the one reviewed')
         self.assertEqual(len(self.asked('compose critique')), 1)
         self.assertEqual(len(self.tool.files), 1, 'one preview file in Drive for the deck')
+        self.assertEqual([call for call in self.asked('compose compile')
+                          + self.asked('compose preview') if {'--design-project', '--section',
+                                                              '--json'} & set(call)], [],
+                         'a deck without a design is built as 0.13.1 builds it')
         shown = self.gate(root)
         self.assertEqual([(slide['number'], slide['id']) for slide in shown['slides']],
                          list(enumerate((slide['id'] for slide in PARTED['slides']), 1)))
@@ -234,6 +250,24 @@ class DesignedDeckTests(WholeCase):
         self.assertEqual(len(session['approvals']), len(PARTED['slides']))
         for job in self.base.glob('data/**/drafts/design-*'):
             self.fail(f'a worker check left its project behind: {job}')
+        # Each composer copied its intents from its brief, in an order of its own, and every
+        # check and preview of a section was made against the design as that section; the
+        # whole deck was compiled and previewed against it as the deck.
+        project = str(root / pipeline.DESIGNS)
+        built = self.asked('compose compile') + self.asked('compose preview')
+        sections = [call for call in built if '--design-project' in call and '--section' in call]
+        self.assertTrue(sections)
+        for call in sections:
+            self.assertEqual(call[call.index('--design-project') + 1:][:3],
+                             [project, '--section', '--json'])
+        whole = [call for call in built if '--design-project' in call and '--section' not in call]
+        self.assertEqual([call[1] for call in whole], ['compile', 'preview'])
+        unbound = [call for call in built if '--design-project' not in call]
+        self.assertEqual([call[-2:] for call in unbound], [['--section', '--json']],
+                         'only the question whether it can, asked once')
+        for prefix, read in self.composers.read.items():
+            self.assertIn('## The approved design', read['brief'])
+            self.assertIn('## Icons across the deck', read['brief'])
         self.assertEqual(self.to_end(root), ['deck', 'scenario:main'])
 
 

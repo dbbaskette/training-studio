@@ -63,7 +63,9 @@ checked here before anything is kept. Each job has a folder that only the runner
   takes 'brand' and what `deck.fixed` returned, and how its previews are taken:
   'previews' (how many it has), 'renderer', 'lock' and 'kept'. It is checked with
   `deck.kept` and with the slides tool's compiler. What is handed in must be the version
-  last previewed; a hand-in that is not costs nothing and is sent back.
+  last previewed; a hand-in that is not costs nothing and is sent back. A deck drawn from
+  its approved design adds 'design', the design project, and 'section': its sections are
+  then compiled and previewed against that design, each intent written as it was approved.
 - Previews are taken one at a time on this computer, whatever is drawn side by side:
   `render` waits for the file named by 'lock'. 'kept' names the file that remembers the one
   preview file a deck keeps in Google Drive, so that it is written again and no second
@@ -600,6 +602,14 @@ def _problem(problem: dict) -> str:
     return line
 
 
+def against(how: dict) -> dict:
+    """What compile and preview are given to check slides against the approved design:
+    nothing for a deck without one."""
+    if not how.get('design'):
+        return {}
+    return {'design': Path(how['design']), 'section': bool(how.get('section'))}
+
+
 def check_section(text: str, spec: dict, slides,
                   scratch: Path) -> tuple[list[str], list[dict], list[str], str]:
     """A section: some slides of a deck, drawn. What was fixed before its composer started
@@ -609,9 +619,12 @@ def check_section(text: str, spec: dict, slides,
     except Refusal as refusal:
         return [str(refusal)], [], [], text
     ours, found = deck.kept(section, spec), []
+    if spec.get('design'):    # checked against the approved design, as one section of it
+        section = deck.as_approved(section, spec)
+        kept = json.dumps(section, indent=2, ensure_ascii=False) + '\n'
     if isinstance(section, dict):
         try:
-            slides.compile(_draft(scratch, 'section', kept), spec['brand'])
+            slides.compile(_draft(scratch, 'section', kept), spec['brand'], **against(spec))
         except WorkspaceError as refusal:
             found = said_no(refusal)
     outcomes = [checks.result('section.rules', ours), checks.result('section.compile', found)]
@@ -696,7 +709,7 @@ def render(slides, compiled: Path, folder: Path, how: dict) -> dict:
 
         try:
             found = slides.preview(compiled, folder, how['renderer'],
-                                   file_id=known.get('id'))
+                                   file_id=known.get('id'), **against(how))
         except WorkspaceError as refusal:  # a preview that failed may have made its file
             left = getattr(refusal, 'left', None) or {}
             remember(left.get('fileId'), left.get('url'))
@@ -1187,7 +1200,7 @@ class WorkerTools:
             new.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.slides().compile(_draft(self.folder / 'drafts', 'preview', kept),
-                                  spec['brand'], folder=build)
+                                  spec['brand'], folder=build, **against(spec))
             found = render(self.slides(), build, taken, spec)
             slides = pictures(found, taken, self.folder / 'shown')
         except WorkspaceError as refusal:
