@@ -1,6 +1,6 @@
 // The page: home, trainings, status, settings, one training, and a gate. With the runner
-// behind it there are five more: set-up, a new training, a run, what a deck says, and a
-// finished training's index.
+// behind it there are six more: set-up, a new training, a run, what a deck says, a finished
+// training's index, and what the workspace has published.
 // It draws what the server says and sends back only what the person decides. Every value
 // from the server is placed as text, so nothing in a training's files or its record can
 // ever be read as markup. Documents are drawn by markdown.js, which keeps the same rule.
@@ -105,7 +105,7 @@ const NAV = [['go-home', 'home', 'home'], ['go-trainings', 'trainings', 'trainin
   ['go-status', 'status', 'status'], ['go-settings', 'settings', 'settings']];
 // The screen in the sidebar that each other screen belongs to.
 const PARENTS = { training: 'trainings', gate: 'trainings', run: 'trainings', new: 'trainings',
-  index: 'trainings', outline: 'trainings', setup: 'settings' };
+  index: 'trainings', outline: 'trainings', published: 'trainings', setup: 'settings' };
 
 // What the runner adds. A run and each of its steps say where they are in these words.
 const RUN_WORDS = {
@@ -115,6 +115,8 @@ const RUN_WORDS = {
   stopped: ['off', 'Stopped'],
   failed: ['late', 'Stopped: something went wrong'],
   done: ['done', 'Finished here'],
+  // A training a teammate's computer runs: only what was last shared is known here.
+  elsewhere: ['none', 'Run from another computer'],
 };
 const STEP_WORDS = {
   done: ['done', 'Done'], working: ['current', 'Working'], waiting: ['review', 'Waiting for you'],
@@ -214,6 +216,24 @@ const OUTLINE_APPROVES = 'You are approving what each slide says. The slides are
   + 'these words and come to you again as a deck. If the blueprint or the guide changes, '
   + 'this comes back to you.';
 const CLOSE = 'You can close this page; it says when it needs you again.';
+// What a team adds. Each of these is confirmed in the sheet before anything is sent: who
+// runs a training, publishing a finished one, and bringing one in from a conversation.
+const TEAM_SHEETS = ['take', 'hand-over', 'publish', 'adopt'];
+const READ_ONLY = 'You can read everything here: the steps, the files and the reviews. '
+  + 'Nothing here can be paused, stopped, decided or answered from this computer.';
+const PUBLISH_SAYS = 'Publishing marks this training, exactly as it stands now, as its next '
+  + 'numbered revision in the workspace, where it is listed with its index to read. Nothing '
+  + 'is copied anywhere.';
+const PUBLISH_KEPT = 'A revision is never moved afterwards. If the training changes later, '
+  + 'publish it again, and that is the next revision. Documents you supplied and pages that '
+  + 'were saved are not part of it.';
+const NOTIFY_SAYS = 'When no page is open and a training needs you, this computer tells you '
+  + 'through its own notifications. It says only the training’s title and that it needs a '
+  + 'decision, once for each thing that needs you.';
+const NOTIFY_DIFFERS = 'This is not the browser’s notification above. That one works only '
+  + 'while this page is open in a tab; this one is for when no page is open at all.';
+// Where a finished training's index is, in its folder.
+const INDEX = 'README.md';
 const HALTED = 'This training is not running, so nothing more happens until you resume it or '
   + 'try again.';
 
@@ -234,6 +254,12 @@ const view = {
   // slides this screen holds: each by what it is of, those still to fetch, and what says
   // when one comes into view.
   slide: 0, viewer: null, pictures: new Map(), wanted: [], fetching: false, watcher: null,
+  // What a team adds: every run and who runs what, what is published, what publishing just
+  // answered, the copy a training was brought in as, what the runner last said about who
+  // has each training, a look for teammates' work and what it brought, and the switch for
+  // the computer's own notifications while it is being changed.
+  status: null, shelf: null, issued: null, adopted: null, noticed: {},
+  fetching: false, fetched: null, notifying: false, unnotified: '',
 };
 // Each part of a screen that is drawn in parts, and what it was drawn from.
 const PARTS = new WeakMap();
@@ -955,7 +981,7 @@ function setTitle(name) {
 // Everything a list screen is drawn from. When none of it has changed, nothing is redrawn.
 function signature() {
   return JSON.stringify([view.listing, view.computer, view.checking, alerts(), view.setup,
-    view.asks, view.sharing]);
+    view.asks, view.sharing, view.status, view.unnotified, view.fetching, view.fetched]);
 }
 
 function draw(fresh) {
@@ -964,16 +990,17 @@ function draw(fresh) {
   if (view.screen === 'run') return drawRun(fresh);
   if (view.screen === 'outline') return drawOutline(fresh);
   if (view.screen === 'index') return drawIndex(fresh);
+  if (view.screen === 'published' && view.runner) return drawPublished(fresh);
   if (view.screen === 'setup' && view.setup) return drawSetup(fresh);
   const titles = { home: 'Home', trainings: 'Trainings', status: 'Status', settings: 'Settings',
-    setup: 'Set-up', new: 'New training' };
+    setup: 'Set-up', new: 'New training', published: 'Published' };
   if (!view.listing) {
     place({ title: titles[view.screen] || 'Home' },
       [make('p', 'quiet', 'Reading your trainings.')], fresh);
     return undefined;
   }
-  // Only the runner has these two screens. On the plain desk a stray visit lands on home.
-  if (view.screen === 'setup' || (view.screen === 'new' && !view.runner)) {
+  // Only the runner has these screens. On the plain desk a stray visit lands on home.
+  if (view.screen === 'setup' || (['new', 'published'].includes(view.screen) && !view.runner)) {
     show('home', null, true);
     return undefined;
   }
@@ -1013,6 +1040,7 @@ function closeSheet() {
   if (view.gate) paintGate(false);
   else if (view.screen === 'run' && view.run) paintRun(false);
   else if (outlined()) paintOutline(false);
+  else if (view.screen === 'training' && view.training) paintTraining(false);
   if (!focusKey(opener)) byId('title').focus({ preventScroll: true });
 }
 
@@ -1109,7 +1137,8 @@ function afterSheet() {
 
 function drawSheet() {
   const holder = byId('sheet');
-  const shown = view.after || (view.sheet && (view.gate || view.deciding || outlined()));
+  const shown = view.after || (view.sheet && (view.gate || view.deciding || outlined()
+    || TEAM_SHEETS.includes(view.sheet)));
   holder.hidden = !shown;
   // While a sheet is open it holds the one filled button, so the toolbar's are put away.
   byId('actions').hidden = Boolean(shown);
@@ -1119,6 +1148,7 @@ function drawSheet() {
   }
   let body;
   if (view.after) body = afterSheet();
+  else if (TEAM_SHEETS.includes(view.sheet)) body = teamSheet(view.sheet);
   else if (FORMS[view.sheet]) body = noteSheet(view.sheet);
   else body = confirmSheet(view.sheet);
   holder.replaceChildren(...body);
@@ -1205,7 +1235,7 @@ function greeting() {
 
 // A training that runs on its own opens on its run; any other opens on its own view.
 function openTraining(training) {
-  return () => show(training.run ? 'run' : 'training', { path: training.path });
+  return () => show(watched(training) ? 'run' : 'training', { path: training.path });
 }
 
 function reviewAction(training) {
@@ -1226,6 +1256,8 @@ function working(training) {
 // One sentence for a training in a list. A run says what it is doing now; a gate says what
 // is waiting. Where the deck is all that is left, that is the one thing said.
 function saysOf(training) {
+  // Of a training a teammate runs, the runner says what was last shared and when.
+  if (elsewhere(training)) return (training.run && training.run.sentence) || training.sentence;
   if (deckLeft(training)) return DECK_LEFT;
   const atGate = training.state === 'needs-you' && (training.waiting || {}).artifact;
   return (training.run && !atGate && training.run.sentence) || training.sentence;
@@ -1245,6 +1277,7 @@ function needsRow(training, index) {
       add(text, make('p', 'row-quote', asker(training.path) + waiting.question));
     }
   }
+  add(text, noticeLine(training));
   const review = waiting.artifact && !asked.question && !asked.problem;
   // What a deck says is reviewed on a screen of its own, reached from here like any gate.
   const outline = !waiting.artifact && readsOutline(asked);
@@ -1265,7 +1298,7 @@ function quietRow(training, kind) {
       && !deckLeft(training)) {
     add(text, state(...runWords(training.run)));
   }
-  add(text, make('p', 'row-says', saysOf(training)));
+  add(text, make('p', 'row-says', saysOf(training)), whoLine(training), noticeLine(training));
   const go = capsule('Open', 'quiet', openTraining(training), 'open ' + training.path);
   go.setAttribute('aria-label', 'Open ' + (training.title || 'Untitled'));
   const row = make('li', working(training) ? 'row working' : 'row');
@@ -1330,8 +1363,11 @@ function computerLine() {
     'link', () => show('status'), 'computer'));
 }
 
+// The trainings in one state. One a teammate runs is theirs to decide, so it is never among
+// what needs this person, and is listed apart.
 function pick(kind) {
-  return view.listing.filter((training) => !training.error && training.state === kind);
+  return view.listing.filter((training) => !training.error && training.state === kind
+    && !elsewhere(training));
 }
 
 function drawHome(fresh) {
@@ -1354,10 +1390,11 @@ function drawHome(fresh) {
     nodes.push(
       rows('Needs you', pick('needs-you'), needsRow, 'card-needs'),
       rows('In progress', pick('in-progress'), (training) => quietRow(training, 'in-progress')),
+      rows('Run by your teammates', teammates(), teamRow),
       rows('Finished', pick('finished'), (training) => quietRow(training, 'finished')),
       rows('Cannot be read', all.filter((training) => training.error), brokenRow));
   }
-  nodes.push(add(make('footer', 'foot'), computerLine(), sharingLine()));
+  nodes.push(add(make('footer', 'foot'), computerLine(), sharingLine(), fetchLine()));
   place({ title: 'Home', name: '', actions: [start, lead] }, nodes, fresh);
 }
 
@@ -1375,7 +1412,7 @@ function trainingCard(training) {
   const [shape, words] = standingOf(training);
   if (levelsText(training.levels)) add(node, make('p', 'quiet', levelsText(training.levels)));
   return add(node, beads(training.stages, true), state(shape, words),
-    make('p', 'row-says', saysOf(training)),
+    lastOr(training, 'row-says'), whoLine(training), noticeLine(training),
     add(make('div', 'bar'), add(make('span', 'quiet'), 'Changed ', when(training.touched_at)),
       go));
 }
@@ -1390,7 +1427,9 @@ function drawTrainings(fresh) {
     nodes.push(make('p', 'intro lede', count(view.listing.length, 'training', 'trainings')
       + ' on this computer, the one that changed last first.'), grid);
   }
-  place({ title: 'Trainings', actions: [view.runner && view.listing.length
+  // With the runner, what the workspace has published is one step from here.
+  place({ title: 'Trainings', actions: [view.runner ? capsule('Published', 'quiet',
+    () => show('published'), 'published') : null, view.runner && view.listing.length
     ? newButton('filled') : null] }, nodes, fresh);
 }
 
@@ -1427,7 +1466,9 @@ function statusRow(training) {
 
 function trainingsTable() {
   const node = card('Trainings');
-  if (!view.listing.length) {
+  // A training a teammate runs is listed apart, under their name.
+  const shown = view.listing.filter((training) => !elsewhere(training));
+  if (!shown.length) {
     return add(node, make('p', 'quiet', 'There are no trainings on this computer yet.'));
   }
   const table = make('table', 'table');
@@ -1439,7 +1480,7 @@ function trainingsTable() {
     head.append(top);
   }
   const body = make('tbody');
-  for (const training of view.listing) body.append(statusRow(training));
+  for (const training of shown) body.append(statusRow(training));
   return add(node, add(table, add(make('thead'), head), body));
 }
 
@@ -1507,7 +1548,15 @@ function drawStatus(fresh) {
   const check = capsule(view.checking ? 'Checking…' : view.computer ? 'Check this computer again'
     : 'Check this computer', 'filled', checkComputer, 'check-computer');
   check.disabled = view.checking;
-  place({ title: 'Status', actions: [check] }, [trainingsTable(), computerCard()], fresh);
+  place({ title: 'Status', actions: [check] }, [runsCard(), teammatesCard(), trainingsTable(),
+    computerCard()], fresh);
+  // With the runner, every run and who runs what is asked for as the screen opens.
+  if (fresh && view.runner) {
+    const turn = view.turn;
+    readStatus().then(() => {
+      if (turn === view.turn && view.drawn !== signature() && !view.checking) draw(false);
+    });
+  }
 }
 
 // --- settings ---------------------------------------------------------------------
@@ -1545,11 +1594,14 @@ function decidedCard() {
   add(node, make('p', '', 'On this page, only you can approve a stage: your assistant is '
     + 'refused if it tries. In the conversation, you approve by telling your assistant.'));
   // A training that runs on its own is always decided here, so there is nothing to choose.
-  const held = view.listing.filter((training) => !training.error && !training.run);
+  // One a teammate runs is decided on their computer.
+  const held = view.listing.filter((training) => !training.error && !watched(training));
   if (!held.length) {
-    return add(node, make('p', 'quiet', view.listing.some((training) => training.run)
+    return add(node, make('p', 'quiet', view.listing.some((training) => training.run
+      && !elsewhere(training))
       ? 'Every training here runs from this page, and is decided on it.'
-      : 'There are no trainings yet.'));
+      : teammates().length ? 'Every training here is run by a teammate, and is decided '
+        + 'where it runs.' : 'There are no trainings yet.'));
   }
   for (const training of held) {
     add(node, add(make('div', 'setting'), make('p', 'row-title', training.title || 'Untitled'),
@@ -1560,7 +1612,8 @@ function decidedCard() {
 }
 
 function drawSettings(fresh) {
-  place({ title: 'Settings' }, [workspaceCard(), leftCard(), alertsCard(), decidedCard(),
+  place({ title: 'Settings' }, [workspaceCard(), leftCard(), alertsCard(), notifyCard(),
+    decidedCard(),
     add(card('This page'),
       make('p', '', 'It runs on this computer and answers only to the link that opened it. '
         + (view.runner ? 'The page sends what you read and decide nowhere else. The agent that '
@@ -1838,7 +1891,7 @@ function standing(found) {
 
 // Where approving happens in the conversation, the page says so and offers one control.
 function inChat(found) {
-  if (found.approval === 'page') return null;
+  if (found.approval === 'page' || reads(found.path)) return null;
   const problem = make('p', 'problem');
   problem.setAttribute('role', 'alert');
   problem.hidden = true;
@@ -1865,7 +1918,8 @@ function inChat(found) {
 
 // The toolbar's side of a gate: one filled button for the main thing to do, the rest quieter.
 function gateActions(found) {
-  if (found.approval !== 'page' || view.newer) return [];
+  // A training someone else runs is read here, and decided where it runs.
+  if (found.approval !== 'page' || view.newer || reads(found.path)) return [];
   const offers = list(found.decisions);
   const lead = offers.includes('approve') ? 'approve' : offers.includes('restore') ? 'restore'
     : found.status === 'stale' && offers.includes('rebuild') ? 'rebuild' : '';
@@ -1901,8 +1955,10 @@ function gateActions(found) {
 function paintGate(fresh) {
   const found = view.gate;
   view.drawn = gateSignature(found);
-  const words = found.waiting ? ['review', found.status === 'stale'
-    ? 'Out of date, and waiting for your decision' : 'Waiting for your review']
+  const theirs = reads(found.path);
+  const words = found.waiting ? ['review', theirs ? 'Waiting for a decision where it runs'
+    : found.status === 'stale'
+      ? 'Out of date, and waiting for your decision' : 'Waiting for your review']
     : [FILE_BEADS[found.status], found.words.charAt(0).toUpperCase() + found.words.slice(1)];
   // A practice scenario says whose file it is: the person's own, or a draft made for them.
   // A deck the runner rendered says that its pictures are of the very file being decided.
@@ -1921,8 +1977,9 @@ function paintGate(fresh) {
   levelsText(found.levels) ? make('span', '', ' · ' + levelsText(found.levels)) : null];
   place({ title: found.label, name: found.label + ' · ' + found.title, above, back: true,
     actions: gateActions(found) },
-  [intro, inChat(found), standing(found), add(make('div', found.beside ? 'gate gate-pair'
-    : 'gate'), aside, reading(found), found.beside ? besidePart(found) : null)],
+  [intro, theirs ? readNote(found.path) : null, inChat(found), standing(found),
+    add(make('div', found.beside ? 'gate gate-pair'
+      : 'gate'), aside, reading(found), found.beside ? besidePart(found) : null)],
   fresh);
   tidyPictures();
   drawSheet();
@@ -2345,8 +2402,14 @@ async function restore(stage, pressed) {
 
 function decisionsCard(training) {
   const node = card('How this training is decided');
-  const onPage = training.approval === 'page';
-  if (training.run) {
+  const theirs = reads(training.path);
+  const onPage = training.approval === 'page' && !theirs;
+  if (theirs) {
+    add(node, make('p', '', whose(training.path)
+      ? whose(training.path) + ' runs this training, so each stage is decided on their '
+        + 'computer. Here it can be read.'
+      : 'Nobody is running this training, so nothing can be decided until someone takes it.'));
+  } else if (training.run) {
     // One driver for a training: what the page runs, the page decides.
     add(node, make('p', '', 'This training runs from this page, so each stage is approved '
       + 'here, by you. Nothing can approve it for you.'));
@@ -2371,7 +2434,9 @@ function decisionsCard(training) {
       add(items, add(make('li', 'row'), bead('out'), text, again));
     }
     add(node, items);
-    if (!onPage) add(node, make('p', 'quiet', 'To bring one back, ask your assistant.'));
+    if (!onPage && !theirs) {
+      add(node, make('p', 'quiet', 'To bring one back, ask your assistant.'));
+    }
   }
   return node;
 }
@@ -2404,14 +2469,19 @@ function paintTraining(fresh) {
   }
   const [shape, words] = standingOf(training);
   const waiting = training.waiting;
-  const lead = waiting && waiting.artifact ? capsule('Review ' + waiting.label, 'filled',
-    () => show('gate', { path: training.path, artifact: waiting.artifact }), 'lead') : null;
+  // What a teammate runs is read here, never reviewed: the decision is theirs.
+  const theirs = reads(training.path);
+  const lead = waiting && waiting.artifact ? capsule((theirs ? 'Read ' : 'Review ')
+    + waiting.label, theirs ? '' : 'filled',
+  () => show('gate', { path: training.path, artifact: waiting.artifact }), 'lead') : null;
   // A training that runs on its own is watched on its run. This view keeps the detail.
-  const watch = training.run ? capsule('Watch the run', '',
+  const known = listed(training.path) || training;
+  const watch = training.run || watched(known) ? capsule('Watch the run', '',
     () => show('run', { path: training.path }), 'watch') : null;
   place({ title: training.title || 'Untitled', above, back: true, actions: [watch, lead] },
     [add(make('div', 'intro'), state(shape, words), beads(training.stages, false),
-      make('p', 'lede', saysOf(training))),
+      make('p', 'lede', saysOf(training)), whoLine(known)),
+    adoptCard(known),
     filesCard(training),
     reasonsCard('In the way', training.view.blocking, 'Nothing is in the way.'),
     checksCard(training.check),
@@ -2420,7 +2490,8 @@ function paintTraining(fresh) {
     practiceCard(training), researchCard(training.status), guidanceCard(training.status),
     decisionsCard(training),
     // One driver for a training: while the page runs it, nobody is sent to an assistant.
-    training.run && training.run.state !== 'done' ? null : folderCard(training)], fresh);
+    theirs || (training.run && training.run.state !== 'done') ? null
+      : folderCard(training)], fresh);
 }
 
 async function drawTraining(fresh) {
@@ -2484,7 +2555,7 @@ function runOf(path) {
 }
 
 function homeOf(path) {
-  return runOf(path) ? 'run' : 'training';
+  return watched(listed(path)) ? 'run' : 'training';
 }
 
 function asker(path) {
@@ -2509,6 +2580,9 @@ function deckLeft(training) {
 // Where a training stands, as a shape and words. A run knows more than the list does about
 // one that is working, paused or stopped.
 function standingOf(training) {
+  // What a teammate runs is never said to be working or waiting: that is not known here.
+  if (elsewhere(training)) return ['none', 'Run by ' + nameOf(training.driver)];
+  if (unclaimed(training)) return ['off', 'Nobody is running it'];
   if (deckLeft(training)) return STATES['in-progress'];
   if (training.run && (training.state === 'in-progress' || training.run.state === 'failed')) {
     return runWords(training.run);
@@ -2523,7 +2597,7 @@ function newButton(kind) {
 // The list says that a run needs its person. What it asks is read from the run itself.
 async function readAsks() {
   const asking = view.listing.filter((training) => training.run
-    && training.state === 'needs-you');
+    && training.state === 'needs-you' && !elsewhere(training));
   const found = await Promise.all(asking.map((training) => ask('run', { path: training.path })
     .catch(() => null)));
   const asks = {};
@@ -2631,6 +2705,47 @@ function sharingLine() {
   return add(node, go);
 }
 
+// What teammates have shared is looked for every few minutes. This looks now, and says in
+// a sentence what came back.
+function fetchLine() {
+  if (!teamSpace()) return null;
+  const node = make('p', 'foot-line');
+  const found = view.fetched;
+  add(node, found ? state(found.shape, found.says) : make('span', '', 'What your teammates '
+    + 'share is looked for every few minutes.'));
+  const go = capsule(view.fetching ? 'Looking…' : 'Look now', 'quiet', fetchNow, 'fetch');
+  go.setAttribute('aria-label', view.fetching ? 'Looking for what your teammates shared'
+    : 'Look now for what your teammates shared');
+  if (view.fetching) go.setAttribute('aria-busy', 'true');
+  return add(node, go);
+}
+
+async function fetchNow() {
+  if (view.fetching) return;
+  view.fetching = true;
+  draw(false);
+  try {
+    const found = await send('fetch', {});
+    const received = Number(found.received) || 0;
+    if (found.reached === false) {
+      view.fetched = { shape: 'late', says: 'Nothing new could be brought in. '
+        + (found.notice || 'Your team’s repository could not be reached.') };
+    } else if (found.notice) {
+      view.fetched = { shape: 'late', says: found.notice };
+    } else {
+      view.fetched = { shape: 'done', says: received ? 'Brought in '
+        + count(received, 'change', 'changes') + ' your team shared.'
+        : 'Nothing new from your team since the last look.' };
+    }
+  } catch (failure) {
+    view.fetched = { shape: 'late', says: failure.message + ' Nothing was changed.' };
+  }
+  view.fetching = false;
+  draw(false);
+  if (!focusKey('fetch')) byId('title').focus({ preventScroll: true });
+  refresh();
+}
+
 async function shareNow() {
   if (view.sharing) return;
   view.sharing = true;
@@ -2695,7 +2810,7 @@ function workspaceCard() {
       + (agent.model ? ', with the model ' + agent.model : ', with the model it chooses itself')],
     ['Limits', limitsSays(held.limits || {})],
     ['Slide previews', held.previews ? previewsSays(held.previews) : '']]),
-    sharingLine(),
+    sharingLine(), fetchLine(),
     add(make('div', 'bar'), capsule('Change the set-up', '', () => show('setup'), 'setup')));
   return node;
 }
@@ -3194,6 +3309,8 @@ async function saveSetup(pressed) {
   if (form.previews) body.previews = form.previews;
   // With one brand skill, or none, there is nothing to choose and nothing to send.
   if (brandSkills().length > 1 && form.brandSkill) body.brand_skill = form.brandSkill;
+  // The computer's own notification is switched in Settings, and is saved as it stands.
+  if (view.setup.notify) body.notify = Boolean(view.setup.notify.on);
   const first = !view.setup.configured;
   try {
     view.setup = await send('setup', body);
@@ -3547,6 +3664,10 @@ function runStanding(run) {
       : ['late', 'Finished, but not ready to use'];
   }
   if (run.deck_left) return ['done', 'Everything but the slide deck is made'];
+  if (run.mine === false) {
+    return run.driver ? RUN_WORDS.elsewhere : ['off', 'Nobody is running it'];
+  }
+  if (queued(run)) return ['none', 'Waiting its turn'];
   return run.state === 'working' && (adding(run) || outlining(run)) ? RUN_WORDS.waiting
     : runWords(run);
 }
@@ -3556,19 +3677,24 @@ function runIntro(run, training, promised) {
   if (list(training.stages).length) add(node, beads(training.stages, false));
   add(node, make('p', 'lede run-says', run.sentence));
   const next = nextGate(run);
-  if (run.state === 'working' && !adding(run) && !outlining(run)) {
+  // What someone else runs asks nothing of this person, and promises them nothing: who
+  // runs it, and what can be read, is said next.
+  const theirs = run.mine === false;
+  const stands = theirs ? '' : run.state;
+  if (queued(run) && !theirs) add(node, make('p', '', queueSays(run.queue)));
+  if (stands === 'working' && !adding(run) && !outlining(run)) {
     add(node, make('p', 'quiet', 'Nothing is needed from you right now. It carries on by '
       + 'itself, and this page tells you when it needs you.'
       + (next ? ' Next it asks for your decision on '
         + lower(next.label).replace(/^your review of /, '') + '.' : '')));
-  } else if (run.state === 'paused') {
+  } else if (stands === 'paused') {
     add(node, make('p', 'quiet', 'Nothing more is started until you resume it. Everything '
       + 'made so far is kept.'));
-  } else if (run.state === 'stopped' && !run.problem) {
+  } else if (stands === 'stopped' && !run.problem) {
     add(node, make('p', 'quiet', 'Everything made so far is kept. Resume, and it carries on '
       + 'from where it stopped.'));
   }
-  if (promised && run.state !== 'done') {
+  if (promised && run.state !== 'done' && !theirs) {
     add(node, make('p', 'quiet', 'In all, it stops and asks for your decision at least '
       + times(promised) + '.'));
   }
@@ -3583,12 +3709,14 @@ function runIntro(run, training, promised) {
 // What went wrong, what was kept, and the one thing to do about it.
 function problemPart(run, lead) {
   const found = run.problem;
+  const theirs = run.mine === false;
   const label = found.label || (found.action === 'retry' ? 'Try again' : 'Resume');
-  const go = found.action
+  const go = found.action && !theirs
     ? capsule(label, lead ? 'filled' : '', () => steer(found.action, go), 'problem-action')
     : capsule('See everything it made', '', () => show('training', { path: view.path }),
       'problem-open');
-  return callout('late', make('h2', 'aside-title', 'It has stopped, and needs you'),
+  return callout('late', make('h2', 'aside-title', theirs ? 'It has stopped'
+    : 'It has stopped, and needs you'),
     add(make('p', ''), make('strong', '', 'What happened: '), found.what),
     add(make('p', ''), make('strong', '', 'What was kept: '), found.kept),
     add(make('div', 'bar'), go));
@@ -3674,7 +3802,7 @@ function workersCard(run) {
   return add(card('Working now'), items);
 }
 
-function madeCard(training) {
+function madeCard(training, theirs) {
   const node = card('Made so far');
   const made = list(training.view && training.view.files).filter((file) => !['not-started',
     'skipped', 'unavailable'].includes(file.status));
@@ -3684,12 +3812,14 @@ function madeCard(training) {
   } else {
     const items = make('ul', 'rows');
     for (const file of made) {
-      const words = file.waiting ? 'waiting for your review'
+      const words = file.waiting ? (theirs ? 'waiting for a decision where it runs'
+        : 'waiting for your review')
         : file.asked ? file.words + ', changes asked for' : file.words;
-      const go = capsule(file.waiting ? 'Review' : 'Open', 'quiet',
+      const review = file.waiting && !theirs;
+      const go = capsule(review ? 'Review' : 'Open', 'quiet',
         () => show('gate', { path: training.path, artifact: file.artifact }),
         'file ' + file.artifact);
-      go.setAttribute('aria-label', (file.waiting ? 'Review ' : 'Open ') + lower(file.label));
+      go.setAttribute('aria-label', (review ? 'Review ' : 'Open ') + lower(file.label));
       add(items, add(make('li', 'row'), bead(file.waiting ? 'review' : FILE_BEADS[file.status]),
         add(make('div', 'row-text'), make('p', 'step-name', file.label),
           make('p', 'quiet', words.charAt(0).toUpperCase() + words.slice(1))), go));
@@ -4010,6 +4140,10 @@ function copiesCard(run) {
   for (const found of list(run.copies)) items.append(copyItem(found));
   add(node, items);
   if (!list(run.copies).some((found) => found.state !== 'made')) return node;
+  // Making them again is a change, which only the computer that runs the training makes.
+  if (run.mine === false) {
+    return add(node, make('p', 'quiet', 'The training itself is complete without them.'));
+  }
   const go = capsule(view.copying ? 'Trying again…' : 'Try the copies again', '', tryCopies,
     'copies-again');
   if (view.copying) go.setAttribute('aria-busy', 'true');
@@ -4023,6 +4157,10 @@ function copiesCard(run) {
 // its own words, and leaving the deck out is the decision a gate has, with its reason.
 function deckLeftPart(run) {
   const found = run.deck_left;
+  if (run.mine === false) {
+    return callout('', make('h2', 'aside-title', 'The slide deck is all that is left'),
+      found.says === run.sentence ? null : make('p', '', found.says));
+  }
   const leave = capsule('Leave the deck out', '', () => {
     view.deciding = found.artifact;
     openSheet('skip', 'leave-deck')();
@@ -4203,49 +4341,75 @@ function paintRun(fresh) {
   const waiting = training.waiting && training.waiting.artifact ? training.waiting : null;
   const promised = view.promised && view.promised.path === view.path ? view.promised.gates : 0;
   const offered = run.problem && run.problem.action;
-  const supplying = adding(run);
-  const outline = outlining(run);
+  // A training someone else runs, or nobody does, is read here and never changed.
+  const theirs = run.mine === false;
+  const driver = run.driver || null;
+  const supplying = adding(run) && !theirs;
+  const outline = outlining(run) && !theirs;
+  const free = theirs && !driver && !run.finished;
   // One filled button on the screen, for the first thing that is needed. While a sheet is
   // open it holds that button, so nothing under it is filled.
-  const lead = view.sheet || view.after ? '' : run.question ? 'answer' : offered ? 'problem'
-    : supplying ? 'documents' : waiting ? 'review' : outline ? 'outline'
-      : run.finished ? 'finished' : ['paused', 'stopped'].includes(run.state) ? 'resume'
-        : run.state === 'failed' && !run.problem ? 'retry' : '';
+  const lead = view.sheet || view.after ? '' : theirs ? (run.finished ? 'finished'
+    : free ? 'take' : '')
+    : run.question ? 'answer' : offered ? 'problem'
+      : supplying ? 'documents' : waiting ? 'review' : outline ? 'outline'
+        : run.finished ? 'finished' : ['paused', 'stopped'].includes(run.state) ? 'resume'
+          : run.state === 'failed' && !run.problem ? 'retry' : '';
   const limits = (view.setup && view.setup.limits) || {};
-  const above = [make('span', '', [levelsText(training.levels), 'Runs on this page']
+  const runs = !theirs ? 'Runs on this page' : driver ? 'Run by ' + nameOf(driver)
+    : run.finished ? 'Finished' : 'Nobody is running it';
+  const above = [make('span', '', [levelsText(training.levels), runs]
     .filter(Boolean).join(' · '))];
-  placeParts({ title, above, back: true, actions: runActions(run, waiting, lead),
-    mark: [title, training.levels, run.state, lead, offered, waiting, outline
-      && run.outline.level] }, [
+  const published = view.issued && view.issued.path === view.path ? view.issued : null;
+  const brought = view.adopted && view.adopted.path === view.path ? view.adopted : null;
+  placeParts({ title, above, back: true, actions: theirs ? readActions(run, waiting)
+    : runActions(run, waiting, lead),
+  mark: [title, training.levels, run.state, lead, offered, waiting, outline
+    && run.outline.level, theirs, driver, Boolean(run.outline)] }, [
     ['intro', [run.state, run.sentence, training.stages, promised, view.steered,
-      nextGate(run), Boolean(run.problem), runStanding(run), supplying, outline],
+      nextGate(run), Boolean(run.problem), runStanding(run), supplying, outline, theirs,
+      run.queue],
     () => runIntro(run, training, promised)],
-    run.problem ? ['problem', [run.problem, lead], () => problemPart(run, lead === 'problem')]
-      : null,
-    run.question ? ['question', [run.question, title], () => questionPart(run, title)] : null,
+    brought ? ['brought', brought, () => broughtPart(brought)] : null,
+    theirs && (driver || !run.finished) ? ['theirs', [driver, lead, run.taken, run.notice,
+      run.last_shared, run.kept, title], () => theirsPart(run, lead === 'take')] : null,
+    !theirs && run.notice ? ['notice', [run.notice, run.clash, run.kept],
+      () => noticePart(run)] : null,
+    run.problem ? ['problem', [run.problem, lead, theirs],
+      () => problemPart(run, lead === 'problem')] : null,
+    run.question && theirs ? ['asked', [run.question, driver], () => askedPart(run)] : null,
+    run.question && !theirs ? ['question', [run.question, title],
+      () => questionPart(run, title)] : null,
     supplying ? ['documents', [run.documents, lead],
       () => documentsCard(run, lead === 'documents')] : null,
-    waiting && !run.question ? ['gate', [waiting, training.sentence],
+    waiting && !run.question && !theirs ? ['gate', [waiting, training.sentence],
       () => gatePart(training, waiting, run.sentence)] : null,
     outline && !run.question ? ['outline', [run.outline.level, run.sentence],
       () => outlinePart(run)] : null,
-    run.deck_left ? ['deck-left', [run.deck_left, run.sentence], () => deckLeftPart(run)]
-      : null,
+    run.deck_left ? ['deck-left', [run.deck_left, run.sentence, theirs],
+      () => deckLeftPart(run)] : null,
     run.finished ? ['finished', [run.finished, lead],
       () => finishedPart(run, lead === 'finished')] : null,
+    run.finished ? ['publish', [run.finished.ready, published, teamSpace()],
+      () => publishCard(run, published)] : null,
+    theirs && !driver && run.finished ? ['free', [title], () => finishedFreePart()] : null,
     // While a deck is drawn, its sections and their latest previews are what there is to see.
     run.deck ? ['deck', [run.deck, run.outline && run.outline.level],
       () => deckCard(run)] : null,
     ['steps', list(run.steps).map((step) => [step.id, step.label, step.kind, step.status,
       step.attempts > 1, step.error]), () => stepsCard(run)],
     list(run.workers).length ? ['workers', run.workers, () => workersCard(run)] : null,
-    ['made', [training.path, training.view && training.view.files], () => madeCard(training)],
-    list(run.copies).length ? ['copies', [run.copies, view.copying, view.uncopied],
+    ['made', [training.path, training.view && training.view.files, theirs],
+      () => madeCard(training, theirs)],
+    list(run.copies).length ? ['copies', [run.copies, view.copying, view.uncopied, theirs],
       () => copiesCard(run)] : null,
     // Once that is all of them, what was added is kept on the screen, with nothing to press.
-    run.documents && !supplying ? ['documents', [run.documents, ''],
+    run.documents && !supplying && !theirs ? ['documents', [run.documents, ''],
       () => documentsCard(run, false)] : null,
     ['cost', [run.spent, run.agent, run.model, limits.training_dollars], () => costCard(run)],
+    // What this computer runs for a team can be handed over, for anyone to take.
+    !theirs && driver && driver.here ? ['mine', [driver, title, run.kept],
+      () => minePart(driver, run.kept)] : null,
   ], fresh);
   tickSteps(run);
   tidyPictures();
@@ -4395,15 +4559,20 @@ function paintOutline(fresh) {
   doc.setAttribute('aria-label', label);
   const aside = add(make('aside', 'aside'), outlineChecked(outline), outlineWorth(outline));
   aside.setAttribute('aria-label', 'The review');
+  // What someone else runs is read here, and decided where it runs.
+  const theirs = run.mine === false;
   const intro = add(make('div', 'intro'),
-    state(...(outline.waiting ? ['review', 'Waiting for your review'] : runStanding(run))),
+    state(...(outline.waiting ? ['review', theirs ? 'Waiting for a decision where it runs'
+      : 'Waiting for your review'] : runStanding(run))),
     list(training.stages).length ? beads(training.stages, false) : null,
     make('p', 'lede', 'This is every slide’s words, in order, before any slide is drawn. '
-      + (outline.waiting ? 'Approve it, or say what should change: words are quick to change '
-        + 'now, and slow to change once the slides are drawn.'
-        : 'The slides are drawn from these words.')));
+      + (outline.waiting && theirs ? 'It is decided on the computer that runs this '
+        + 'training. Here it can be read.'
+        : outline.waiting ? 'Approve it, or say what should change: words are quick to change '
+          + 'now, and slow to change once the slides are drawn.'
+          : 'The slides are drawn from these words.')));
   // One filled button for the main thing to do, as at any gate. A newer version comes first.
-  const actions = outline.waiting && !view.newer ? [
+  const actions = outline.waiting && !view.newer && !theirs ? [
     capsule('Ask for changes', '', openSheet('revise', 'revise'), 'revise'),
     capsule('Approve', 'filled', openSheet('approve', 'lead'), 'lead')] : [];
   place({ title: label, name: label + ' · ' + title, above, back: true, actions },
@@ -4510,6 +4679,654 @@ async function decideOutline(decision, note, problem, pressed) {
   refresh();
 }
 
+// --- with a team ---------------------------------------------------------------------
+// A shared workspace has one driver for each training: the computer that runs it. Everyone
+// else reads. The runner names the driver; where it names none, which is every workspace
+// that is a folder on one computer, nothing from here to "the index" is ever shown.
+
+function listed(path) {
+  return list(view.listing).find((training) => training.path === path) || null;
+}
+
+function nameOf(driver) {
+  return String((driver && driver.name) || '').trim() || 'A teammate';
+}
+
+// A training that someone else's computer runs.
+function elsewhere(training) {
+  return Boolean(training && training.driver && training.driver.here === false);
+}
+
+function teamSpace() {
+  const space = view.runner && view.setup ? view.setup.workspace : null;
+  return Boolean(space && space.repository);
+}
+
+// Whether a folder is inside this computer's copy of the workspace.
+function inWorkspace(path) {
+  const space = view.runner && view.setup ? view.setup.workspace : null;
+  const root = space && space.path ? String(space.path).replace(/[\\/]+$/, '') : '';
+  return Boolean(root) && ['/', '\\'].some((mark) => String(path).startsWith(root + mark));
+}
+
+// A training in a shared workspace that was handed over: nobody runs it until someone
+// takes it.
+function unclaimed(training) {
+  return Boolean(training && training.driver === null && !training.error && teamSpace()
+    && inWorkspace(training.path) && training.state !== 'finished');
+}
+
+// A training that opens on its run: one the runner drives, here or on a teammate's
+// computer, or one that waits for someone to take it.
+function watched(training) {
+  return Boolean(training && (training.run || elsewhere(training) || unclaimed(training)));
+}
+
+// Whether this computer may only read a training. Its run says so itself; away from the
+// run, the list does: someone else has it, or nobody does.
+function reads(path) {
+  if (view.run && view.path === path && view.run.mine === false) return true;
+  const found = listed(path);
+  return elsewhere(found) || Boolean(found && found.mine === false);
+}
+
+// Whose a training is, where it is someone else's.
+function whose(path) {
+  const run = view.run && view.path === path ? view.run : null;
+  const driver = (run && run.driver) || (listed(path) || {}).driver || null;
+  return driver && driver.here === false ? nameOf(driver) : '';
+}
+
+// Who runs a training and since when, in a sentence.
+function whoSays(driver, className) {
+  const node = make('p', className);
+  const who = driver.here ? 'This computer runs it'
+    : nameOf(driver) + ' runs it from another computer';
+  if (Number.isNaN(Date.parse(driver.since))) return add(node, who + '.');
+  return add(node, who + ', and took it ', when(driver.since), '.');
+}
+
+function whoLine(training) {
+  if (unclaimed(training)) {
+    return make('p', 'quiet who', 'Nobody is running it. Anyone on your team may take it.');
+  }
+  return training && training.driver ? whoSays(training.driver, 'quiet who') : null;
+}
+
+function teammates() {
+  return view.listing.filter((training) => !training.error && elsewhere(training));
+}
+
+// What this computer knows of a training a teammate runs: when it was last shared and where
+// it stood then. It never says what is happening now, because that is not known here.
+function lastLine(last, className) {
+  if (!last) return null;
+  const node = make('p', className);
+  if (!Number.isNaN(Date.parse(last.at))) add(node, 'Last shared ', when(last.at), '. ');
+  return add(node, (last.says ? String(last.says).trim() + ' ' : '')
+    + 'It may have moved on since: this computer knows only what was shared.');
+}
+
+// One sentence for a training in a list: for one a teammate runs, what was last shared.
+function lastOr(training, className) {
+  return (elsewhere(training) && lastLine(training.last_shared, className))
+    || make('p', className, saysOf(training));
+}
+
+// What the runner says about who has a training: that it was taken from this computer, or
+// that it was changed on two computers at once.
+function noticeLine(training) {
+  return training && training.notice ? make('p', 'fix', training.notice) : null;
+}
+
+// Where what this computer set aside is kept, for someone who brings it back with git. The
+// sentence beside it has already said, in plain words, that it is kept and can come back.
+function keptLine(names) {
+  const kept = list(names).filter(Boolean);
+  if (!kept.length) return null;
+  const space = view.setup && view.setup.workspace;
+  const node = make('p', 'quiet', 'A detail for whoever brings it back: it is in this '
+    + 'computer’s copy of the workspace' + (space && space.path ? ' (' + space.path + ')' : '')
+    + ', where git keeps it under the name' + (kept.length > 1 ? 's ' : ' '));
+  kept.forEach((name, index) => add(node, index ? ', ' : '', pathInto(make('code'), name)));
+  return add(node, '. It is on this computer only, and is never sent to your team.');
+}
+
+function teamRow(training) {
+  const title = training.title || 'Untitled';
+  const text = add(make('div', 'row-text'), make('h3', 'row-title', title),
+    beads(training.stages, true), whoLine(training), lastOr(training, 'row-says'),
+    noticeLine(training));
+  const go = capsule('Open', 'quiet', openTraining(training), 'open ' + training.path);
+  go.setAttribute('aria-label', 'Open ' + title + ', which ' + nameOf(training.driver)
+    + ' runs');
+  return add(make('li', 'row'), text, go);
+}
+
+// At a gate of a training someone else runs: why nothing here can be decided.
+function readNote(path) {
+  const name = whose(path);
+  return callout('', make('p', '', (name ? name + ' runs this training, so it is decided '
+    + 'on their computer.' : 'Nobody is running this training, so it cannot be decided '
+    + 'until someone takes it.') + ' Here you can read it, with what the review found.'));
+}
+
+// A run that waits for its turn, and how many are ahead of it.
+function queued(run) {
+  return Boolean(run && run.queue && given(run.queue.ahead));
+}
+
+function queueSays(queue) {
+  const ahead = Number(queue.ahead) || 0;
+  return (ahead ? 'It is waiting its turn: ' + count(ahead, 'training is', 'trainings are')
+    + ' ahead of it.' : 'It is waiting its turn, and is next.')
+    + ' Trainings take turns in the order they became ready, and it starts by itself when '
+    + 'its turn comes.';
+}
+
+// Open one of the team's confirmations. On a run, nothing under the sheet stays filled.
+function askTeam(kind, opener) {
+  return () => {
+    openSheet(kind, opener)();
+    if (view.screen === 'run' && view.run) paintRun(false);
+  };
+}
+
+// The toolbar's side of a run that is only read: the ways to what there is to read.
+function readActions(run, waiting) {
+  const actions = [];
+  if (waiting) {
+    actions.push(capsule('Read ' + waiting.label, '',
+      () => show('gate', { path: view.path, artifact: waiting.artifact }), 'lead'));
+  }
+  if (run.outline && !run.deck) {
+    actions.push(capsule('Read ' + outlineLabel(run.outline), '',
+      () => show('outline', { path: view.path }), 'lead-outline'));
+  }
+  return actions;
+}
+
+// On a run this computer does not drive: who does and since when, what was last shared,
+// that it is read here, and the way to take it. Where it was this computer's until it was
+// taken, the runner's own sentence says so first: who took it, when, that this computer
+// stopped, and that what it had not shared is kept. That is the runner's to say, so it is
+// the same after a reload.
+function theirsPart(run, lead) {
+  const driver = run.driver;
+  if (!driver) {
+    return callout('yours', make('h2', 'aside-title', 'Nobody is running this training'),
+      make('p', '', 'It was handed over, so anyone on your team may take it. Once you take '
+        + 'it, it runs from this computer and carries on from where it stands.'),
+      make('p', 'quiet', 'Until someone does, nothing more happens to it. ' + READ_ONLY),
+      add(make('div', 'bar'), capsule('Take it', lead ? 'filled' : '',
+        askTeam('take', 'take'), 'take')));
+  }
+  const name = nameOf(driver);
+  const lost = run.taken || null;
+  const kept = lost ? (list(run.kept).length ? run.kept : [lost.kept]) : [];
+  return callout(lost ? 'late' : '', make('h2', 'aside-title', lost
+    ? (String(lost.by || '').trim() || name) + ' took this training over'
+    : name + ' is running this training'),
+  lost ? make('p', '', run.notice || 'This computer stopped working on it, and nothing '
+    + 'was deleted.') : null,
+  keptLine(kept),
+  whoSays(driver, ''), lastLine(run.last_shared, ''),
+  make('p', 'quiet', READ_ONLY),
+  add(make('div', 'bar'), capsule('Take it over', '', askTeam('take', 'take'), 'take')));
+}
+
+// A finished training in a shared workspace is nobody's. It is read and published as it
+// stands; anything that changes it is refused until someone takes it, so that is offered.
+function finishedFreePart() {
+  return callout('', make('h2', 'aside-title', 'Nobody is running this training'),
+    make('p', '', 'It is finished, so no computer runs it. It can be read, and published as '
+      + 'it stands, from any computer on your team.'),
+    make('p', '', 'To change anything in it, such as a decision that is in the way or a copy '
+      + 'to make again, take it first. It then runs from this computer.'),
+    add(make('div', 'bar'), capsule('Take it', '', askTeam('take', 'take'), 'take')));
+}
+
+// What the runner says about a training this computer runs: that it was changed on two
+// computers at once, which is put right by carrying on from the shared version, or that
+// it has just been.
+function noticePart(run) {
+  if (!run.clash) {
+    return callout('', make('p', '', run.notice), keptLine(run.kept));
+  }
+  return callout('late', make('h2', 'aside-title', 'Changed on two computers at once'),
+    make('p', '', run.notice),
+    add(make('div', 'bar'), capsule('Carry on from the shared version', '',
+      askTeam('take', 'take-shared'), 'take-shared')));
+}
+
+// A question that only the computer running the training can answer, shown to be read.
+function askedPart(run) {
+  const name = run.driver ? nameOf(run.driver) : '';
+  return add(card('A question is waiting'),
+    make('p', 'row-says', (run.question.from || 'A worker') + ' asks:'),
+    make('p', 'row-quote', run.question.text),
+    make('p', 'quiet', name ? 'Only ' + name + ' can answer it, on the computer that runs '
+      + 'this training.' : 'It can be answered once someone takes this training.'));
+}
+
+function minePart(driver, kept) {
+  const aside = keptLine(kept);
+  return add(card('Who runs this training'), whoSays(driver, ''),
+    make('p', 'quiet', 'Your teammates can read it, and only this computer can change it. '
+      + 'If someone else should carry it on, hand it over: anyone on your team may then '
+      + 'take it.'),
+    aside ? make('p', 'quiet', 'Some of what this computer made for this training was set '
+      + 'aside, because it had not been shared when the training carried on from the shared '
+      + 'version. It is kept on this computer, and can be brought back.') : null, aside,
+    add(make('div', 'bar'), capsule('Hand over', '', askTeam('hand-over', 'hand-over'),
+      'hand-over')));
+}
+
+// A training that was just brought in: where the copy is, and that it is the one to use.
+function broughtPart(brought) {
+  return callout('', make('h2', 'aside-title', 'This is the copy, and the one to work on '
+    + 'from now'),
+  make('p', '', 'It was copied into your workspace, here:'),
+  pathInto(make('p', 'path'), brought.path),
+  make('p', '', 'The original is left exactly as it was, with nothing deleted, here:'),
+  pathInto(make('p', 'path'), brought.from));
+}
+
+// A finished training is published from its own screen. Once it is, the card says which
+// revision that made, and whether the team can see it yet.
+function publishCard(run, published) {
+  const node = add(card('Publish it'), make('p', '', PUBLISH_SAYS));
+  if (published) {
+    add(node, state('done', 'Published as revision ' + published.revision + '.'));
+    if (!published.ready) {
+      add(node, state('late', 'It was not ready to use when it was published, and the '
+        + 'revision says so.'));
+    }
+    const notice = published.notice ? ' ' + published.notice : '';
+    add(node, published.shared ? state('done', 'Shared: your team can see this revision.'
+      + notice)
+      : state(notice ? 'late' : 'none', (teamSpace() ? 'Not shared with your team yet.'
+        : 'Kept on this computer: this workspace is not shared with anyone.') + notice));
+  } else if (!run.finished.ready) {
+    add(node, state('late', 'This training is not ready to use. It can still be published, '
+      + 'and the revision will say that it was not ready.'));
+  }
+  return add(node, add(make('div', 'bar'),
+    capsule(published ? 'Publish again' : 'Publish', '', askTeam('publish', 'publish'),
+      'publish'),
+    capsule('See what is published', 'quiet', () => show('published'), 'see-published')));
+}
+
+// A training this computer knows that the runner does not drive, and that is outside the
+// workspace: one started in a conversation, in a folder of its own.
+function adoptable(training) {
+  return Boolean(view.runner && view.setup && view.setup.workspace && training
+    && !training.error && !training.run && !training.driver
+    && !inWorkspace(training.path));
+}
+
+function adoptCard(training) {
+  if (!adoptable(training)) return null;
+  return add(card('Run it from this page'),
+    make('p', '', 'This training is not run from this page: it lives in a folder of its '
+      + 'own, outside your workspace. Training Studio can carry it on from here instead, '
+      + 'working on its own and stopping each time it needs your decision.'),
+    add(make('div', 'bar'), capsule('Run this from here', '', askTeam('adopt', 'adopt'),
+      'adopt')));
+}
+
+// What each confirmation says before anything is sent, and what its button is called.
+function teamAsks(kind, title) {
+  const run = view.run || {};
+  if (kind === 'take' && run.clash && run.mine !== false) {
+    return { title: 'Carry on with ' + title + ' from the shared version?',
+      send: 'Carry on from it',
+      says: [make('p', '', 'It was changed on this computer and on another at the same '
+        + 'time. From then on it carries on from the version your team shares, and runs '
+        + 'from this computer.'),
+      make('p', '', 'What this computer made and never shared is set aside. It is kept on '
+        + 'this computer and can be brought back; nothing is deleted.')] };
+  }
+  if (kind === 'take' && run.driver) {
+    const name = nameOf(run.driver);
+    const dated = !Number.isNaN(Date.parse(run.driver.since));
+    return { title: 'Take ' + title + ' over from ' + name + '?', send: 'Take it over',
+      says: [dated ? add(make('p', ''), 'It is ' + name + '’s: ' + name + ' took it ',
+        when(run.driver.since), ', and runs it from another computer.')
+        : make('p', '', 'It is ' + name + '’s, and runs from another computer.'),
+      make('p', '', 'If you take it over, ' + name + '’s runner stops working on it and '
+        + 'keeps what it had. From then on it runs from this computer, and only this '
+        + 'computer can change it.'),
+      make('p', 'quiet', name + ' is told who took it and when.')] };
+  }
+  if (kind === 'take') {
+    return { title: 'Take ' + title + '?', send: 'Take it',
+      says: [make('p', '', 'Nobody is running it. From then on it runs from this computer, '
+        + 'and carries on from where it stands.'),
+      run.finished ? make('p', 'quiet', 'It is finished, so nothing more is made until you '
+        + 'change something. When you are done, hand it over, so that nobody is shown as '
+        + 'running it.') : null] };
+  }
+  if (kind === 'hand-over') {
+    return { title: 'Hand ' + title + ' over?', send: 'Hand it over',
+      says: [make('p', '', 'This computer stops working on it, and keeps everything made so '
+        + 'far.'),
+      make('p', '', 'Anyone on your team may then take it and carry it on. Until someone '
+        + 'does, nothing more happens to it.')] };
+  }
+  if (kind === 'publish') {
+    const found = run.finished || {};
+    const blocking = list(found.blocking).length;
+    return { title: 'Publish ' + title + '?', send: 'Publish it',
+      says: [make('p', '', PUBLISH_SAYS), make('p', '', PUBLISH_KEPT),
+        found.ready ? null : state('late', 'This training is not ready to use'
+          + (blocking ? ': ' + count(blocking, 'thing is', 'things are') + ' in the way' : '')
+          + '. It can still be published, and the revision will say that it was not '
+          + 'ready.')] };
+  }
+  return { title: 'Run ' + title + ' from here?', send: 'Copy it and run it here',
+    says: [make('p', '', 'It is copied into your workspace as a new training. Training '
+      + 'Studio carries the copy on from wherever the training has got to, with each '
+      + 'decision made on this page.'),
+    make('p', '', 'The original folder is left exactly as it was, with nothing deleted.'),
+    make('p', '', 'From then on the copy is the one to work on, and this page takes you '
+      + 'to it.')] };
+}
+
+function teamSheet(kind) {
+  const title = (listed(view.path) || view.training || {}).title || 'Untitled';
+  const spec = teamAsks(kind, title);
+  const problem = problemLine();
+  const confirm = capsule(spec.send, 'filled', () => settleTeam(kind, problem, confirm),
+    'send');
+  return [sheetTitle(spec.title), ...spec.says.filter(Boolean), problem,
+    add(make('div', 'bar'), confirm, capsule('Cancel', 'quiet', closeSheet, 'cancel'))];
+}
+
+// Send what was confirmed. A refusal is said in the sheet, in the runner's own words, with
+// what it means for the training: nothing was changed.
+async function settleTeam(kind, problem, pressed) {
+  if (view.busy) return;
+  const turn = view.turn;
+  const path = view.path;
+  const to = { take: 'drive', 'hand-over': 'drive' }[kind] || kind;
+  const body = to === 'drive' ? { path, action: kind } : { path };
+  view.busy = true;
+  pressed.disabled = true;
+  let found;
+  try {
+    found = await send(to, body);
+  } catch (failure) {
+    view.busy = false;
+    if (turn !== view.turn) return;
+    say(problem, failure.message + (kind === 'adopt'
+      ? ' Nothing was copied, and the training is exactly as it was.'
+      : kind === 'publish' ? ' Nothing was published.' : ' Nothing was changed.'));
+    pressed.disabled = false;
+    pressed.focus();
+    return;
+  }
+  view.busy = false;
+  if (turn !== view.turn) return;
+  view.sheet = '';
+  if (kind === 'adopt') {
+    view.adopted = { path: found.path, from: path };
+    toast('Copied. The copy is the one to work on from now.');
+    show('run', { path: found.path });
+    refresh();
+    return;
+  }
+  if (kind === 'publish') {
+    view.issued = { path, revision: found.revision, ready: found.ready !== false,
+      shared: Boolean(found.shared), notice: found.notice || '' };
+    toast('Published as revision ' + found.revision + '.');
+  } else {
+    view.run = found;
+    // Taking one that was changed on two computers answers with what was set aside. The
+    // run goes on saying where that is kept; that it happened is told once, here.
+    toast(kind === 'take' ? found.notice || 'It runs from this computer now.'
+      : 'Handed over. Anyone on your team may take it now.');
+  }
+  drawSheet();
+  view.barred = '';
+  paintRun(false);
+  if (!(kind === 'publish' && focusKey('publish'))) {
+    window.scrollTo(0, 0);
+    byId('title').focus({ preventScroll: true });
+  }
+  refresh();
+}
+
+// --- with a team: every run at once ----------------------------------------------------
+
+async function readStatus() {
+  try {
+    view.status = await ask('status');
+  } catch (failure) {
+    // A runner that does not answer this leaves the screen as it was before there was one.
+    view.status = null;
+  }
+}
+
+// One training as the status screen shows it, whether the runner listed it there or the
+// list of trainings did.
+function statusOf(found) {
+  const known = listed(found.path) || {};
+  const run = found.run || {};
+  return { path: found.path, title: found.title || known.title || 'Untitled',
+    levels: found.levels || known.levels, state: run.state || found.state,
+    sentence: run.sentence || found.sentence || '', queue: found.queue || run.queue || null,
+    spent: found.spent || run.spent || {}, driver: found.driver || known.driver || null,
+    needs: Boolean(found.needs), notice: found.notice || known.notice || '',
+    last_shared: found.last_shared || known.last_shared || null };
+}
+
+function statusWords(found) {
+  if (queued(found)) return ['none', 'Waiting its turn'];
+  return RUN_WORDS[found.state] || STATES[found.state] || RUN_WORDS.working;
+}
+
+function spentSays(spent) {
+  if (given(spent.dollars)) return money(spent.dollars);
+  return given(spent.tokens) ? Number(spent.tokens).toLocaleString() + ' tokens'
+    : 'Not reported yet';
+}
+
+// Every run on this computer: what each is doing, and what it has cost.
+function runsCard() {
+  if (!view.runner || !view.status) return null;
+  const runs = list(view.status.runs).map(statusOf);
+  const node = card('Running on this computer');
+  const limit = Number(view.status.limit) || 0;
+  // How many work at once is this computer's own limit, set where the set-up is changed.
+  const turns = limit ? make('p', 'quiet', 'Up to ' + count(limit, 'training works',
+    'trainings work') + ' at once on this computer. Any more wait their turn.') : null;
+  if (!runs.length) {
+    return add(node, make('p', 'quiet', 'Nothing is running on this computer right now.'),
+      turns);
+  }
+  const table = make('table', 'table');
+  const head = make('tr');
+  for (const title of ['Training', 'What it is doing', 'Cost so far', '']) {
+    const top = make('th', '', title);
+    top.scope = 'col';
+    if (!title) add(top, make('span', 'offscreen', 'Open'));
+    head.append(top);
+  }
+  const body = make('tbody');
+  for (const found of runs) {
+    const name = make('th');
+    name.scope = 'row';
+    add(name, make('span', 'row-title', found.title),
+      levelsText(found.levels) ? make('span', 'quiet', levelsText(found.levels)) : null);
+    const go = capsule('Open', 'quiet', () => show('run', { path: found.path }),
+      'run ' + found.path);
+    go.setAttribute('aria-label', 'Open the run of ' + found.title);
+    add(body, add(make('tr'), name,
+      cell('What it is doing', state(...statusWords(found)),
+        // A question, a problem, or documents to add: it does nothing more until you come.
+        found.needs ? add(make('p', ''), make('strong', '', 'It needs you.')) : null,
+        found.sentence ? make('p', 'quiet', found.sentence) : null,
+        queued(found) ? make('p', 'quiet', queueSays(found.queue)) : null,
+        noticeLine(found)),
+      cell('Cost so far', spentSays(found.spent)), cell('', go)));
+  }
+  return add(node, turns, add(table, add(make('thead'), head), body));
+}
+
+// The trainings teammates run, apart from this computer's own.
+function teammatesCard() {
+  if (!view.runner) return null;
+  const theirs = (view.status ? list(view.status.elsewhere) : teammates()).map(statusOf);
+  if (!theirs.length && !(view.status && teamSpace())) return null;
+  const node = card('Run by your teammates');
+  if (!theirs.length) {
+    return add(node, make('p', 'quiet', 'No teammate is running a training right now, as '
+      + 'far as this computer has been told.'), fetchLine());
+  }
+  const items = make('ul', 'rows');
+  for (const found of theirs) {
+    const go = capsule('Open', 'quiet', () => show('run', { path: found.path }),
+      'theirs ' + found.path);
+    go.setAttribute('aria-label', 'Open ' + found.title + ', to read it');
+    add(items, add(make('li', 'row'), add(make('div', 'row-text'),
+      make('h3', 'row-title', found.title),
+      found.driver ? whoSays(found.driver, 'who') : null,
+      lastLine(found.last_shared, 'row-says')
+        || (found.sentence ? make('p', 'row-says', found.sentence) : null),
+      noticeLine(found)), go));
+  }
+  return add(node, make('p', 'quiet', 'Each can be opened and read here. Only the computer '
+    + 'that runs a training can change it.'), items, fetchLine());
+}
+
+// --- with a team: the computer's own notification ----------------------------------------
+
+// The set-up as it stands, as a change to it is sent: whole, so that one answer changing
+// leaves every other as it was.
+function setupAsItIs() {
+  const held = view.setup;
+  const space = held.workspace || {};
+  const agent = held.agent || {};
+  const body = { folder: space.folder, branch: space.branch, name: space.name,
+    share_when: space.share_when, agent: agent.default, model: agent.model || null,
+    limits: held.limits };
+  if (space.repository) body.repository = space.repository;
+  else body.path = space.path;
+  if (held.previews && held.previews.how) body.previews = held.previews.how;
+  const chosen = brandSkills().find((skill) => skill.chosen);
+  if (brandSkills().length > 1 && chosen) body.brand_skill = chosen.path;
+  return body;
+}
+
+async function setNotify(index, node) {
+  if (view.notifying) return;
+  view.notifying = true;
+  view.unnotified = '';
+  slide(node, index);
+  try {
+    view.setup = await send('setup', { ...setupAsItIs(), notify: Boolean(index) });
+    toast(index ? 'On. This computer tells you when no page is open.'
+      : 'Off. This computer says nothing when no page is open.');
+  } catch (failure) {
+    view.unnotified = failure.message + ' Nothing was changed.';
+  }
+  view.notifying = false;
+  if (view.screen === 'settings') draw(false);
+}
+
+// Settings, with the runner: the notification for when no page is open. It is the
+// computer's own, and is kept apart from the browser's, which is the card above.
+function notifyCard() {
+  const found = view.runner && view.setup ? view.setup.notify : null;
+  if (!found) return null;
+  const node = add(card('When this page is closed'), make('p', '', NOTIFY_SAYS));
+  if (found.can) {
+    add(node, add(make('div', 'setting'),
+      make('p', 'row-title', 'Tell me when no page is open'),
+      segmented('Tell me when no page is open', ['Off', 'On'], found.on ? 1 : 0, setNotify,
+        'notify')));
+    if (found.problem) add(node, make('p', 'fix', found.problem));
+  } else {
+    add(node, state('off', found.on ? 'Turned on, but this computer cannot do it now.'
+      : 'This computer cannot do this.'),
+    make('p', 'fix', found.problem || 'It has no way to show a notification of its own.'));
+  }
+  const problem = alertLine('notify-problem');
+  say(problem, view.unnotified);
+  return add(node, problem, make('p', 'quiet', NOTIFY_DIFFERS));
+}
+
+// --- with a team: what is published ------------------------------------------------------
+// Each training the workspace has published, at its latest revision, with its index to read.
+
+function publishedRow(found) {
+  const title = found.title || 'Untitled';
+  const facts = add(make('p', ''), 'Revision ' + found.revision + ', published ',
+    when(found.at), found.by ? ' by ' + found.by : '', '.');
+  const go = capsule('Open the index', 'quiet',
+    () => show('index', { path: found.path, artifact: INDEX }), 'index ' + found.path);
+  go.setAttribute('aria-label', 'Open the index of ' + title);
+  // The index that opens is the training's as it stands on this computer now. Where the
+  // training has changed since the revision, that is not what was published, and is said.
+  const moved = found.current === false ? make('p', 'fix', 'It has changed on this computer '
+    + 'since revision ' + found.revision + ' was published, so the index here is the '
+    + 'training as it stands now, not as it was published. Publish it again to make that '
+    + 'the next revision.') : null;
+  return add(make('li', 'row'), add(make('div', 'row-text'),
+    make('h3', 'row-title', title), facts,
+    found.ready ? state('done', 'Ready to use when it was published')
+      : state('late', 'Not ready to use when it was published'), moved), go);
+}
+
+function paintPublished(fresh) {
+  const found = view.shelf;
+  if (!found.length) {
+    place({ title: 'Published', back: true }, [add(make('section', 'card shine invite'),
+      make('h2', 'invite-title', 'Nothing is published yet'),
+      make('p', '', 'A finished training is published from its own screen: open it, and '
+        + 'choose “Publish”. It is then listed here, with its index to read.'),
+      add(make('div', 'bar'), capsule('See your trainings', 'filled',
+        () => show('trainings'), 'home')))], fresh);
+    return;
+  }
+  const items = make('ul', 'rows');
+  for (const entry of found) items.append(publishedRow(entry));
+  place({ title: 'Published', back: true },
+    [make('p', 'intro lede', count(found.length, 'training is', 'trainings are')
+      + ' published in this workspace, each shown at its latest revision. A revision is '
+      + 'never moved once it is published.'),
+    add(card('Published trainings'), items)], fresh);
+}
+
+async function drawPublished(fresh) {
+  const turn = view.turn;
+  if (fresh) {
+    view.shelf = null;
+    place({ title: 'Published', back: true },
+      [make('p', 'quiet', 'Reading what is published.')], true);
+  }
+  try {
+    const found = list((await ask('published')).published);
+    if (turn !== view.turn) return;
+    const mark = JSON.stringify(found);
+    if (view.shelf && mark === view.drawn) return;
+    const first = !view.shelf;
+    view.shelf = found;
+    view.drawn = mark;
+    paintPublished(first);
+  } catch (failure) {
+    if (turn !== view.turn) return;
+    if (failure.kind === 'stopped') notify(failure.message);
+    if (view.shelf) return;
+    view.drawn = 'unread';
+    place({ title: 'What is published cannot be read', back: true },
+      [make('p', 'problem', failure.message),
+        make('p', 'quiet', 'Nothing was changed. Whatever is published is as it was.'),
+        capsule('Back to your trainings', 'filled', () => show('trainings'), 'home')], true);
+  }
+}
+
 // --- the index -----------------------------------------------------------------------
 // README.md at the top of a finished training, read like any other of its files. It is
 // written once, when the training finishes, so it is read once and not again.
@@ -4553,7 +5370,25 @@ function waitingKey(training) {
 function took(listing) {
   view.listing = list(listing.trainings);
   view.needs = Number(listing.needs) || 0;
-  const waiting = view.listing.filter((training) => training.state === 'needs-you');
+  // What a teammate runs is theirs to decide: it is never counted, or told, as needing you.
+  const waiting = view.listing.filter((training) => training.state === 'needs-you'
+    && !elsewhere(training));
+  if (view.listing.some((training) => training.state === 'needs-you'
+      && elsewhere(training))) {
+    view.needs = Math.min(view.needs, waiting.length);
+  }
+  // What the runner says about who has a training is told once when it is new: that one
+  // was taken from this computer, or was changed on two at once. It is the runner's to
+  // say, so the row and the run still say it after a reload.
+  const noticed = {};
+  for (const training of view.listing) {
+    if (!training.notice) continue;
+    noticed[training.path] = training.notice;
+    if (view.known && view.noticed[training.path] !== training.notice) {
+      toast((training.title || 'Untitled') + ': ' + training.notice);
+    }
+  }
+  view.noticed = noticed;
   const keys = waiting.map(waitingKey);
   for (const training of view.known ? waiting : []) {
     if (view.known.includes(waitingKey(training))) continue;
@@ -4598,6 +5433,7 @@ async function refresh() {
     took(await ask('trainings'));
     await readAsks();
     if (view.computer === undefined) view.computer = (await ask('computer')).computer;
+    if (view.runner && view.screen === 'status') await readStatus();
     notify('');
     setTitle();
     for (const node of document.querySelectorAll('time')) {
@@ -4607,13 +5443,14 @@ async function refresh() {
     frame();
     if (unset() && view.screen !== 'setup') {
       show('setup', null, true);
-    } else if (['gate', 'training', 'run', 'outline'].includes(view.screen)) {
+    } else if (['gate', 'training', 'run', 'outline', 'published'].includes(view.screen)) {
       await draw(false);
     } else if (view.screen === 'setup' || view.screen === 'new' || view.screen === 'index') {
       // A form is drawn once and never again under the person filling it in. So is the
       // index, under the person reading it.
       if (!view.drawn) draw(true);
-    } else if (!view.busy && !view.checking && !typing() && view.drawn !== signature()) {
+    } else if (!view.busy && !view.checking && !view.notifying && !typing()
+        && view.drawn !== signature()) {
       draw(!view.drawn);
     }
   } catch (failure) {

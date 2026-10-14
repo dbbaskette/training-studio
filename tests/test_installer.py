@@ -1,18 +1,109 @@
-"""The installer, run against a temporary home directory. Nothing real is touched."""
+"""The installer, run against a temporary home directory. Nothing real is touched, and
+nothing is fetched from anywhere but a repository a test made."""
 import contextlib
 import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import helpers
 
 sys.path.insert(0, str(helpers.REPO / 'installer'))
 import install  # noqa: E402
+
+NODE = shutil.which('node')
+COMPANIONS = ('harness-research', 'harness-slides')
+# A companion's own installer, as small as it can be and still do what a real one does: a
+# shared copy whose entry is the stub, and a link to it for every assistant it knows. Like a
+# real one it reads the home folder from the environment as well as from --home, so it
+# refuses when the two differ rather than write anywhere a test did not name.
+INSTALLER = """import { cpSync, mkdirSync, copyFileSync, symlinkSync, readFileSync, rmSync, lstatSync }
+  from 'node:fs';
+import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+const at = process.argv.indexOf('--home');
+const home = at > 0 ? process.argv[at + 1] : null;
+if (home !== homedir()) { console.error('The home given is not the home in use.'); process.exit(1); }
+const source = join(dirname(fileURLToPath(import.meta.url)), '..');
+const pkg = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'));
+if (pkg.refuses) { console.error('Existing unrelated skill: stand-in'); process.exit(1); }
+const shared = join(homedir(), '.local', 'share', pkg.name);
+const runtime = join(shared, 'versions', pkg.version);
+mkdirSync(runtime, { recursive: true });
+cpSync(source, runtime, { recursive: true });
+copyFileSync(join(source, 'bootstrap', 'SKILL.md'), join(runtime, 'SKILL.md'));
+rmSync(join(shared, 'current'), { force: true });
+symlinkSync(join('versions', pkg.version), join(shared, 'current'));
+for (const folder of ['.agents', '.claude', '.cursor']) {
+  const target = join(home, folder, 'skills', pkg.name);
+  mkdirSync(dirname(target), { recursive: true });
+  try { lstatSync(target); } catch { symlinkSync(join(shared, 'current'), target); }
+}
+console.log(JSON.stringify({ status: 'installed', runtimeVersion: pkg.version }));
+"""
+_made = {}
+
+
+def git(cwd: Path, *args: str) -> str:
+    done = subprocess.run(['git', '-c', 'user.name=A Test', '-c', 'user.email=test@example.com',
+                           *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return done.stdout.strip()
+
+
+class StandIn:
+    """A local stand-in for a companion's repository: a bare repository a test made."""
+
+    def __init__(self, base: Path, name: str):
+        self.name, self.bare, self.work = name, base / f'{name}.git', base / f'{name}-work'
+        git(base, 'init', '-q', '--bare', str(self.bare))
+        git(base, 'init', '-q', str(self.work))
+
+    def release(self, version: str, stub_names: str | None = None, **package) -> str:
+        """Commit one release and return its commit."""
+        files = {
+            'package.json': json.dumps({'name': self.name, 'version': version, **package}),
+            'SKILL.md': f'---\nname: {self.name}\n---\n\nThe whole skill, {version}.\n',
+            'bootstrap/SKILL.md': f'---\nname: {stub_names or self.name}\n---\n\n'
+                                  f'The small entry of {version}.\n',
+            'scripts/install.mjs': INSTALLER,
+            f'scripts/{self.name}.mjs': '// the command of the skill\n',
+        }
+        for name, text in files.items():
+            (self.work / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.work / name).write_text(text, encoding='utf-8')
+        git(self.work, 'add', '-A')
+        git(self.work, 'commit', '-q', '-m', f'Release {version}')
+        git(self.work, 'push', '-q', str(self.bare), 'HEAD:refs/heads/main')
+        return git(self.work, 'rev-parse', 'HEAD')
+
+
+def write_pins(path: Path, pins: dict) -> None:
+    path.write_text(json.dumps({'schema': 1, 'companions': pins}, indent=2), encoding='utf-8')
+
+
+def setUpModule():
+    """Make each companion's stand-in repository once, and pin it as a maintainer would."""
+    holder = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(holder.cleanup)
+    base = Path(holder.name).resolve()
+    pins = {}
+    for name, version in zip(COMPANIONS, ('0.8.0', '0.13.1')):
+        _made[name] = StandIn(base, name)
+        commit = _made[name].release(version)
+        pins[name] = {'repository': str(_made[name].bare), 'version': '0.0.0',
+                      'commit': '0' * 40, 'sha256': '0' * 64, 'stub': 'bootstrap/SKILL.md',
+                      'installer': 'scripts/install.mjs'}
+        write_pins(base / 'companions.json', pins)
+        install.pin(base / 'companions.json', name, commit)
+        pins = install.read_pins(base / 'companions.json')
+    _made['pins'] = pins
 
 
 class InstallerCase(unittest.TestCase):
@@ -26,6 +117,25 @@ class InstallerCase(unittest.TestCase):
         self.codex = self.home / '.agents' / 'skills'
         self.claude.mkdir(parents=True)
         self.codex.mkdir(parents=True)
+        self.pins_file = self.base / 'companions.json'
+        self.pins = json.loads(json.dumps(_made['pins']))
+        write_pins(self.pins_file, self.pins)
+        # What this computer answers when asked: everything in place, until a test says not.
+        self.answers = {('git', '--version'): (0, 'git version 2.50.0'),
+                        ('git', 'config', '--get', 'user.name'): (0, 'A Test'),
+                        ('git', 'config', '--get', 'user.email'): (0, 'test@example.com'),
+                        ('claude', '--version'): (0, '2.1.0 (Claude Code)'),
+                        ('node', '--version'): (0, 'v22.1.0')}
+        self.brand, self.asks_the_runner = True, install.brand_skill
+        for patch in (mock.patch.object(install, 'PINS', self.pins_file),
+                      mock.patch.object(install, 'PLATFORM', 'linux'),
+                      mock.patch.object(install, 'ask', lambda command, cwd=None, timeout=20:
+                                        self.answers.get(tuple(command))),
+                      mock.patch.object(install, 'brand_skill', lambda home: self.brand),
+                      mock.patch.dict(os.environ)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        os.environ.pop('BRAND_SKILL_RUNTIME', None)
 
     def run_installer(self, *args, expect=0) -> dict:
         printed = io.StringIO()
@@ -40,6 +150,15 @@ class InstallerCase(unittest.TestCase):
         shutil.copytree(helpers.SKILL, source, ignore=shutil.ignore_patterns('__pycache__'))
         (source / 'VERSION').write_text(version + '\n', encoding='utf-8')
         return source
+
+    def repin(self, name: str, commit: str) -> None:
+        install.pin(self.pins_file, name, commit)
+        self.pins = install.read_pins(self.pins_file)
+
+    def a_stopped_process(self) -> int:
+        done = subprocess.Popen([sys.executable, '-c', 'pass'])
+        done.wait()
+        return done.pid
 
 
 class InstallTests(InstallerCase):
@@ -217,31 +336,21 @@ class CheckTests(InstallerCase):
         self.assertEqual(self.run_installer('check')['links']['codex'],
                          'points somewhere this installer did not put it')
 
-    def test_missing_companion_skills_are_named_with_where_to_get_them(self):
-        (self.claude / 'harness-research').mkdir()
-        result = self.run_installer('install', '--yes', '--target', 'claude')
-        self.assertEqual(result['companions'],
-                         {'claude': {'harness-research': True, 'harness-slides': False}})
-        slides = [note for note in result['notes'] if note.startswith('harness-slides')]
-        self.assertEqual(len(slides), 1)
-        self.assertIn('https://github.com/dbbaskette/harness-slides-skill', slides[0])
-        self.assertFalse(any(note.startswith('harness-research') for note in result['notes']))
-
     def test_the_plain_report_is_for_a_person(self):
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed):
             install.main(['install', '--yes', '--home', str(self.home)])
         text = printed.getvalue()
-        self.assertIn('is installed.', text)
+        self.assertIn('is installed, the runner with it.', text)
         self.assertIn('Claude Code:', text)
-        self.assertIn('Next: make a folder for a topic', text)
+        self.assertIn('To open Training Studio:\n  Run: sh ', text)
+        self.assertIn('Next: open Training Studio and press "New training".', text)
 
 
 class InstalledCopyTests(InstallerCase):
     def test_the_installed_helper_refuses_to_start_a_training_above_itself(self):
         self.run_installer('install', '--yes')
         helper = self.claude / 'training-studio' / 'scripts' / 'training.py'
-        import subprocess
         asked = subprocess.run([sys.executable, str(helper), '--dir', str(self.home), 'init',
                                 '--title', 'Topic'], capture_output=True, text=True)
         self.assertEqual(asked.returncode, 2)
@@ -255,8 +364,433 @@ class InstalledCopyTests(InstallerCase):
     def test_the_installed_helper_finds_the_profile_in_its_guidance_folder(self):
         self.run_installer('install', '--yes')
         scripts = self.claude / 'training-studio' / 'scripts'
-        import subprocess
         found = subprocess.run([sys.executable, '-c',
                                 'import workspace; print(workspace.PROFILE.is_file())'],
                                cwd=scripts, capture_output=True, text=True)
         self.assertEqual(found.stdout.strip(), 'True', found.stderr)
+
+
+class RunnerTests(InstallerCase):
+    def core_found_from(self, folder: Path) -> Path:
+        """Where the runner in a folder finds the helper's modules, asked of the runner."""
+        asked = subprocess.run([sys.executable, '-B', '-c',
+                                'import runner, workspace; print(runner.CORE)'],
+                               cwd=folder, capture_output=True, text=True)
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        return Path(asked.stdout.strip())
+
+    def test_the_runner_is_installed_with_the_version_beside_the_helper(self):
+        result = self.run_installer('install', '--yes')
+        staged = self.root / 'versions' / result['version']
+        for name in ('studio.py', '__init__.py', 'engine.py', 'briefs'):
+            self.assertTrue((staged / 'runner' / name).exists(), name)
+        self.assertTrue((staged / 'scripts' / 'workspace.py').is_file())
+        self.assertFalse(list((staged / 'runner').rglob('__pycache__')))
+        self.assertEqual(result['runner']['installed'], True)
+        state = json.loads((self.root / 'installation.json').read_text())
+        self.assertEqual(state['runner'], str(self.root / 'current' / 'runner' / 'studio.py'))
+
+    def test_the_runner_finds_the_helper_in_a_checkout_and_in_an_installed_version(self):
+        result = self.run_installer('install', '--yes')
+        staged = self.root / 'versions' / result['version']
+        self.assertEqual(self.core_found_from(staged), staged / 'scripts')
+        self.assertEqual(self.core_found_from(helpers.REPO), helpers.SCRIPTS)
+
+    @unittest.skipUnless(NODE, 'a companion installs itself with Node')
+    def test_the_installed_runner_finds_the_helper_the_companions_and_where_a_brand_is(self):
+        self.run_installer('install', '--yes', '--companions', 'install')
+        installed = self.root / 'current'
+        self.assertFalse((installed / 'skills').exists(), 'the installed layout, not a checkout')
+        brand = self.claude / 'example-brand'
+        brand.mkdir()
+        env = {name: value for name, value in os.environ.items()
+               if not name.endswith('_RUNTIME')}
+        asked = subprocess.run(
+            [sys.executable, '-B', '-c', (
+                'import json, runner\n'
+                'from runner import brand, research, slides, studio\n'
+                'print(json.dumps({"core": str(runner.CORE),'
+                ' "research": str(research.find_runtime()),'
+                ' "slides": str(slides.find_runtime()),'
+                ' "brand": [str(place) for place in brand.locations()],'
+                ' "opens": studio.parser().parse_args(["serve", "--open"]).open}))')],
+            cwd=installed, capture_output=True, text=True,
+            env={**env, 'HOME': str(self.home), 'USERPROFILE': str(self.home)})
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        found = json.loads(asked.stdout)
+        shared = self.home / '.local' / 'share'
+        self.assertEqual(found['core'], str(installed.resolve() / 'scripts'))
+        for name, version in zip(COMPANIONS, ('0.8.0', '0.13.1')):
+            self.assertEqual(found[name.removeprefix('harness-')],
+                             str(shared / name / 'versions' / version), name)
+        # A brand skill is looked for among the skills each assistant has, where the
+        # companions were just registered and where an organisation's own would be.
+        self.assertIn(str(brand), found['brand'])
+        self.assertIs(found['opens'], True)
+
+    def test_a_runner_that_does_not_start_is_never_made_current(self):
+        first = self.run_installer('install', '--yes')
+        broken = self.base / 'runner'
+        shutil.copytree(install.RUNNER, broken, ignore=shutil.ignore_patterns('__pycache__'))
+        (broken / 'studio.py').write_text('raise SystemExit("broken")\n')
+        with self.assertRaises(install.InstallError) as refused:
+            install.install(helpers.SKILL, self.home, self.root, ['claude'], False, False,
+                            runner=broken)
+        self.assertIn('The installed runner did not start', str(refused.exception))
+        self.assertEqual(os.readlink(self.root / 'current'),
+                         str(self.root / 'versions' / first['version']))
+
+    def test_the_one_line_command_opens_the_runner_that_was_installed(self):
+        result = self.run_installer('install', '--yes')
+        opener = self.root / 'studio'
+        self.assertEqual(result['runner']['open_with'], f'sh {opener}')
+        self.assertIsNone(result['runner']['double_click'])
+        self.assertTrue(os.access(opener, os.X_OK))
+        text = opener.read_text()
+        self.assertIn(str(self.root / 'current' / 'runner' / 'studio.py'), text)
+        self.assertIn('set -- serve --open', text)
+        asked = subprocess.run(['sh', str(opener), 'serve', '--help'], capture_output=True,
+                               text=True)
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        self.assertIn('usage: studio serve', asked.stdout)
+
+    def test_on_a_mac_a_launcher_to_double_click_is_written_too(self):
+        with mock.patch.object(install, 'PLATFORM', 'darwin'):
+            result = self.run_installer('install', '--yes')
+            launcher = self.home / 'Applications' / 'Open Training Studio.command'
+            self.assertEqual(result['runner']['double_click'], str(launcher))
+            self.assertTrue(os.access(launcher, os.X_OK))
+            self.assertIn(f"/bin/sh {self.root / 'studio'}", launcher.read_text())
+            self.assertNotIn('token', launcher.read_text(), 'no key is ever written down')
+            gone = self.run_installer('uninstall', '--yes')
+        self.assertEqual(sorted(gone['launchers_removed']),
+                         sorted([str(launcher), str(self.root / 'studio')]))
+        self.assertFalse(launcher.exists())
+        self.assertTrue(launcher.parent.is_dir())
+
+    def test_a_file_of_the_persons_own_where_a_launcher_goes_is_left_alone(self):
+        mine = self.home / 'Applications' / 'Open Training Studio.command'
+        mine.parent.mkdir()
+        mine.write_text('#!/bin/sh\necho mine\n')
+        with mock.patch.object(install, 'PLATFORM', 'darwin'):
+            result = self.run_installer('install', '--yes')
+            self.assertIsNone(result['runner']['double_click'])
+            self.run_installer('uninstall', '--yes')
+        self.assertEqual(mine.read_text(), '#!/bin/sh\necho mine\n')
+
+    def test_link_mode_opens_the_runner_of_the_checkout(self):
+        self.run_installer('install', '--yes', '--link')
+        self.assertIn(str(helpers.REPO / 'runner' / 'studio.py'),
+                      (self.root / 'studio').read_text())
+
+    def test_an_update_and_a_rollback_take_the_runner_with_them(self):
+        first = self.run_installer('install', '--yes')
+        opener = (self.root / 'studio').read_text()
+        second = self.run_installer('install', '--yes', '--source',
+                                    str(self.copy_of_the_skill('9.9.9')))
+        running = self.root / 'current' / 'runner' / 'studio.py'
+        self.assertEqual(running.resolve().parts[-3], second['version'])
+        self.assertEqual((self.root / 'studio').read_text(), opener, 'it follows the version')
+        back = self.run_installer('rollback', '--yes')
+        self.assertEqual(running.resolve().parts[-3], first['version'])
+        self.assertEqual(back['runner']['installed'], True)
+        self.assertEqual(self.run_installer('check')['runner']['open_with'],
+                         f"sh {self.root / 'studio'}")
+
+    def test_nothing_is_changed_underneath_a_runner_that_is_serving(self):
+        first = self.run_installer('install', '--yes')
+        self.run_installer('install', '--yes', '--source', str(self.copy_of_the_skill('9.9.8')))
+        before = os.readlink(self.root / 'current')
+        (self.root / 'runner.pid').write_text(f'{os.getpid()}\n')   # this test is "serving"
+        later = self.copy_of_the_skill('9.9.9')
+        for action in (['install', '--source', str(later)], ['install', '--link'],
+                       ['rollback'], ['uninstall']):
+            refusal = self.run_installer(*action, '--yes', expect=1)['error']
+            self.assertIn(f'Training Studio is open on this computer (process {os.getpid()})',
+                          refusal)
+            self.assertIn('Close it first', refusal)
+        self.assertEqual(os.readlink(self.root / 'current'), before)
+        self.assertEqual(len(list((self.root / 'versions').iterdir())), 2)
+        self.assertTrue((self.claude / 'training-studio').is_symlink())
+        self.assertEqual(self.run_installer('check')['runner']['serving'], os.getpid())
+        self.assertNotEqual(first['version'], Path(before).name)
+
+    def test_a_runner_that_ended_without_saying_so_is_not_counted(self):
+        self.run_installer('install', '--yes')
+        (self.root / 'runner.pid').write_text(f'{self.a_stopped_process()}\n')
+        self.assertIsNone(self.run_installer('check')['runner']['serving'])
+        self.run_installer('install', '--yes', '--source', str(self.copy_of_the_skill('9.9.9')))
+
+    def test_a_dry_run_says_how_it_would_be_opened_and_what_would_be_offered(self):
+        plan = self.run_installer('install', '--dry-run')
+        self.assertEqual(plan['launchers'], {'command': str(self.root / 'studio')})
+        self.assertEqual({name: (one['wanted'], one['would_offer'])
+                          for name, one in plan['companions'].items()},
+                         {'harness-research': ('0.8.0', True), 'harness-slides': ('0.13.1', True)})
+        self.assertFalse(self.root.exists())
+
+
+class CompanionTests(InstallerCase):
+    def fetched(self, name: str) -> list[Path]:
+        folder = self.root / 'companions' / name
+        return sorted(folder.iterdir()) if folder.is_dir() else []
+
+    def test_nobody_to_ask_means_nothing_is_fetched_and_the_report_says_how(self):
+        for extra in ([], ['--companions', 'skip']):
+            result = self.run_installer('install', '--yes', *extra)
+            for name in COMPANIONS:
+                self.assertEqual(result['companions'][name]['state'], 'waiting')
+                self.assertEqual(result['companions'][name]['found'],
+                                 {'claude': None, 'codex': None})
+                self.assertEqual(self.fetched(name), [])
+                self.assertFalse((self.claude / name).exists())
+            notes = [note for note in result['notes'] if note.startswith('harness-slides')]
+            self.assertEqual(len(notes), 1)
+            self.assertIn('is not installed for Claude Code and Codex', notes[0])
+            self.assertIn('--companions install', notes[0])
+            self.assertIn(str(_made['harness-slides'].bare.with_suffix('')), notes[0])
+
+    def test_a_person_is_asked_about_each_companion_and_yes_to_the_rest_does_not_cover_it(self):
+        asked, printed = [], io.StringIO()
+
+        def answer(question: str) -> str:
+            asked.append(question)
+            return 'n'
+
+        with mock.patch.object(install.sys, 'stdin', mock.Mock(isatty=lambda: True)), \
+                mock.patch('builtins.input', answer), contextlib.redirect_stdout(printed):
+            code = install.main(['install', '--yes', '--home', str(self.home)])
+        self.assertEqual(code, 0, printed.getvalue())
+        self.assertEqual(asked, ['Fetch harness-research and run its installer? [y/N]: ',
+                                 'Fetch harness-slides and run its installer? [y/N]: '])
+        said = printed.getvalue()
+        self.assertIn(f"at revision {self.pins['harness-slides']['commit'][:12]} and checked",
+                      said)
+        self.assertIn('Then its own installer would be run with Node.', said)
+        self.assertEqual(self.fetched('harness-research') + self.fetched('harness-slides'), [])
+        self.assertTrue((self.claude / 'training-studio' / 'SKILL.md').is_file())
+
+    def test_before_anything_a_person_is_told_what_would_be_done(self):
+        printed = io.StringIO()
+        with mock.patch.object(install.sys, 'stdin', mock.Mock(isatty=lambda: True)), \
+                mock.patch('builtins.input', lambda question: 'n'), \
+                contextlib.redirect_stdout(printed):
+            install.main(['install', '--home', str(self.home)])
+        said = printed.getvalue()
+        self.assertIn('Would install Training Studio', said)
+        self.assertIn(f"A way to open it: {self.root / 'studio'}", said)
+        self.assertIn('harness-research 0.8.0: would be offered, from', said)
+        self.assertIn('Nothing was changed.', said)
+        self.assertFalse(self.root.exists())
+
+    @unittest.skipUnless(NODE, 'a companion installs itself with Node')
+    def test_each_companion_is_installed_by_its_own_installer_from_its_pinned_revision(self):
+        result = self.run_installer('install', '--yes', '--companions', 'install')
+        for name, version in zip(COMPANIONS, ('0.8.0', '0.13.1')):
+            self.assertEqual(result['companions'][name]['state'], 'installed', result['notes'])
+            self.assertEqual(result['companions'][name]['found'],
+                             {'claude': version, 'codex': version})
+            (kept,) = self.fetched(name)
+            self.assertEqual(kept.name, self.pins[name]['commit'][:12])
+            self.assertFalse((kept / '.git').exists())
+            self.assertEqual(install.tree_digest(kept), self.pins[name]['sha256'])
+            for skills in (self.claude, self.codex):
+                self.assertEqual((skills / name / 'SKILL.md').read_text(),
+                                 f'---\nname: {name}\n---\n\nThe small entry of {version}.\n')
+                self.assertTrue((skills / name / 'scripts' / f'{name}.mjs').is_file())
+        self.assertFalse(any(note.startswith('harness-') for note in result['notes']))
+        state = json.loads((self.root / 'installation.json').read_text())
+        self.assertEqual({name: one['commit'] for name, one in state['companions'].items()},
+                         {name: self.pins[name]['commit'] for name in COMPANIONS})
+        again = self.run_installer('install', '--yes', '--companions', 'install')
+        self.assertEqual([one['state'] for one in again['companions'].values()],
+                         ['left alone', 'left alone'])
+        gone = self.run_installer('uninstall', '--yes')
+        self.assertEqual(gone['companions_left'], list(COMPANIONS))
+        self.assertTrue((self.claude / 'harness-research' / 'SKILL.md').is_file())
+
+    @unittest.skipUnless(NODE, 'a companion installs itself with Node')
+    def test_an_older_companion_is_brought_up_to_the_pin(self):
+        self.run_installer('install', '--yes', '--companions', 'install', '--target', 'claude')
+        self.repin('harness-slides', _made['harness-slides'].release('0.14.0'))
+        result = self.run_installer('install', '--yes', '--companions', 'install',
+                                    '--target', 'claude')
+        self.assertEqual(result['companions']['harness-slides']['state'], 'installed')
+        self.assertEqual(result['companions']['harness-slides']['found'], {'claude': '0.14.0'})
+        self.assertEqual(result['companions']['harness-research']['state'], 'left alone')
+        self.assertEqual(len(self.fetched('harness-slides')), 2)
+
+    def test_a_companion_as_new_or_newer_is_left_alone(self):
+        for name, version in (('harness-research', '0.8.0'), ('harness-slides', '1.2.0')):
+            (self.claude / name).mkdir()
+            (self.claude / name / 'package.json').write_text(json.dumps({'version': version}))
+            (self.claude / name / 'SKILL.md').write_text('mine\n')
+        result = self.run_installer('install', '--yes', '--companions', 'install',
+                                    '--target', 'claude')
+        for name, version in (('harness-research', '0.8.0'), ('harness-slides', '1.2.0')):
+            self.assertEqual(result['companions'][name]['state'], 'left alone')
+            self.assertEqual(result['companions'][name]['found'], {'claude': version})
+            self.assertEqual(self.fetched(name), [])
+            self.assertEqual((self.claude / name / 'SKILL.md').read_text(), 'mine\n')
+        self.assertFalse(any(note.startswith('harness-') for note in result['notes']))
+
+    def test_a_companion_whose_version_cannot_be_read_is_left_alone_and_named(self):
+        (self.claude / 'harness-research').mkdir()
+        result = self.run_installer('install', '--yes', '--companions', 'install',
+                                    '--target', 'claude')
+        self.assertEqual(result['companions']['harness-research']['state'], 'left alone')
+        self.assertEqual(self.fetched('harness-research'), [])
+        (note,) = [note for note in result['notes'] if note.startswith('harness-research')]
+        self.assertIn('its version could not be read. It was left alone', note)
+
+    def refused(self, name: str = 'harness-research') -> str:
+        """Install with the pins as they stand, and return why the companion was refused."""
+        write_pins(self.pins_file, self.pins)
+        result = self.run_installer('install', '--yes', '--companions', 'install')
+        outcome = result['companions'][name]
+        self.assertEqual(outcome['state'], 'refused', outcome)
+        self.assertEqual(outcome['found'], {'claude': None, 'codex': None})
+        self.assertEqual(self.fetched(name), [], 'nothing of it is kept')
+        self.assertFalse((self.home / '.local' / 'share' / name).exists(), 'and nothing ran')
+        self.assertTrue((self.claude / 'training-studio' / 'SKILL.md').is_file())
+        (note,) = [note for note in result['notes'] if note.startswith(name)]
+        self.assertIn('was not installed', note)
+        return outcome['detail']
+
+    def test_a_companion_that_is_not_file_for_file_what_was_pinned_is_refused(self):
+        self.pins['harness-research']['sha256'] = 'ab' * 32
+        self.assertIn('is not what this installer expects, file for file', self.refused())
+
+    def test_a_revision_other_than_the_pinned_one_is_refused(self):
+        expected = self.pins['harness-research']['sha256']
+        self.repin('harness-research', _made['harness-research'].release('0.8.1'))
+        self.pins['harness-research']['sha256'] = expected
+        self.assertIn('is not what this installer expects', self.refused())
+
+    def test_a_revision_the_repository_does_not_have_is_refused(self):
+        self.pins['harness-research']['commit'] = 'c' * 40
+        self.assertIn('could not be fetched from', self.refused())
+
+    def test_an_entry_that_names_another_skill_is_refused(self):
+        self.repin('harness-research',
+                   _made['harness-research'].release('0.8.2', stub_names='something-else'))
+        self.assertIn('does not hold the entry and the installer', self.refused())
+
+    @unittest.skipUnless(NODE, 'a companion installs itself with Node')
+    def test_a_kept_copy_that_was_changed_is_never_run(self):
+        self.repin('harness-slides', _made['harness-slides'].release('0.13.2', refuses=True))
+        first = self.run_installer('install', '--yes', '--companions', 'install')
+        self.assertEqual(first['companions']['harness-slides']['state'], 'failed')
+        self.assertIn('its installer said: Existing unrelated skill',
+                      first['companions']['harness-slides']['detail'])
+        (kept,) = self.fetched('harness-slides')
+        (kept / 'package.json').write_text(json.dumps({'name': 'harness-slides',
+                                                       'version': '0.13.2'}))
+        second = self.run_installer('install', '--yes', '--companions', 'install')
+        self.assertEqual(second['companions']['harness-slides']['state'], 'refused')
+        self.assertIn('has changed since it was fetched',
+                      second['companions']['harness-slides']['detail'])
+        self.assertFalse((self.claude / 'harness-slides').exists())
+
+    def test_without_node_a_companion_is_not_fetched(self):
+        self.answers[('node', '--version')] = (0, 'v18.19.0')
+        result = self.run_installer('install', '--yes', '--companions', 'install')
+        self.assertEqual(result['companions']['harness-slides']['state'], 'failed')
+        self.assertEqual(self.fetched('harness-slides'), [])
+        self.assertTrue(any('Node 20 or newer is needed by the companion skills; found '
+                            'v18.19.0' in note for note in result['notes']))
+
+    def test_a_companions_installer_is_only_told_of_a_home_that_is_not_the_persons_own(self):
+        pin, checkout = self.pins['harness-slides'], self.base / 'kept'
+        self.assertEqual(install.companion_command('node', checkout, pin, self.home),
+                         ['node', str(checkout / 'scripts' / 'install.mjs'), '--home',
+                          str(self.home)])
+        self.assertEqual(install.companion_command('node', checkout, pin,
+                                                   Path.home().resolve()),
+                         ['node', str(checkout / 'scripts' / 'install.mjs')])
+
+    def test_pinning_records_the_revision_and_every_file_of_it(self):
+        commit = _made['harness-slides'].release('0.15.0')
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            code = install.main(['pin', 'harness-slides', '--revision', 'main', '--yes',
+                                 '--json', '--pins', str(self.pins_file)])
+        self.assertEqual(code, 0, printed.getvalue())
+        result = json.loads(printed.getvalue())
+        self.assertEqual((result['version'], result['commit'], result['was']['version']),
+                         ('0.15.0', commit, '0.13.1'))
+        kept = install.read_pins(self.pins_file)['harness-slides']
+        self.assertEqual((kept['version'], kept['commit']), ('0.15.0', commit))
+        self.assertNotEqual(kept['sha256'], self.pins['harness-slides']['sha256'])
+        self.assertEqual(install.read_pins(self.pins_file)['harness-research'],
+                         self.pins['harness-research'])
+
+    def test_pins_this_installer_cannot_read_are_refused(self):
+        self.pins['harness-slides']['installer'] = '../elsewhere/install.mjs'
+        write_pins(self.pins_file, self.pins)
+        refusal = self.run_installer('install', '--yes', expect=1)
+        self.assertIn('does not say which companion skills to install', refusal['error'])
+        self.assertFalse(self.root.exists())
+
+    def test_the_pins_that_ship_name_a_whole_commit_and_nothing_of_a_companion_is_here(self):
+        pins = install.read_pins(helpers.REPO / 'installer' / 'companions.json')
+        self.assertEqual(sorted(pins), sorted(COMPANIONS))
+        for name, pin in pins.items():
+            self.assertTrue(pin['repository'].startswith('https://github.com/'), name)
+            self.assertFalse((helpers.REPO / 'bootstrap' / name).exists(), name)
+
+
+class NeedsTests(InstallerCase):
+    def test_with_everything_there_nothing_is_worth_knowing_but_pandoc(self):
+        for name, version in zip(COMPANIONS, ('0.8.0', '0.13.1')):
+            (self.claude / name).mkdir()
+            (self.claude / name / 'package.json').write_text(json.dumps({'version': version}))
+        result = self.run_installer('check', '--target', 'claude')
+        self.assertEqual([note for note in result['notes'] if not note.startswith('pandoc')], [])
+        self.assertEqual(result['git'], {'installed': True, 'name': True, 'email': True})
+        self.assertEqual(result['agents']['claude'], {'installed': True, 'signed_in': None})
+        self.assertEqual(result['brand_skill'], True)
+
+    def test_each_thing_the_runner_needs_and_does_not_have_is_named_with_how_to_get_it(self):
+        self.answers.clear()
+        self.brand = False
+        notes = self.run_installer('install', '--yes')['notes']
+        for said in ('git was not found. The runner keeps every training in a git repository. '
+                     'Install it from https://git-scm.com',
+                     'No assistant was found. Install Claude Code or Codex and sign in',
+                     'Node 20 or newer is needed by the companion skills; none was found. Get '
+                     'it from https://nodejs.org',
+                     'harness-research 0.8.0 was not installed',
+                     'harness-slides 0.13.1 was not installed',
+                     'No brand skill was found. A slide deck is always made in a brand'):
+            self.assertEqual(len([note for note in notes if said in note]), 1, said)
+
+    def test_git_that_does_not_know_who_you_are_is_named_with_the_commands(self):
+        del self.answers[('git', 'config', '--get', 'user.email')]
+        result = self.run_installer('check')
+        self.assertEqual(result['git'], {'installed': True, 'name': True, 'email': False})
+        (note,) = [note for note in result['notes'] if note.startswith('git ')]
+        self.assertIn('git config --global user.email "you@example.com"', note)
+
+    def test_an_assistant_that_is_not_signed_in_is_named(self):
+        del self.answers[('claude', '--version')]
+        self.answers[('codex', '--version')] = (0, 'codex-cli 1.0.0')
+        self.answers[('codex', 'login', 'status')] = (1, 'Not logged in')
+        result = self.run_installer('check')
+        self.assertEqual(result['agents']['codex'], {'installed': True, 'signed_in': False})
+        self.assertIn('Codex is installed but not signed in. Run: codex login', result['notes'])
+        self.answers[('codex', 'login', 'status')] = (0, 'Logged in using ChatGPT')
+        result = self.run_installer('check')
+        self.assertEqual(result['agents']['codex']['signed_in'], True)
+        self.assertFalse(any('signed in' in note for note in result['notes']))
+
+    def test_no_brand_skill_is_found_in_a_home_that_has_none(self):
+        self.assertIs(self.asks_the_runner(self.home), False)
+
+    def test_a_brand_skill_is_never_named(self):
+        self.brand = False
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            install.main(['check', '--home', str(self.home)])
+        self.assertIn("A brand skill is your organisation's own and is not installed from here",
+                      printed.getvalue())

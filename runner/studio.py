@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """The runner's command line.
 
-    studio serve [--port N]    start the runner and print the link to its page
+    studio serve [--port N] [--open]
+                               start the runner and print the link to its page
     studio status              what is set up and where every run is, as JSON for a script
 
 `serve` is started by a person. To a terminal it prints the link whole, with its key. To
 anything else, such as an assistant or a pipe, it prints the address without the key and
-opens the page in the browser itself, so only the person ever holds the key. It runs until
+opens the page in the browser itself, so only the person ever holds the key. With --open,
+which the installed launcher uses, a person's terminal is given the link and the page is
+opened for them as well. It runs until
 it is interrupted, and picks every training up where its files say it is when started again.
+It fetches a shared workspace when it starts and every few minutes while it serves, and can
+tell the person through the computer's own notifications when no page is open.
 One runner serves on a computer at a time: a second would undo what the first is doing.
 """
 import sys
@@ -86,6 +91,8 @@ def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show) -> int:
         try:
             print(json.dumps(cmd_desk.announce(server, out.isatty(), opener)), file=out,
                   flush=True)
+            if out.isatty() and getattr(args, 'open', False):
+                opener(server.url)   # the person's own terminal, and their own browser
             engine.resume()
             server.serve()
         except KeyboardInterrupt:
@@ -109,6 +116,8 @@ def parser() -> argparse.ArgumentParser:
     serving = commands.add_parser('serve', help='start the runner and print the link')
     serving.add_argument('--port', type=cmd_desk.port, default=0,
                          help='the local port to serve on (default: one the system chooses)')
+    serving.add_argument('--open', action='store_true',
+                         help='also open the page in the browser, when started in a terminal')
     serving.set_defaults(handler=serve)
     commands.add_parser('status', help='what is set up and where every run is, as JSON'
                         ).set_defaults(handler=status)

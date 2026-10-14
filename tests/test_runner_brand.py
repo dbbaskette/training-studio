@@ -82,6 +82,25 @@ class FindingABrandSkillTests(unittest.TestCase):
                          ('Acme Brand', mine, mine / 'scripts' / 'acme-brand.mjs'))
         self.assertEqual(chosen.brands(), LISTED)
 
+    def test_a_home_that_is_named_is_the_only_one_looked_in(self):
+        # The installer asks about the home it installs into, which need not be the
+        # person's own: nothing of theirs is looked at, or run, on its behalf.
+        mine = skill(self.claude / 'acme-brand', 'acme-brand')
+        self.run.knows(mine, 'acme-brand')
+        other = self.home / 'another-home'
+        theirs = skill(other / '.agents' / 'skills' / 'zeta-brand', 'zeta-brand')
+        shared = skill(other / '.local' / 'share' / 'kept-brand' / 'current', 'kept-brand')
+        self.run.knows(theirs, 'zeta-brand', title='Zeta Brand')
+        self.assertEqual(brand.locations(other), [shared, theirs])
+        self.assertEqual(brand.locations(), [mine])
+        self.assertEqual([one['runtime'] for one in brand.found(self.run, home=other)],
+                         [str(theirs)])
+        self.assertEqual(brand.found(self.run, home=self.home / 'an-empty-home'), [])
+        self.assertNotIn(str(mine / 'scripts' / 'acme-brand.mjs'),
+                         [command[1] for command in self.run.ran])
+        os.environ[brand.VARIABLE] = str(mine)
+        self.assertEqual(brand.locations(other), [mine], 'the override is still the only place')
+
     def test_nothing_is_run_that_does_not_look_like_a_brand_skills_command(self):
         skill(self.claude / 'video-tool', 'video-tool', '// cuts a video\n')
         nameless = skill(self.claude / 'nameless', 'nameless')

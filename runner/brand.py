@@ -32,6 +32,9 @@ Added to the above
 ------------------
 - `found()` returns [{'name', 'runtime', 'brands'}], `runtime` being the skill's folder as
   text, with links followed. Give one to `Brand(runtime=...)` to use that skill.
+- `found(home=...)` and `locations(home)` look in that folder in place of the person's
+  home folder, which is how the installer asks about the home it installs into. The
+  override, when set, is still the only place looked.
 - Every brand `brands()` lists has at least one variant. `export` and `audit` take None
   for the variant all the same, and then leave the choice to the skill.
 - `brand.runtime` is the folder of the skill a Brand uses. Give it to `Brand(runtime=...)`
@@ -87,9 +90,9 @@ class Refused(WorkspaceError):
         self.problems = problems
 
 
-def locations() -> list[Path]:
+def locations(home: Path | None = None) -> list[Path]:
     """Every folder that may be an installed skill. The override, when set, is the only
-    place looked."""
+    place looked. `home` stands in for the person's home folder."""
     override = os.environ.get(VARIABLE)
     if override:
         return [Path(override).expanduser()]
@@ -100,7 +103,7 @@ def locations() -> list[Path]:
         except OSError:
             return []
 
-    user = Path.home()
+    user = home or Path.home()
     return [place / 'current' for parts in SHARED for place in inside(user.joinpath(*parts))] \
         + [place for parts in SKILLS for place in inside(user.joinpath(*parts))]
 
@@ -186,11 +189,11 @@ def _named(run, node: str, script: Path, otherwise: str) -> str:
     return name[:80] or otherwise
 
 
-def _installed(run=None):
+def _installed(run=None, home: Path | None = None):
     """Each brand skill on this computer: (its folder, its command, its name, its brands)."""
     node = 'node' if run else shutil.which('node')
     seen = set()
-    for place in locations() if node else []:
+    for place in locations(home) if node else []:
         try:
             runtime = place.resolve()
         except (OSError, RuntimeError):
@@ -204,11 +207,11 @@ def _installed(run=None):
             yield runtime, script, _named(run or run_command, node, script, hints[0]), brands
 
 
-def found(run=None) -> list[dict]:
-    """Every brand skill on this computer, for the set-up screen. With no Node there is
-    nothing to ask, so none is found."""
+def found(run=None, home: Path | None = None) -> list[dict]:
+    """Every brand skill on this computer, for the set-up screen and the installer. With no
+    Node there is nothing to ask, so none is found. `home` stands in for the home folder."""
     return [{'name': name, 'runtime': str(runtime), 'brands': brands}
-            for runtime, _, name, brands in _installed(run)]
+            for runtime, _, name, brands in _installed(run, home)]
 
 
 def _variant(variant: str | None) -> list[str]:

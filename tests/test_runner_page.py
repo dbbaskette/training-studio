@@ -35,8 +35,9 @@ GETS = ('/api/capabilities', '/api/setup', '/api/agents', '/api/run')
 POSTS = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/answer',
          '/api/documents', '/api/copies', '/api/share')
 BOTH = ('/api/setup', '/api/run', '/api/trainings')
-RUN_KEYS = ['agent', 'copies', 'deck', 'deck_left', 'documents', 'finished', 'model',
-            'outline', 'problem', 'question', 'sentence', 'spent', 'state', 'steps', 'workers']
+RUN_KEYS = ['agent', 'clash', 'copies', 'deck', 'deck_left', 'documents', 'driver', 'finished',
+            'kept', 'last_shared', 'mine', 'model', 'notice', 'outline', 'problem', 'question',
+            'queue', 'sentence', 'spent', 'state', 'steps', 'taken', 'workers']
 STEP_KEYS = ['attempts', 'dollars', 'error', 'id', 'kind', 'label', 'seconds', 'status']
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -247,6 +248,7 @@ class SetUpTests(FirstTimeCase):
             'agent': {'default': 'claude', 'model': None},
             'limits': {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 2},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
+            'notify': {'on': False, 'can': True, 'problem': None},
             'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
                       'problem': NO_BRAND_SKILL}})
         said = self.post('trainings', FORM, 409)
@@ -268,6 +270,7 @@ class SetUpTests(FirstTimeCase):
             'agent': {'default': 'codex', 'model': 'a-model'},
             'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
+            'notify': {'on': False, 'can': True, 'problem': None},
             'brand': {'found': False, 'name': None, 'brands': [], 'skills': [],
                       'problem': NO_BRAND_SKILL}})
         self.assertEqual(self.get('setup'), made)
@@ -365,8 +368,10 @@ class SetUpTests(FirstTimeCase):
         self.assertEqual(self.get('trainings')['trainings'], [])
         self.post('setup', {'repository': str(remote)})
         listed = self.get('trainings')['trainings']
-        self.assertEqual([(item['title'], item['run']['state']) for item in listed],
-                         [('Rolling restarts', 'waiting')])
+        # It is the other computer's: all that is known here is what was last shared.
+        self.assertEqual([(item['title'], item['run']['state'], item['mine'], item['state'])
+                          for item in listed],
+                         [('Rolling restarts', 'elsewhere', False, 'in-progress')])
         self.assertNotEqual(listed[0]['path'], made['path'])
 
 
@@ -1244,7 +1249,14 @@ class WireTests(WireCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)['documents']['added'][0]['bytes'], 27 * 2_000)
         for target in ('/api/answer', '/api/copies', '/api/decide', '/api/run'):
-            status, _, body = self.ask(target, {'path': path, 'id': over, 'answer': over})
+            # An over-long body is never read: the server refuses and closes the line. A
+            # client still sending may see the line reset before it reads the refusal.
+            try:
+                status, _, body = self.ask(target, {'path': path, 'id': over, 'answer': over})
+            except urllib.error.URLError as reset:
+                self.assertIsInstance(reset.reason, (ConnectionResetError, BrokenPipeError),
+                                      target)
+                continue
             self.assertEqual((status, json.loads(body)['error']), (413, 'A change is at most '
                              '64,000 bytes, with its length stated.'), target)
         large = base64.b64encode(b'A line of a long handbook.\n' * 150_000).decode('ascii')

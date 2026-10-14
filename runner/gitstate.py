@@ -13,6 +13,12 @@ What a caller needs to know
     gitstate.discard(workspace, 'rolling-restarts')        # back to its last commit
     if workspace.share == 'decision':
         report = gitstate.sync(workspace)        # fetch, replay, push; never forced
+    gitstate.sync(workspace, push=False)         # fetch and replay only: nothing is sent
+    gitstate.theirs(workspace, 'rolling-restarts/intake.md')   # as the remote last had it
+    gitstate.moved(workspace, 'rolling-restarts')    # the remote changed it since we parted
+    gitstate.set_aside(workspace, 'rolling-restarts')   # unshared commits, out of the branch
+    gitstate.kept(workspace, 'rolling-restarts')     # the refs that keep what was set aside
+    gitstate.undo(workspace, 'rolling-restarts')     # take back the last, unshared commit
 
 - A workspace is a repository, a folder in it (`trainings` unless named or found) and a
   branch. `join` works in a clone the runner keeps for itself under the per-user data
@@ -35,7 +41,14 @@ What a caller needs to know
 - `sync` never forces a push. When the same file changed on both sides it stops, puts
   things back as they were and reports. When the remote cannot be reached or refuses, the
   commits stay here and the report says the work is not shared yet. Do not call it while a
-  step is writing files: it sets unfinished changes aside and puts them back.
+  step is writing files: it sets unfinished changes aside and puts them back. `before` is
+  called after each fetch and before anything is replayed, so a caller can act on what the
+  remote now says while this copy is still as it was.
+- `theirs` and `moved` read what the last fetch brought and change nothing. `set_aside`
+  takes the commits that were never shared and touch one path out of the branch, and keeps
+  them under a ref of the runner's own, `refs/training-studio/kept/...`, so nothing is
+  lost. `undo` takes back the last commit when it was never shared and touched one path
+  only. Neither moves anything that was shared, and both are for a clone the runner keeps.
 - What belongs to this computer is kept in the per-user data folder, not in the
   repository: which clone is the workspace, and when to share. Sharing is `decision`,
   after each decision a person makes, unless they choose `asked`, only when they ask.
@@ -454,13 +467,131 @@ def discard(workspace: Workspace, path) -> list[str]:
 
 # --- sharing -----------------------------------------------------------------------------
 
-def sync(workspace: Workspace) -> dict:
+def tracking(workspace: Workspace) -> str:
+    """The ref that says where the shared repository's branch was when last fetched."""
+    return f'refs/remotes/origin/{workspace.branch}'
+
+
+def _parted(workspace: Workspace) -> str | None:
+    """The last commit this copy and the shared repository both have, as of the last
+    fetch. None when the remote has no such branch, or the workspace no remote."""
+    if workspace.address is None:
+        return None
+    done = hub.run(workspace.repo, 'merge-base', 'HEAD', tracking(workspace))
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def theirs(workspace: Workspace, path) -> str | None:
+    """A file under the folder as the shared repository had it when last fetched. None
+    when it has none there. Nothing is fetched and nothing here is changed."""
+    if workspace.address is None:
+        return None
+    done = hub.run(workspace.repo, 'show', f'{tracking(workspace)}:{inside(workspace, path)}')
+    return done.stdout if done.returncode == 0 else None
+
+
+def moved(workspace: Workspace, path) -> bool:
+    """True when the shared repository changed a path under the folder after this copy
+    and it parted, as of the last fetch."""
+    base = _parted(workspace)
+    if base is None:
+        return False
+    return hub.run(workspace.repo, 'diff', '--quiet', base, tracking(workspace), '--',
+                   inside(workspace, path)).returncode == 1
+
+
+def unshared(workspace: Workspace, path) -> list[str]:
+    """The commits that touch a path under the folder and were never shared, oldest
+    first, as of the last fetch."""
+    base = _parted(workspace)
+    if base is None:
+        return []
+    return hub.git(workspace.repo, 'rev-list', '--reverse', f'{base}..HEAD', '--',
+                   inside(workspace, path)).split()
+
+
+def last_by(workspace: Workspace, path) -> tuple[str, str] | None:
+    """Who last changed a path in the shared repository, and when, as of the last fetch."""
+    if workspace.address is None:
+        return None
+    done = hub.run(workspace.repo, 'log', '-1', '--format=%an%x00%cI', tracking(workspace),
+                   '--', inside(workspace, path))
+    name, _, when = done.stdout.strip().partition('\0')
+    return (name, when) if done.returncode == 0 and name else None
+
+
+def set_aside(workspace: Workspace, path) -> str | None:
+    """Take the commits that were never shared and touch one path under the folder out of
+    the branch. They are kept under a ref of the runner's own, which is returned; None
+    when there were none. The path is then as the last commit left without them has it.
+
+    Nothing that was shared is moved. Refuses, changing nothing, while files under the
+    folder differ from the last commit.
+    """
+    repo, scope = workspace.repo, inside(workspace, path)
+    touching, base = set(unshared(workspace, path)), _parted(workspace)
+    if not touching:
+        return None
+    if changed(workspace):
+        raise WorkspaceError(f'Files in {workspace.folder}/ are being written, so nothing '
+                             'can be set aside now. Try again in a moment.')
+    head = hub.git(repo, 'rev-parse', 'HEAD')
+    kept = f'refs/{TOOL}/kept/{PurePosixPath(scope).name}-{head[:12]}'
+    others = [commit for commit in hub.git(repo, 'rev-list', '--reverse',
+                                           f'{base}..HEAD').split()
+              if commit not in touching]
+    hub.git(repo, 'update-ref', kept, head)
+    hub.git(repo, 'checkout', '--quiet', '-B', workspace.branch, base)
+    for commit in others:
+        picked = hub.run(repo, 'cherry-pick', '--allow-empty', commit)
+        if picked.returncode != 0:  # put everything back as it was
+            hub.run(repo, 'cherry-pick', '--abort')
+            hub.git(repo, 'checkout', '--quiet', '-B', workspace.branch, head)
+            hub.run(repo, 'update-ref', '-d', kept)
+            raise hub.GitError(hub.reason(picked))
+    return kept
+
+
+def kept(workspace: Workspace, path) -> list[str]:
+    """The refs under which `set_aside` keeps what it took out of the branch for one path
+    under the folder, oldest name first. They are in this clone only."""
+    name = re.escape(PurePosixPath(inside(workspace, path)).name)
+    done = hub.run(workspace.repo, 'for-each-ref', '--format=%(refname)', f'refs/{TOOL}/kept/')
+    return [ref for ref in done.stdout.split() if done.returncode == 0
+            and re.fullmatch(rf'refs/{TOOL}/kept/{name}-[0-9a-f]{{12}}', ref)]
+
+
+def forget(workspace: Workspace, kept: str | None) -> None:
+    """Let go of commits `set_aside` kept, when there was nothing in them to keep."""
+    if kept and kept.startswith(f'refs/{TOOL}/kept/'):
+        hub.run(workspace.repo, 'update-ref', '-d', kept)
+
+
+def undo(workspace: Workspace, path) -> bool:
+    """Take back the last commit, when it was never shared and touched nothing but one
+    path under the folder. The path is put back as the commit before had it. False, with
+    nothing changed, for any other commit."""
+    repo, scope = workspace.repo, inside(workspace, path)
+    names = hub.git(repo, 'show', '--name-only', '--format=', 'HEAD').splitlines()
+    within = all(name == scope or name.startswith(f'{scope}/') for name in names)
+    if not names or not within or not hub.ahead(repo, tracking(workspace)) \
+            or not hub.passes(repo, 'rev-parse', '--verify', '--quiet', 'HEAD~1') \
+            or changed(workspace):
+        return False
+    hub.git(repo, 'checkout', '--quiet', '-B', workspace.branch, 'HEAD~1')
+    return True
+
+
+def sync(workspace: Workspace, push: bool = True, before=None) -> dict:
     """Share the workspace: fetch, replay local commits on the remote's, and push.
 
     Never raises for the remote's sake and never forces a push. The report says whether
     everything here is now shared (`shared`), whether the remote was reached, how many
     commits came in, how many local commits are still waiting (`unshared`), any files in
     conflict, and in `notice` a sentence for the person when the work is not shared.
+    With `push` false nothing is sent: the remote's commits come in, and the notice is
+    only about what stopped that. `before()` is called after each fetch that reached the
+    remote, before anything is replayed.
     """
     repo, branch = workspace.repo, workspace.branch
     report = {'shared': False, 'reached': True, 'received': 0, 'unshared': 0, 'conflict': [],
@@ -473,31 +604,33 @@ def sync(workspace: Workspace) -> dict:
         raise WorkspaceError(f"The workspace's repository in {repo} is on the branch "
                              f'{on_branch(repo)}, not {branch}. Check {branch} out there with '
                              'git, then try again.')
-    tracking = f'refs/remotes/origin/{branch}'
+    track = tracking(workspace)
     refused = stuck = None
     for _ in range(hub.ATTEMPTS):
         fetched = hub.run(repo, 'fetch', '--quiet', 'origin')
         if fetched.returncode != 0:
             report['reached'] = False
             break
-        theirs = (hub.apart(repo, tracking) or (0, 0))[1]
+        if before is not None:
+            before()
+        theirs = (hub.apart(repo, track) or (0, 0))[1]
         if refused and not theirs:
             break  # nobody pushed in between: the remote refused for a reason of its own
         if theirs:
             report['received'] += theirs
-            stuck = _replay(repo, tracking, report)
+            stuck = _replay(repo, track, report)
             if stuck:
                 break
-        if not hub.ahead(repo, tracking):
+        if not push or not hub.ahead(repo, track):
             refused = None
             break
         sent = hub.run(repo, 'push', '--quiet', 'origin', f'HEAD:refs/heads/{branch}')
         refused = None if sent.returncode == 0 else hub.reason(sent)
         if refused is None:
             break
-    report['unshared'] = hub.ahead(repo, tracking)
+    report['unshared'] = hub.ahead(repo, track)
     report['shared'] = bool(report['reached']) and not stuck and not report['unshared']
-    report['notice'] = _notice(repo, report, fetched, stuck, refused)
+    report['notice'] = _notice(repo, report, fetched, stuck, refused, push)
     return report
 
 
@@ -514,7 +647,7 @@ def _replay(repo: Path, tracking: str, report: dict) -> str | None:
 
 
 def _notice(repo: Path, report: dict, fetched, stuck: str | None,
-            refused: str | None) -> str | None:
+            refused: str | None, push: bool = True) -> str | None:
     """What to tell the person when the work is not shared, or None when it is."""
     waiting = ('Your work is kept on this computer and is not shared yet.'
                if report['unshared'] else 'Nothing here is waiting to be shared, but this '
@@ -531,7 +664,7 @@ def _notice(repo: Path, report: dict, fetched, stuck: str | None,
         return (f'The changes made here could not be put on top of the shared ones ({stuck}). '
                 'Nothing was pushed: your work is kept on this computer and is not shared '
                 f'yet. Look at {repo} with git, then share again.')
-    if refused or report['unshared']:
+    if push and (refused or report['unshared']):
         why = refused or 'it gave no reason'
         return (f'The shared repository did not accept the changes ({why}). They are kept on '
                 'this computer and are not shared yet. Check that you may push to it, then '

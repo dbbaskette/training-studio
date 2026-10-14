@@ -84,6 +84,20 @@ class ServeTests(StudioCase):
         self.assertEqual(printed, {'url': 'http://127.0.0.1:8765/#token=the-key'})
         self.assertEqual((self.opened, Server.made[0].did), ([], ['serve', 'stop']))
 
+    def test_asked_to_open_it_shows_a_person_the_page_as_well_as_the_link(self):
+        printed = self.serve(True, '--open')
+        self.assertEqual(printed, {'url': 'http://127.0.0.1:8765/#token=the-key'})
+        self.assertEqual(self.opened, ['http://127.0.0.1:8765/#token=the-key'])
+        # To anything that is not a person's terminal, asking changes nothing: the address
+        # goes out without its key, and only the browser is handed the key.
+        piped = self.serve(False, '--open')
+        self.assertEqual(piped, {'address': 'http://127.0.0.1:8765/', 'opened': True,
+                                 'note': cmd_desk.NOT_A_PERSON})
+        self.assertNotIn('the-key', json.dumps(piped))
+        self.assertEqual(len(self.opened), 2, 'opened once, not twice, for anything else')
+        self.assertEqual(self.serve(False, '--open', opens=False)['opened'], False,
+                         'with no browser to open, the key goes nowhere at all')
+
     def test_to_anything_else_it_prints_no_key_and_opens_the_page_itself(self):
         printed = self.serve(False, '--port', '9000')
         self.assertEqual(printed, {'address': 'http://127.0.0.1:9000/', 'opened': True,
@@ -163,8 +177,8 @@ class StatusTests(StudioCase):
         failing = self.start()
         waiting = self.start(title='Health checks')
         found = self.status()
-        self.assertEqual(sorted(found), ['agent', 'brand', 'configured', 'limits', 'previews',
-                                         'trainings', 'version', 'workspace'])
+        self.assertEqual(sorted(found), ['agent', 'brand', 'configured', 'limits', 'notify',
+                                         'previews', 'trainings', 'version', 'workspace'])
         self.assertEqual((found['version'], found['configured'], found['agent']),
                          (VERSION, True, {'default': 'claude', 'model': None}))
         self.assertEqual((found['workspace']['path'], found['workspace']['folder']),
