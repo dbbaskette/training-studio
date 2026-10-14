@@ -4,6 +4,7 @@ What a caller needs to know
 ---------------------------
     engine = Engine()                        # the real agents and harness-research
     engine.resume()                          # pick up every training in the workspace
+    engine.resume(wait=False)                # the same, fetching in the background
     made = engine.start(form)                # {'path', 'id', 'gates'}; the run starts at once
     engine.view(path)                        # what the page shows for one run
     engine.act(path, 'pause')                # or 'resume', 'stop', 'retry'
@@ -626,11 +627,12 @@ class Engine:
         drove that the shared repository now says is someone else's. Its commits that
         were never shared are set aside, so nothing of this computer's is put on top of
         theirs. Call it holding `files`."""
+        arrived = gitstate.arrived(space)
         for root in self.trainings():
             try:
                 record = read_record(root)
                 if not record or not team.ours(space, record) \
-                        or not gitstate.moved(space, root / RECORD):
+                        or gitstate.inside(space, root / RECORD) not in arrived:
                     continue
                 theirs = json.loads(gitstate.theirs(space, root / RECORD) or 'null')
             except (WorkspaceError, ValueError):
@@ -738,18 +740,26 @@ class Engine:
                     continue
                 home.remember(root, session['title'], session['levels'])
 
-    def resume(self) -> None:
-        """Pick every training up where its files say it is. What a step left half-made
-        when the runner last ended in the middle of it is discarded first, and so is a
-        lock harness-research was left holding. A training that waits for a person, or
-        that the runner has finished with, is left exactly as it is, and so is whatever a
-        person changed while no step was in hand. The workspace is fetched first, and a
-        training someone else drives, or nobody does, is left as it is."""
-        try:
-            self.fetch()
-        except (WorkspaceError, OSError):
-            pass    # what is here is still picked up
-        self.adopt()
+    def resume(self, wait: bool = True) -> None:
+        """Pick every training up where its files say it is. First, in each training this
+        computer drove, what a step left half-made when the runner last ended in the
+        middle of it is discarded, and so is a lock harness-research was left holding. A
+        training that waits for a person, or that the runner has finished with, is left
+        exactly as it is, and so is whatever a person changed while no step was in hand.
+        Then the workspace is fetched, and a training someone else now drives, or nobody
+        does, is left as it is; the others carry on. With `wait` false the fetch and what
+        follows it happen in the background, so a page can be answered meanwhile."""
+        ours = self._tidy()
+        if wait or not self.background:
+            self._pick_up(ours)
+            return
+        threading.Thread(target=self._pick_up, args=(ours,), daemon=True,
+                         name='resuming').start()
+
+    def _tidy(self) -> list[Path]:
+        """Put back what a step left half-made in each training this copy says is this
+        computer's, and return those trainings. Nothing here asks the shared repository."""
+        ours = []
         for root in self.trainings():
             try:
                 record = self._load(root)
@@ -765,7 +775,22 @@ class Engine:
                 (root / IN_HAND).unlink(missing_ok=True)
             except (WorkspaceError, OSError):
                 continue  # its view says what is wrong; the others still run
-            self.wake(root)
+            ours.append(root)
+        return ours
+
+    def _pick_up(self, ours: list[Path]) -> None:
+        """Fetch, then wake each of `ours` that is still this computer's."""
+        try:
+            self.fetch()
+        except (WorkspaceError, OSError):
+            pass    # what is here is still picked up
+        self.adopt()
+        for root in ours:
+            try:
+                if self.mine(root):
+                    self.wake(root)
+            except (WorkspaceError, OSError):
+                continue
 
     def wake(self, path) -> None:
         """Have a training's run look at its files again and carry on if it can."""
@@ -2057,17 +2082,22 @@ class Engine:
     def _step(self, space: gitstate.Workspace, push: bool) -> dict:
         """Get in step with the shared repository: fetch, learn which trainings are no
         longer this computer's, replay, and push if asked. Never raises for the remote's
-        sake. Call it holding `files`."""
+        sake. `files` is held while the workspace is read or changed, and not while the
+        shared repository is asked, so a decision never waits for a slow remote. A caller
+        that must keep the files still until a claim is shared holds `files` itself."""
         try:
-            report = gitstate.sync(space, push=push, before=lambda: self._learn(space))
+            report = gitstate.sync(space, push=push, before=lambda: self._learn(space),
+                                   held=self.files)
         except WorkspaceError as refusal:
             report = {'shared': False, 'reached': False, 'received': 0, 'conflict': [],
                       'notice': str(refusal)}
-        self._clashed(space, report)
-        if self._clash:
-            report['notice'] = ' '.join(self._clash.values())
+        with self.files:
+            self._clashed(space, report)
+            if self._clash:
+                report['notice'] = ' '.join(self._clash.values())
+            if report.get('reached'):
+                self._fetched += 1
         if report.get('reached'):
-            self._fetched += 1
             if not push:
                 team.fetch_tags(space)
             elif self._tags_unsent:
@@ -2077,9 +2107,7 @@ class Engine:
     def share(self) -> dict:
         """Share the workspace now. Never fails a run: when it cannot share, the work stays
         on this computer and the notice says why."""
-        space = self.space()
-        with self.files:
-            report = self._step(space, push=True)
+        report = self._step(self.space(), push=True)
         self._unshared = None if report['shared'] else report['notice']
         self.adopt()
         return {'shared': bool(report['shared']), 'notice': report['notice']}
@@ -2091,8 +2119,7 @@ class Engine:
         space = self.workspace
         if space is None or space.address is None:
             return {'reached': None, 'received': 0, 'notice': None}
-        with self.files:
-            report = self._step(space, push=False)
+        report = self._step(space, push=False)
         self.adopt()
         return {'reached': bool(report.get('reached')), 'received': report.get('received', 0),
                 'notice': report.get('notice')}

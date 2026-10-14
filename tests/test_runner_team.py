@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from email.message import Message
 from pathlib import Path
@@ -21,6 +22,7 @@ from runner_support import FORM, FOUR, StudioCase, TeamCase, asks
 
 import desk
 import home
+import hub
 import workspace
 from runner import engine as engines
 from runner import gitstate, page, pipeline, settings, team
@@ -28,6 +30,19 @@ from workspace import WorkspaceError
 
 STAMP = r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$'
 STARTED = 'Rolling restarts: start the training from the form'
+
+
+@contextmanager
+def asked():
+    """The name of every git command run inside, in order."""
+    ran, real = [], hub.run
+
+    def spy(repo, *args, **named):
+        ran.append(hub.subcommand(args))
+        return real(repo, *args, **named)
+
+    with mock.patch.object(hub, 'run', spy):
+        yield ran
 
 
 def tree(folder: Path) -> dict:
@@ -695,9 +710,78 @@ class TeamNotifyTests(Team):
         self.assertEqual(self.as_(self.blake, self.blake.engine.tell), [])
 
 
+class SlowRemoteTests(Team):
+    @contextmanager
+    def held_up(self, name: str):
+        """Hold every `git <name>` up until the test lets it go. Yields two events: one
+        set when the first is held, one the test sets to let them go."""
+        reached, go, real = threading.Event(), threading.Event(), hub.run
+
+        def slow(repo, *args, **named):
+            if hub.subcommand(args) == name and not go.is_set():
+                reached.set()
+                go.wait(30)
+            return real(repo, *args, **named)
+
+        with mock.patch.object(hub, 'run', slow):
+            try:
+                yield reached, go
+            finally:
+                go.set()
+
+    def test_a_decision_is_not_held_up_by_a_slow_push_or_fetch(self):
+        root = self.started()
+        with self.be(self.alex):
+            gitstate.share_when('asked')    # so the decision itself sends nothing
+        for name, sharing in (('push', self.engine.share), ('fetch', self.engine.fetch)):
+            with self.subTest(name), self.be(self.alex), self.held_up(name) as (reached, go):
+                behind = threading.Thread(target=sharing, daemon=True)
+                behind.start()
+                self.assertTrue(reached.wait(30), f'the {name} was never asked for')
+                before, made = self.head(self.alex), []
+                gate = workspace.status(root)['gate']
+                deciding = threading.Thread(target=lambda: made.append(
+                    self.decide(root, gate)), daemon=True)
+                deciding.start()
+                deciding.join(20)
+                self.assertFalse(deciding.is_alive(), f'the decision waited for the {name}')
+                self.assertTrue(behind.is_alive(), f'the {name} is still held up')
+                self.assertEqual(made[0]['decided']['decision'], 'approve')
+                self.assertNotEqual(self.head(self.alex), before, 'and it was committed')
+                go.set()
+                behind.join(30)
+                self.assertFalse(behind.is_alive())
+        self.assertEqual(self.as_(self.alex, self.engine.share)['shared'], True)
+
+    def test_learning_who_drives_what_asks_git_once_for_every_training(self):
+        mine = [self.started(), self.started(title='Health checks')]
+        self.fetch(self.blake)
+        with self.be(self.alex), asked() as ran:
+            self.engine.fetch()
+        self.assertNotIn('merge-base', ran, 'nothing came in, so there is nothing to learn')
+        self.started(self.blake, title='Blue green')
+        with self.be(self.alex), asked() as ran:
+            self.assertEqual(self.engine.fetch()['received'], 1)
+        self.assertEqual((ran.count('merge-base'), ran.count('diff')), (1, 1))
+        self.assertEqual([self.seen(self.alex, root)['mine'] for root in mine], [True, True])
+
+
 class PublishTests(Team):
     def tag(self, name: str) -> str:
         return self.git('rev-parse', f'refs/tags/{name}', repo=self.remote)
+
+    def test_the_published_list_asks_git_twice_however_many_there_are(self):
+        trainings = [self.started(), self.started(title='Health checks'),
+                     self.started(title='Blue green')]
+        for root in trainings:
+            self.ask(self.alex, 'publish', {'path': str(root)})
+        self.approve(self.alex, trainings[1], 'research-plan')
+        with asked() as ran:
+            listed = self.ask(self.alex, 'published')['published']
+        self.assertEqual(ran, ['for-each-ref', 'cat-file'])
+        self.assertEqual({entry['id']: entry['current'] for entry in listed},
+                         {'rolling-restarts': True, 'health-checks': False,
+                          'blue-green': True})
 
     def test_revisions_are_numbered_pushed_and_never_moved(self):
         root = self.started()
