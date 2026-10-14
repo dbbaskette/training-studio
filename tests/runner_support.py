@@ -853,9 +853,9 @@ class Index:
     FILE = 'README.md'
 
     def readiness(self, root: Path, copies: list[dict] | None = None) -> dict:
+        import assess
         import desk
-        import training
-        found = training.run_checks(root)
+        found = assess.run_checks(root)
         limited = [desk.plainly(reason) for reason in found['limitations']]
         return {'ready': found['ready'], 'limitations': limited,
                 'blocking': [desk.plainly(reason) for reason in found['blocking']],

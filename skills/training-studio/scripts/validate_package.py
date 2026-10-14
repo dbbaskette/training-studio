@@ -42,6 +42,7 @@ REQUIRED = (
     *(f'references/modes/{mode}.md' for mode in MODES),
     'references/profiles/yoodli.md',
     'scripts/training.py',
+    'scripts/assess.py',
     'scripts/workspace.py',
     'scripts/checks.py',
     'scripts/home.py',

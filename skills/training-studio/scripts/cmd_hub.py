@@ -1,6 +1,7 @@
 """The `hub` commands: share finished work with a team, and reuse what the team has shared."""
 from pathlib import Path
 
+import assess
 import hub
 import sync_guidance
 from workspace import WorkspaceError
@@ -19,8 +20,7 @@ def use(args, root: Path) -> dict:
 
 
 def publish(args, root: Path) -> dict:
-    import training  # the command line that loaded this module; it owns the checks
-    ready = training.run_checks(root)['ready']
+    ready = assess.run_checks(root)['ready']
     pin = sync_guidance.summary(root)
     return hub.publish(root, ready, pin['commit'] if pin else None, args.message)
 

@@ -27,6 +27,7 @@ from urllib.parse import urlencode, urlsplit
 
 import helpers
 import test_cli
+import assess
 import cmd_desk
 import computer
 import desk
@@ -181,7 +182,7 @@ class ListTests(DeskCase):
                          ('Second', ['101', '301'], 'intake'))
         self.assertEqual(second['counts']['not-started'], 11)
         self.assertEqual((second['ready'], second['blocking']),
-                         (False, len(training.run_checks(other)['blocking'])))
+                         (False, len(assess.run_checks(other)['blocking'])))
 
     def test_counts_follow_what_is_on_disk_now(self):
         self.research()

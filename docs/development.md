@@ -12,6 +12,7 @@ skills/training-studio/
   assets/profiles/          Yoodli's fields, limits and prerequisites, as data
   scripts/
     training.py             the command line
+    assess.py               a training's checks and readiness, its status, and decisions
     workspace.py            the session record, status, approval, exports
     checks.py               format checks and readiness
     home.py                 the per-user data folder and the registry of trainings
