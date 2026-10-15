@@ -67,8 +67,8 @@ def shown(where: Path) -> str:
 
 
 def _unreadable(where: Path, why: str) -> str:
-    return (f'{shown(where)} could not be read ({why}), so the settings your studios share '
-            'are not used.')
+    return (f'{shown(where)} could not be read ({why}), so Training Studio is using '
+            'its own settings.')
 
 
 def _parsed(where: Path, text: str) -> tuple[dict, str | None]:
@@ -193,8 +193,8 @@ def update(changes: dict) -> dict:
     if text is not None:
         found, problem = _parsed(where, text)
     if problem:
-        raise WorkspaceError(problem.removesuffix(', so the settings your studios share are '
-                                                  'not used.') + ', so it was left as it is.')
+        raise WorkspaceError(problem.removesuffix(', so Training Studio is using its own '
+                                                  'settings.') + ', so it was left as it is.')
     if text is None:
         written = json.dumps({'schema': SCHEMA, **changes}, indent=2, ensure_ascii=False) + '\n'
     else:

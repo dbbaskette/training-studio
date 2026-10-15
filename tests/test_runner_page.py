@@ -504,8 +504,8 @@ class SharedTests(FirstTimeCase):
         found = self.get('setup')
         self.assertEqual(found['shared'], {})
         self.assertEqual(found['shared_problem'],
-                         f'{self.file} could not be read (it is not valid JSON), so the '
-                         'settings your studios share are not used.')
+                         f'{self.file} could not be read (it is not valid JSON), so '
+                         'Training Studio is using its own settings.')
         made = self.post('setup', {'path': str(self.base / 'mine'), 'for_all_studios': True,
                                    'agent': 'codex'})
         self.assertEqual((made['configured'], made['agent']['default']), (True, 'codex'))

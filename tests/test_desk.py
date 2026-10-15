@@ -2749,7 +2749,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         result = self.run_page(answers, [
             {'snapshot': 'first'},
             {'fill': 'Its reasoning level', 'value': 'medium'},
-            {'click': 'Use this for all studios'}, {'snapshot': 'ticked'},
+            {'click': 'Use for all studios'}, {'snapshot': 'ticked'},
             {'click': 'Save and go on'}, {'snapshot': 'saved'}])
         shots = result['snapshots']
         start = shots['first']
@@ -2766,8 +2766,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                       'repository, when to share and the agent through one file, '
                       '~/.config/studios-config.json.', start['text'])
         self.assertEqual(start['chosen'], [])
-        self.assertIn('Use this for all studios', start['buttons'])
-        self.assertEqual(shots['ticked']['chosen'], ['Use this for all studios'])
+        self.assertIn('Use for all studios', start['buttons'])
+        self.assertEqual(shots['ticked']['chosen'], ['Use for all studios'])
         self.assertEqual(self.posts(result), [
             ('/api/setup/check', {'repository': address, 'path': None, 'folder': None,
                                   'branch': None}),
@@ -2801,7 +2801,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
 
     def test_a_studios_file_that_cannot_be_read_is_said_on_status_and_holds_nothing_up(self):
         problem = ('~/.config/studios-config.json could not be read (it is not valid JSON), '
-                   'so the settings your studios share are not used.')
+                   'so Training Studio is using its own settings.')
         broken = {**SET_UP, 'shared': {}, 'shared_problem': problem}
         result = self.run_page(self.answers(broken), [
             {'click': 'Status'}, {'snapshot': 'status'},
@@ -2809,7 +2809,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         shots = result['snapshots']
         self.assertIn('Your other studios\n' + problem, shots['status']['text'])
         self.assertIn(problem, shots['set-up']['text'])
-        self.assertIn('Use this for all studios', shots['set-up']['buttons'])
+        self.assertIn('Use for all studios', shots['set-up']['buttons'])
         # With nothing wrong, Status says nothing of it; with an older runner, set-up does not
         # offer it.
         fine = {**SET_UP, 'shared': {}, 'shared_problem': None}
@@ -2818,7 +2818,7 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         result = self.run_page(self.answers(), [{'click': 'Settings'},
                                                 {'click': 'Change the set-up'},
                                                 {'snapshot': 'set-up'}])
-        self.assertNotIn('Use this for all studios', result['snapshots']['set-up']['buttons'])
+        self.assertNotIn('Use for all studios', result['snapshots']['set-up']['buttons'])
 
     def test_a_new_training_takes_the_brand_and_google_slides_every_studio_shares(self):
         shared = {'brand': {'brand': 'example-co', 'variant': 'dark'}, 'output': 'google'}

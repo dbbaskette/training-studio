@@ -3611,7 +3611,7 @@ function studiosCard(form) {
     make('p', '', 'Training Studio, Presentation Studio and Blog Studio can share the team '
       + 'repository, when to share and the agent through one file, ' + STUDIOS_FILE + '. '
       + 'What is set here comes first.'),
-    add(make('div', 'chips'), chip('Use this for all studios', form.everywhere, (on) => {
+    add(make('div', 'chips'), chip('Use for all studios', form.everywhere, (on) => {
       form.everywhere = on;
     }, 'for-all-studios')),
     make('p', 'quiet field-hint', 'Saving then writes to that file only what you changed '
