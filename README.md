@@ -40,7 +40,7 @@ You need:
 - **git**, to download Training Studio. The page also uses it to keep your trainings.
 - **Two companion skills**: [harness-research](https://github.com/dbbaskette/harness-research-skill), which does the research, and [harness-slides](https://github.com/dbbaskette/harness-slides-skill), which builds the deck. The installer offers to bring both. Without harness-slides you still get everything except the deck.
 
-A slide deck made on the page also needs your organisation's brand skill and a way to turn slides into pictures. The page tells you what is missing. See [the runner](docs/runner.md#what-you-need).
+A slide deck made on the page also needs your organisation's brand skill and a way to turn slides into pictures. The page tells you what is missing. Once you name your brand skill's repository in Settings, the page can install and upgrade the brand skill for you. See [the runner](docs/runner.md#what-you-need).
 
 ## Install
 

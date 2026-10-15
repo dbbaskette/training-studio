@@ -16,7 +16,7 @@ The [installer](installation.md) brings the runner, offers the two companion ski
 A slide deck needs four more things. The Status screen shows each one, and what to do about one that is missing.
 
 - [harness-slides](https://github.com/dbbaskette/harness-slides-skill), version 0.14.1 or newer for a new deck. It draws and renders the slides. The installer offers it, and the Versions view updates it. A deck already begun with an older one, down to 0.13.1, carries on with it.
-- A brand skill: a skill that holds your organisation's brands, its slide template and its icons. A deck is always made in a brand. Without a brand skill no deck is offered. It is your organisation's own, so the installer does not bring it.
+- A brand skill: a skill that holds your organisation's brands, its slide template and its icons. A deck is always made in a brand. Without a brand skill no deck is offered. It is your organisation's own, so the installer does not bring it. Install it yourself, or name its repository in Settings and install it from the page: see [the brand skill](#the-brand-skill).
 - A way to turn slides into pictures, so that they can be looked at before they come to you: LibreOffice on this computer, or Google access that reaches Drive.
 - Poppler, the small programs (`pdftoppm` and `pdfinfo`) that turn a render into pictures.
 
@@ -48,11 +48,11 @@ Each time the runner starts, and each time you press "Check this computer again"
 - It is refused while a training on this computer is working, because a step in hand keeps using the skill it started with. Pause the training, or wait until it stops for you.
 - A companion's own links belong to its own installer, so the runner does not put those back. A missing one is brought with Update instead.
 
-**Newer releases.** Once a day, the runner asks where Training Studio and each companion are kept which releases there are. It reads only their names, with `git ls-remote`, without a terminal and with a short time limit. Nothing is downloaded or run.
+**Newer releases.** Once a day, the runner asks where Training Studio, each companion and the brand skill are kept which releases there are. It reads only their names, with `git ls-remote`, without a terminal and with a short time limit. Nothing is downloaded or run.
 - A look that fails is said in one line on the Status screen, and is tried again a day later. What was known before is still shown, with when it was known.
 - **Turning it off.** "Look for updates once a day", in Settings, is on until you turn it off. With it off, the runner asks nothing online. It still puts links back and compares the companions, since neither needs the network.
 
-**Versions.** The Status screen has a row each for Training Studio, harness-research and harness-slides: what is installed, the newest, what this Training Studio is pinned to, and whether each is up to date, has an update, is missing or is not known yet. "See the versions", in Settings, goes there.
+**Versions.** The Status screen has a row each for Training Studio, harness-research, harness-slides and the brand skill: what is installed, the newest, what this Training Studio is pinned to, and whether each is up to date, has an update, is missing or is not known yet. "See the versions", in Settings, goes there.
 - Training Studio's newest is its newest release tag (`vX.Y.Z`). Until it has one, it is the version on `main` when guidance was last fetched.
 - A companion's newest is its newest release tag. It is only ever installed at a version a Training Studio is pinned to. Which versions the newest Training Studio is pinned to is read from the copy of `main` the guidance is fetched into, so it needs no network.
 - A companion released beyond that pin is shown as newer than Training Studio supports yet, and nothing is offered for it.
@@ -67,6 +67,29 @@ Each time the runner starts, and each time you press "Check this computer again"
 - A runner started from a copy of the repository, such as `python3 runner/studio.py serve`, shows the versions but upgrades nothing: run `git pull` in that copy, then start it again.
 
 **Guidance.** Guidance is still fetched from `main` when a training starts. The Status screen says which revision new trainings get.
+
+### The brand skill
+
+A brand skill you install yourself is found in the usual skill folders and used, as before. Naming its repository only adds installing and upgrading it from the page.
+
+**Its repository.** In Settings, "Brand skill" takes the repository's address, https or ssh, and which release to use. Leave the release empty for the newest.
+- "Check and save" reads the repository's release tags with `git ls-remote`, as you: your credential helper or your ssh key, with no terminal and no question. It keeps nothing until that works.
+- When it cannot, it says why in a sentence: git could not sign in without asking, the repository was not found (a private one says that too to someone who may not read it), it could not be reached, it has no releases, or it has no such release.
+- Clearing the address forgets it. A brand skill that is installed stays.
+- Releases are ordered as the brand skill's own updater orders them: a version whose first number is a year, such as `2026.6.0`, is from an older way of numbering and comes before `0.13.1`.
+
+**Its row.** The Versions table has a row for the brand skill: the version the one in use says it is, the newest release (or the one chosen), and the commit of that release.
+- When it is missing, or a newer release is out, Home says so with "Install the brand skill" or "Upgrade the brand skill", and Dismiss.
+- With no repository named, the row only says what is installed, and nothing is offered.
+
+**Installing it.** The sheet shows the repository, the release and its commit. Nothing is fetched or run before your yes. It is refused while a training on this computer is working, while an update or an upgrade is in hand, and while a companion skill waits for "Update the skills". Then, in the background:
+- The tag must still point at the commit you were shown.
+- The release is fetched: its ZIP with `gh release download` when `gh` is installed and signed in and the repository is on GitHub, checked against the `.sha256` beside it. Otherwise the tag is cloned with your own git access. The Mac ZIP is used on a Mac.
+- Its own installer is run, with 15 minutes to finish: `scripts/install-mac.mjs --yes --research skip` on a Mac, `scripts/install-skill.mjs --research skip` elsewhere. `--research skip` keeps it from touching harness-research.
+- The brand installer has no option to leave harness-slides alone. It keeps an installed harness-slides only when that one is at least the version it records in `scripts/lib/harness-install-sources.json`. If the one here is older, or there is none, it would put in its own. So nothing is run, and the page says what it would change. Training Studio's pins stay the ones in use.
+- Afterwards the companions are compared with before. Any change is said, and "Update the skills" puts back one that is now older.
+- Then this computer is checked again, so the brand skill appears in set-up and new decks can start. If the brand skill chosen in Settings was the one upgraded, the choice moves to the new version.
+- The repository is your choice, so there is no pin to check a release against. Install only from a repository you trust.
 
 `studio status` reports the same findings as JSON, under `upkeep`. It changes nothing and asks nothing online.
 

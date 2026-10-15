@@ -33,7 +33,7 @@ A teammate who only wants to make trainings needs nothing else: install, open Tr
    - harness-research, without which research cannot run; Node 20 or newer, which the companion skills run on; then harness-slides.
    - Whether git knows your name and email. The runner records who decided what.
    - A `python3` older than 3.11, as on a stock Mac. Nothing needs changing: the commands the installer writes find a newer Python themselves.
-   - A brand skill, for slide decks. A brand skill is your organisation's own. It is not installed from here, and without one everything is made except the deck.
+   - A brand skill, for slide decks. A brand skill is your organisation's own, so this installer does not bring it. Without one, everything is made except the deck. Install it yourself, or name its repository in the page's Settings and install it from there. See [the runner](runner.md#the-brand-skill).
    - `pandoc`, which matters only if you ask for Word copies.
 
 It installs for every assistant whose skill folder already exists. To choose, add `--target claude`, `--target codex` or `--target both`; a named assistant's folder is created if it is missing.
