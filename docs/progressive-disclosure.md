@@ -33,7 +33,7 @@ An installed copy reads a small entry first, which finds the guidance: 331 estim
 | `references/stages/deck-handoff.md` | 840 |
 | `references/stages/document.md` | 592 |
 | `references/stages/package.md` | 738 |
-| `references/stages/research-handoff.md` | 899 |
+| `references/stages/research-handoff.md` | 912 |
 | `references/stages/research-plan.md` | 866 |
 | `references/stages/scenario.md` | 778 |
 | `references/stages/yoodli.md` | 558 |
@@ -44,7 +44,7 @@ An installed copy reads a small entry first, which finds the guidance: 331 estim
 | `assets/examples/product-brief.md` | 582 |
 | `assets/examples/scenario.md` | 382 |
 | `assets/examples/yoodli.md` | 1,119 |
-| Whole library | 21,250 |
+| Whole library | 21,263 |
 
 | Loading set | Estimated tokens | Budget |
 | --- | ---: | ---: |
@@ -54,7 +54,7 @@ An installed copy reads a small entry first, which finds the guidance: 331 estim
 | `desk` | 1,419 | 2,000 |
 | `hub` | 1,897 | 2,000 |
 | `stage:research-plan` | 2,659 | 3,500 |
-| `stage:research-handoff` | 2,692 | 3,500 |
+| `stage:research-handoff` | 2,705 | 3,500 |
 | `stage:blueprint` | 3,176 | 3,500 |
 | `stage:document` | 3,133 | 3,500 |
 | `stage:brief` | 3,323 | 3,500 |
