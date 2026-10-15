@@ -3861,12 +3861,21 @@ async function saveSetup(pressed) {
   if (view.setup.notify) body.notify = Boolean(view.setup.notify.on);
   if (form.seen) body.shared_seen = form.seen;
   const first = !view.setup.configured;
+  // Where the workspace is, to tell whether the runner moved it before it refused.
+  const placed = () => {
+    const space = view.setup.workspace || {};
+    return JSON.stringify([space.repository || null, space.path || null]);
+  };
+  const workspace = placed();
   try {
     view.setup = await send('setup', body);
   } catch (failure) {
-    const said = failure.message + ' Nothing was saved, and your answers are still here: '
-      + 'change what it names and save again.';
     const anew = await lookAgain(form);
+    // A workspace joined before another studio's change was found is said by the runner.
+    const said = failure.message + (placed() !== workspace
+      ? ' Your other answers are still here: save again.'
+      : ' Nothing was saved, and your answers are still here: change what it names and '
+        + 'save again.');
     if (anew === null) {
       done(said);
       return;

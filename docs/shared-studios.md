@@ -75,6 +75,10 @@ through the adjacent `.lock` file, and any write that depends on the file's
 contents is decided from the file as read under that lock. A stale form
 preserves unrelated changes and refuses a conflicting change to the same
 member, before the studio changes anything else, such as joining a repository.
+If another studio changes that member while the join is under way, the join
+stands, `team` names what was joined unless another studio named a different
+repository meanwhile, and the refusal says what was joined and what was not
+saved.
 `assistant.agent`, `.model` and `.effort` are written as a unit, and so are
 `brand.repository` and `.release`: a model, effort or release is never written
 beside a different agent or repository than the one the form showed. Tokens,

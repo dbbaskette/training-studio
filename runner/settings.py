@@ -378,6 +378,15 @@ STALE = ('{} was changed in another studio while this was open, so nothing was s
          'again, then save.')
 
 
+class Stale(WorkspaceError):
+    """A change to a value another studio changed too, refused. `what` names the value as a
+    sentence begins with it."""
+
+    def __init__(self, what: str):
+        super().__init__(STALE.format(what))
+        self.what = what
+
+
 def writes(chosen: Settings, before: Settings, found: dict) -> dict:
     """What saving `chosen` writes into the studios config while it holds `found`, shaped
     as the file is, when the form was shown `before`: each shared setting the person
@@ -398,7 +407,7 @@ def writes(chosen: Settings, before: Settings, found: dict) -> dict:
     for name, (group, key) in SHARED.items():
         if key in changed.get(group, {}) and not _same(now[name], getattr(before, name)) \
                 and not _same(now[name], getattr(chosen, name)):
-            raise WorkspaceError(STALE.format(NAMED[name]))
+            raise Stale(NAMED[name])
     return changed
 
 

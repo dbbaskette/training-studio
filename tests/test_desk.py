@@ -2852,6 +2852,35 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                             'shared_seen': later['shared']})])
         self.assertIn('The set-up is saved.', shots['saved']['toasts'])
 
+    def test_a_join_refused_for_a_value_changed_meanwhile_says_the_workspace_was_joined(self):
+        address = 'git@example.com:team/studios.git'
+        shared = {'team': {'repository': address, 'branch': 'trunk'}}
+        moved = {**SET_UP, 'shared': shared, 'shared_problem': None, 'shared_notice': None,
+                 'team_moved': {'repository': address, 'branch': 'trunk', 'says': 'Moved.'}}
+        check = {'ok': True, 'checks': [{'what': 'The repository can be reached', 'ok': True,
+                                         'fix': None}],
+                 'found': {'name': 'studios', 'folder': 'trainings', 'branch': 'trunk',
+                           'existing': True}}
+        # The runner joined it, and then found the model changed in another studio.
+        joined = {**moved, 'team_moved': None,
+                  'workspace': {**WORKSPACE, 'repository': address, 'name': 'studios',
+                                'branch': 'trunk'},
+                  'shared': {**shared, 'assistant': {'model': 'opus'}},
+                  'agent': {'default': 'claude', 'model': 'opus', 'effort': None}}
+        said = (f'Training Studio joined {address}, but the model was changed in another '
+                'studio meanwhile, so your other settings were not saved. Set-up shows them '
+                'as they are now: look again, then save.')
+        answers = self.answers(moved, **{'GET /api/setup': [ok(moved), ok(joined)],
+                                         'POST /api/setup/check': [ok(check)],
+                                         'POST /api/setup': [refused(said)]})
+        result = self.run_page(answers, [{'click': 'Join it'}, {'click': 'Save'},
+                                         {'snapshot': 'refused'}])
+        refusal = result['snapshots']['refused']
+        self.assertIn(said + ' Your other answers are still here: save again.',
+                      refusal['text'])
+        self.assertNotIn('Nothing was saved', refusal['text'])
+        self.assertEqual(refusal['fields']['Its model'], 'opus')
+
     def test_a_studios_file_that_cannot_be_read_is_said_on_status_and_holds_nothing_up(self):
         problem = ('~/.config/studios-config.json could not be read (it is not valid JSON), '
                    'so Training Studio uses its built-in defaults for the values every studio '

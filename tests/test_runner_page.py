@@ -757,6 +757,30 @@ class SharedTests(FirstTimeCase):
             'schema': 1, 'team': {'repository': str(other), 'branch': 'main'},
             'assistant': {'agent': 'claude', 'model': 'opus'}, 'share': 'asked'})
 
+    def test_a_value_another_studio_changes_while_joining_is_said_beside_the_join(self):
+        remote = self.bare()
+        self.file.write_text(json.dumps({'schema': 1, 'assistant': {'agent': 'claude'}}))
+        shown = self.get('setup')['shared']
+        theirs = {'schema': 1, 'assistant': {'agent': 'claude', 'model': 'sonnet'}}
+        sent = {'repository': str(remote), 'agent': 'claude', 'model': 'opus',
+                'limits': {'parallel': 5}, 'shared_seen': shown}
+        # Another studio changes the model while this one joins, after set-up has looked.
+        with meanwhile(lambda: self.file.write_text(json.dumps(theirs))):
+            refused = self.post('setup', sent, 409)
+        self.assertEqual(refused['error'], f'Training Studio joined {remote}, but the model was '
+                         'changed in another studio meanwhile, so your other settings were not '
+                         'saved. Set-up shows them as they are now: look again, then save.')
+        # The workspace joined is the one every studio shares now, and nothing else was kept.
+        found = self.get('setup')
+        self.assertEqual((found['workspace']['repository'], found['team_moved'],
+                          found['limits']['parallel'], found['agent']['model']),
+                         (str(remote), None, 2, 'sonnet'))
+        self.assertEqual(json.loads(self.file.read_text()), {
+            **theirs, 'team': {'repository': str(remote), 'branch': 'main'}})
+        # Saved again from what set-up shows now, the person's choice is kept.
+        made = self.post('setup', {**sent, 'shared_seen': found['shared']})
+        self.assertEqual((made['agent']['model'], made['limits']['parallel']), ('opus', 5))
+
     def test_a_team_branch_another_studio_writes_while_joining_is_kept(self):
         remote = self.bare()
         theirs = {'schema': 1, 'team': {'repository': str(remote), 'branch': 'trunk'}}

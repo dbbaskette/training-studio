@@ -56,7 +56,9 @@ What a caller needs to know
   another studio changed while the form was open is kept, and a change to a value another
   studio changed too is refused, in a sentence, before anything changes: before the
   workspace is joined or moved, and before anything is written. Without it, a value is
-  written where it differs from what the file holds now.
+  written where it differs from what the file holds now. Where another studio changes one
+  while the workspace is being joined or moved, the workspace stays as it now is, with the
+  team repository written as for any join, and the refusal says so instead.
 - `shared` is what the file holds that Training Studio can use, in the file's own shape:
   `team` {repository, branch}, `assistant` {agent, model, effort}, `brand` {repository,
   release, brand, variant}, `output` and `share`. A value that would be refused here is
@@ -575,7 +577,7 @@ def seen(sent: dict) -> dict | None:
 
 
 def stale(what: str) -> WorkspaceError:
-    return WorkspaceError(settings.STALE.format(what))
+    return settings.Stale(what)
 
 
 def _address(found: dict) -> str | None:
@@ -660,7 +662,18 @@ def apply(engine, wanted: dict) -> dict:
                 gitstate.local(path, wanted['folder'], wanted['branch'], wanted['name'])
         if team:
             _team(gitstate.current(), _address(holds))
-    settings.save(wanted['settings'], shown)
+    try:
+        settings.save(wanted['settings'], shown)
+    except settings.Stale as refusal:
+        # Another studio changed a value while the workspace was joined or moved, after it
+        # was looked at: the workspace stays as it is now, and the sentence says so.
+        if not repository and not path:
+            raise
+        where = f'joined {repository}' if repository else f'now keeps its trainings in {path}'
+        raise WorkspaceError(f'Training Studio {where}, but {refusal.what[0].lower()}'
+                             f'{refusal.what[1:]} was changed in another studio meanwhile, so '
+                             'your other settings were not saved. Set-up shows them as they '
+                             'are now: look again, then save.') from None
     engine.saved()
     engine.resume()
     return describe(engine)
