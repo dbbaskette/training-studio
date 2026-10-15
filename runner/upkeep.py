@@ -12,6 +12,8 @@ What a caller needs to know
     keep.upgrade(working, '0.22.0')   # install that newer Training Studio beside this one
     keep.restart(working)        # after an upgrade: stop, so that `studio` starts the new one
     keep.dismiss(key)            # Home stops showing the versions until a newer one is out
+    keep.install_brand(working, 'v1.4.0')   # the brand skill, from its repository
+    keep.remember_brand(address, listed)    # what Settings' check of that repository found
     keep.close()                 # end an update in hand
 
 - It asks the installer beside the runner, `../installer/install.py`. That file is there in a
@@ -32,8 +34,9 @@ What a caller needs to know
     the companion it found when it started.
   - When it ends, `after` is called, so that the computer is looked at again.
 - Online, at most once a day and only while the setting `look_for_updates` is on:
-  - It runs `git ls-remote --tags` against Training Studio's repository and each
-    companion's, through `hub.run`, with LOOK_SECONDS to answer.
+  - It runs `git ls-remote --tags` against Training Studio's repository, each
+    companion's and the brand skill's when one is named, through `hub.run`, with
+    LOOK_SECONDS to answer.
   - Only the tags are kept, in `updates.json` in the data folder, each newest with its
     commit. Whether one is newer is worked out each time it is shown. Nothing is
     downloaded or run.
@@ -62,9 +65,29 @@ What a caller needs to know
   is told to open Training Studio again.
 - The report says which guidance a new training is given: the revision the last guidance
   start resolved, or the copy installed with this version.
+- The brand skill has a row of its own, BRAND, last. Its installed version is what the
+  brand skill found in this home says of itself, the one chosen in Settings or else the
+  first. Its newest is the newest release in the repository named in Settings, looked for
+  with the rest, by `brand_source`'s order; `releases` keeps each release's commit, so a
+  release chosen in Settings is shown too. With no repository named, a brand skill
+  installed by hand is shown and nothing is offered.
+- `install_brand` installs the release shown, the one the person confirmed, in the
+  background; `versions['brand']` says what it would do and how it went. It is refused
+  with no repository named, while a training is working, while anything else is in hand,
+  while a companion is missing or older than its pin, and when the release to install is
+  no longer the one shown. Then:
+  - the tag must still point at the commit shown, and the release is fetched as
+    `brand_source.fetch` says;
+  - when its installer would bring its own harness-slides, because the one here is older
+    than it records or there is none, nothing is run and that is said;
+  - its own installer runs (`brand_source.install`), with BRAND_SECONDS to finish;
+  - the companions' links and versions are compared with before it ran, and any change is
+    said; and this computer is looked at again, with `after`, so the brand skill is found.
+  A brand skill chosen in Settings that was the one upgraded is moved to the new version.
 """
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 import os
@@ -83,7 +106,7 @@ import hub
 import sync_guidance
 from workspace import WorkspaceError
 
-from runner import companion, settings
+from runner import brand as brand_skill, brand_source, companion, settings
 from runner import research as research_tool, slides as slides_tool
 
 INSTALLER = Path(__file__).resolve().parent.parent / 'installer' / 'install.py'
@@ -116,6 +139,16 @@ RESTART_WORKING = ('A training on this computer is working now, and restarting w
                    'its step. Pause it, or wait until it stops for you, then restart.')
 UPGRADE_STOPPED = ('The upgrade was stopped when Training Studio closed. The version you '
                    'have is still the one in use.')
+BRAND = 'brand skill'     # the brand skill's row, and its entry in what was found online
+BRAND_SECONDS = 900       # for the brand skill's own installer to finish
+ASSISTANTS = ('claude', 'codex')   # the brand skill's installer installs for both
+NO_BRAND_REPOSITORY = ("Name the brand skill's repository in Settings first. Training Studio "
+                       'installs it from there.')
+BRAND_WORKING = ('A training on this computer is working now, and a step in hand keeps using '
+                 'the brand skill it started with. Pause it, or wait until it stops for you, '
+                 'then install.')
+BRAND_INSTALLING = 'The brand skill is being installed already.'
+BRAND_STOPPED = 'The install was stopped when Training Studio closed.'
 
 
 def _now() -> str:
@@ -229,6 +262,7 @@ class Upkeep:
         self._found: dict | None = None      # the last look on this computer
         self._update: dict | None = None     # the update in hand, or the last one
         self._upgrade: dict | None = None    # the upgrade in hand, or the one installed
+        self._brand: dict | None = None      # the brand skill's install in hand, or the last
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self.restarting: list[str] | None = None   # what `studio serve` runs once it stops
@@ -305,13 +339,13 @@ class Upkeep:
     def _blank(self, problem: str | None) -> dict:
         return {'at': _now(), 'installer': False, 'mode': None, 'links': [], 'repaired': [],
                 'companions': [], 'problem': problem, 'main': None, 'newest': None,
-                'tools': {}}
+                'tools': {}, 'brands': []}
 
     def _local(self, repair: bool) -> dict:
         install = self.module()
         if install is None:
             return {**self._blank(NO_INSTALLER), 'main': self._main_version(),
-                    'newest': self._newest(None)}
+                    'newest': self._newest(None), 'brands': self._brands()}
         problem = None
         try:
             state = install.read_state(self.root)
@@ -332,7 +366,17 @@ class Upkeep:
                 'companions': [self._companion(install, name, pin, chosen)
                                for name, pin in pins.items()],
                 'main': self._main_version(), 'newest': self._newest(install),
-                'tools': self._tools(), 'target': self._target(state)}
+                'tools': self._tools(), 'target': self._target(state),
+                'brands': self._brands()}
+
+    def _brands(self) -> list[dict]:
+        """Each brand skill in this home, installed from here or by hand: {'name',
+        'version', 'runtime'}. Asked on this computer only."""
+        try:
+            return [{key: entry.get(key) for key in ('name', 'version', 'runtime')}
+                    for entry in brand_skill.found(home=self.home)]
+        except (WorkspaceError, OSError):
+            return []
 
     @staticmethod
     def _target(state: dict | None) -> str | None:
@@ -559,7 +603,29 @@ class Upkeep:
             except install.InstallError:
                 pins = {}
             found.update({name: pin['repository'] for name, pin in pins.items()})
+        brand = settings.load().brand_repository
+        if brand:
+            found[BRAND] = brand
         return found
+
+    @staticmethod
+    def _brand_entry(listed: dict) -> dict:
+        """What is kept of the brand skill's releases: the newest, and every release with
+        its commit, so that one chosen in Settings can be shown."""
+        latest = brand_source.newest(listed) or {}
+        return {'latest': latest.get('version'), 'tag': latest.get('tag'),
+                'commit': latest.get('commit'),
+                'releases': {tag: entry['commit'] for tag, entry in listed.items()}}
+
+    def remember_brand(self, repository: str, listed: dict) -> None:
+        """Keep the brand skill's releases, as Settings' check of its repository found them,
+        so its row is shown at once. When the next look is due does not change."""
+        kept = self._saved()
+        found = dict(kept.get('found') or {})
+        found[BRAND] = {'repository': repository, 'problem': None, 'known_at': _now(),
+                        **self._brand_entry(listed)}
+        home.data_root().mkdir(parents=True, exist_ok=True)
+        home.write_json(self.saved_path(), {'schema': 1, **kept, 'found': found})
 
     def look(self) -> bool:
         """Ask each repository which releases it has, when that is due. Only the tags are
@@ -574,14 +640,19 @@ class Upkeep:
             known = before.get(name) if isinstance(before.get(name), dict) \
                 and before[name].get('repository') == repository else {}
             entry = {'repository': repository, 'problem': None,
-                     **{key: known.get(key) for key in ('latest', 'tag', 'commit', 'known_at')}}
+                     **{key: known.get(key) for key in ('latest', 'tag', 'commit', 'known_at',
+                                                        *(('releases',) if name == BRAND
+                                                          else ()))}}
             try:
                 done = hub.run(place, 'ls-remote', '--tags', '--', repository,
                                timeout=LOOK_SECONDS)
             except WorkspaceError as refusal:
                 entry['problem'] = str(refusal).rstrip('.')
             else:
-                if done.returncode == 0:
+                if done.returncode == 0 and name == BRAND:
+                    entry.update(**self._brand_entry(brand_source.listed(done.stdout)),
+                                 known_at=_now())
+                elif done.returncode == 0:
                     latest = newest(done.stdout) or {}
                     entry.update(latest=latest.get('version'), tag=latest.get('tag'),
                                  commit=latest.get('commit'), known_at=_now())
@@ -629,6 +700,8 @@ class Upkeep:
             raise WorkspaceError(UPDATING)
         if self._upgrade and self._upgrade['state'] == 'running':
             raise WorkspaceError(UPGRADING)
+        if self._brand and self._brand['state'] == 'running':
+            raise WorkspaceError(BRAND_INSTALLING)
         if self._upgrade and self._upgrade['state'] in ('restart', 'restarting'):
             raise WorkspaceError(f"Training Studio {self._upgrade['version']} is installed "
                                  'and waits for a restart. Restart first: it brings the '
@@ -819,6 +892,257 @@ class Upkeep:
             self.leave()
         return self.report()
 
+    # --- the brand skill ------------------------------------------------------------------
+
+    @staticmethod
+    def _the_brand(brands: list[dict]) -> dict | None:
+        """The brand skill decks use: the one chosen in Settings, else the first found."""
+        named = settings.load().brand_skill
+        return next((entry for entry in brands if entry.get('runtime') == named),
+                    brands[0] if brands else None)
+
+    def _brand_target(self, online: dict) -> tuple[str | None, dict | None]:
+        """The brand skill's repository, and the release to install from it as last known:
+        the one chosen in Settings, else the newest. {'tag', 'version', 'commit'} or None."""
+        chosen = settings.load()
+        repository = chosen.brand_repository
+        if not repository or online.get('repository') != repository:
+            return repository, None
+        known = {tag: {'tag': tag, 'version': tag.removeprefix('v'), 'commit': commit}
+                 for tag, commit in (online.get('releases') or {}).items()
+                 if isinstance(commit, str)}
+        if chosen.brand_release:
+            return repository, known.get(chosen.brand_release)
+        return repository, brand_source.newest(known)
+
+    def install_brand(self, working: bool, release: str) -> dict:
+        """Install `release` of the brand skill from its repository, with its own installer,
+        in the background. Refused, in a sentence, with no repository named, while a
+        training is working, while anything else is in hand, while a companion waits for
+        Update, and when `release` is not the one known to install."""
+        with self._lock:
+            found = self._found
+            self._refuse_busy()
+        if found is None:
+            found = self.check(repair=False)
+        repository, target = self._brand_target(self._saved().get('found', {}).get(BRAND)
+                                                or {})
+        if not repository:
+            raise WorkspaceError(NO_BRAND_REPOSITORY)
+        if target is None:
+            raise WorkspaceError(f'Which releases {repository} has is not known here yet. Save '
+                                 'the repository in Settings again to look.')
+        if target['tag'] != str(release):
+            raise WorkspaceError(f"The release to install is now {target['tag']}, not "
+                                 f'{release}. Look at it again before you install.')
+        if working:
+            raise WorkspaceError(BRAND_WORKING)
+        if not found['installer']:
+            raise WorkspaceError(NO_INSTALLER)
+        waiting = [entry['name'] for entry in found['companions']
+                   if entry['state'] in ('missing', 'older')]
+        if waiting:
+            raise WorkspaceError(f'Update the companion skills first ({_who(waiting)}). The '
+                                 "brand skill's installer brings its own harness-slides when "
+                                 "it finds none it can use, and Training Studio's are the "
+                                 'ones to keep.')
+        before = self._the_brand(found.get('brands') or [])
+        with self._lock:
+            self._refuse_busy()
+            self._brand = {'state': 'running', 'since': _now(), 'release': target['tag'],
+                           'says': f"Fetching {target['tag']} from {repository} and running "
+                                   'its own installer. This can take a few minutes.'}
+        self._background(lambda: self._bring_brand(repository, target, before),
+                         'installing the brand skill')
+        return self.report()
+
+    def _bring_brand(self, repository: str, target: dict, before: dict | None) -> None:
+        """Fetch the release, check it leaves the companions alone, run its own installer,
+        then look again."""
+        tag, commit, version = target['tag'], target['commit'], target['version']
+        holder = Path(tempfile.mkdtemp(prefix='training-studio-brand-'))
+        state, says = 'failed', None
+        try:
+            now = brand_source.releases(repository, holder).get(tag)
+            if now is None or now['commit'] != commit:
+                raise WorkspaceError(f"{tag} now points at "
+                                     f"{now['commit'][:12] if now else 'nothing'}, not the "
+                                     f'{commit[:12]} you were shown. Look at it again before '
+                                     'you install')
+            folder, _ = brand_source.fetch(repository, tag, commit, holder, self._stop)
+            changes = self._would_change(folder)
+            if changes:
+                raise WorkspaceError(f'{changes} Nothing was run')
+            kept = self._companion_links()
+            code, late, said = brand_source.install(folder, self.home, BRAND_SECONDS,
+                                                    self._stop)
+            moved = self._moved(kept, self._companion_links())
+            if late:
+                says = (f'The brand skill {tag} was not installed: its installer did not '
+                        f'finish in {BRAND_SECONDS // 60} minutes, so it was ended.')
+            elif code != 0:
+                says = f'The brand skill {tag} was not installed: {said}.'
+            else:
+                state, says = self._brand_installed(repository, target, before)
+            if moved:
+                state = 'changed'
+                says = (f"{says} Its installer also changed {'; '.join(moved)}. Training "
+                        "Studio's pins are the ones to use: Update the skills puts back any "
+                        'that is now older.')
+        except companion.Stopped:
+            says = BRAND_STOPPED
+        except (WorkspaceError, OSError) as refusal:
+            says = f'The brand skill {tag} was not installed: {str(refusal).rstrip(".")}.'
+        except Exception as failure:  # said on the page; the runner keeps serving
+            says = (f'The brand skill could not be installed ({type(failure).__name__}: '
+                    f'{failure}).')
+        finally:
+            shutil.rmtree(holder, ignore_errors=True)
+        with self._lock:
+            self._brand = {**(self._brand or {}), 'state': state, 'says': says,
+                           'ended': _now(), 'commit': commit[:12], 'version': version}
+        self.check(repair=False)
+        if self.after is not None:
+            try:
+                self.after()
+            except Exception:  # a look that fails is the next look's to say
+                pass
+
+    def _brand_installed(self, repository: str, target: dict,
+                         before: dict | None) -> tuple[str, str]:
+        """Whether the release is now the brand skill found here. A brand skill chosen in
+        Settings that was the one upgraded is moved to the new version."""
+        tag, version = target['tag'], target['version']
+        now = [entry for entry in self._brands() if entry.get('version') == version]
+        if not now:
+            return 'failed', (f'Its installer finished, but no brand skill {version} is found '
+                              'on this computer. Check this computer again, or run its '
+                              'installer by hand.')
+        chosen = settings.load()
+        if before and chosen.brand_skill and chosen.brand_skill == before.get('runtime') \
+                and now[0]['runtime'] != before.get('runtime'):
+            settings.save(dataclasses.replace(chosen, brand_skill=now[0]['runtime']))
+        return 'done', (f"{now[0]['name']} {version} is installed, from {repository} at "
+                        f"{tag} (revision {target['commit'][:12]}). New decks can use it.")
+
+    def _would_change(self, folder: Path) -> str | None:
+        """What the release's installer would change of the companions, said in a sentence;
+        None when it would leave them alone. It brings its own copy of each it records,
+        unless every one installed here is at least that version and one is there."""
+        install = self.module()
+        for name, wanted in brand_source.bootstraps(folder).items():
+            if name in brand_source.SKIPPED or install is None:
+                continue
+            found = install.companion_found(self.home, list(ASSISTANTS), name)
+            having = [version for version in found.values() if version]
+            short = [install.HARNESS[harness] for harness, version in found.items()
+                     if version == '' or (version and _version(version) < _version(wanted))]
+            if not having:
+                return (f"its installer would put in its own {name} {wanted}, as none is "
+                        'installed here. Update the skills first.')
+            if short:
+                return (f"its installer would replace {name} {', '.join(sorted(set(having)))} "
+                        f"with its own {wanted} for {_who(short)}, in place of the one "
+                        'Training Studio is made with. Choose an older release in Settings, '
+                        'or upgrade Training Studio first.')
+        return None
+
+    def _companion_links(self) -> dict:
+        """Where each companion is in this home, for each assistant and in its installer's
+        own folder: {path: (where it leads, its version)}."""
+        install = self.module()
+        if install is None:
+            return {}
+        found = {}
+        for name, (module, title) in TOOLS.items():
+            places = [install.skill_link(self.home, harness).parent / name
+                      for harness in ASSISTANTS]
+            places += [place for place in companion.locations(module.VARIABLE, name, title,
+                                                               home=self.home)
+                       if place.name == 'current']
+            for place in places:
+                if not os.path.lexists(place):
+                    found[str(place)] = (name, None, None)
+                    continue
+                try:
+                    version = json.loads((place / 'package.json').read_text(
+                        encoding='utf-8')).get('version')
+                except (OSError, ValueError, AttributeError):
+                    version = None
+                found[str(place)] = (name, os.path.realpath(place), version)
+        return found
+
+    @staticmethod
+    def _moved(before: dict, after: dict) -> list[str]:
+        """What changed between two looks at the companions, one line each."""
+        lines = []
+        for place, (name, was, version) in before.items():
+            _, now, then = after.get(place, (name, None, None))
+            if (was, version) != (now, then):
+                lines.append(f"{name} at {place}, from {version or 'nothing'} to "
+                             f"{then or 'nothing'}" if version != then else
+                             f'{name} at {place}, which now leads to {now or "nothing"}')
+        return lines
+
+    def _brand_row(self, found: dict | None, online: dict) -> dict:
+        """The brand skill's row, with what an install would do."""
+        repository, target = self._brand_target(online)
+        skill = self._the_brand((found or {}).get('brands') or [])
+        installed = skill and skill.get('version')
+        known = online if online.get('repository') == repository else {}
+        latest = known.get('latest') if repository else None
+        row = {'name': BRAND, 'kind': 'brand', 'installed': installed, 'newest': latest,
+               'pinned': None, 'next': None, 'target': None, 'beyond': None,
+               'reports': (f"The brand skill in use is {skill['name']}, at {skill['runtime']}."
+                           if skill else None),
+               'known_at': known.get('known_at'), 'repository': repository,
+               'release': target and target['tag'],
+               'commit': target and target['commit'][:12]}
+        named = skill['name'] if skill else 'The brand skill'
+        if not repository:
+            first = ('No brand skill is installed, so no deck is offered.' if not skill
+                     else f'{named} {installed} is installed.' if installed
+                     else f'{named} is installed.')
+            return {**row, 'state': 'unknown', 'says': f'{first} Name its repository in '
+                    'Settings to install and upgrade it from here.'}
+        if target is None:
+            release = settings.load().brand_release
+            return {**row, 'state': 'unknown', 'says': (
+                f'{repository} has no release {release}, as last looked.' if release
+                and known.get('releases') is not None else
+                f'Which releases {repository} has is not known yet. It is looked for once a '
+                'day, and when the repository is saved in Settings.')}
+        wanted = target['version']
+        if skill is None:
+            return {**row, 'state': 'missing', 'target': wanted, 'says': (
+                f"No brand skill is installed, so no deck is offered. {target['tag']} can be "
+                f'installed from {repository}.')}
+        if installed is None:
+            return {**row, 'state': 'unknown', 'target': wanted, 'says': (
+                f"{named} does not say which version it is. {target['tag']} can be installed "
+                f'from {repository}.')}
+        if brand_source.order(wanted) > brand_source.order(installed):
+            return {**row, 'state': 'update', 'target': wanted, 'says': (
+                f'{named} {wanted} is out, and this computer has {installed}.')}
+        chosen = settings.load().brand_release
+        if wanted != installed and chosen:
+            return {**row, 'state': 'current', 'target': wanted, 'says': (
+                f'{named} {installed} is installed, newer than {chosen}, the release chosen '
+                'in Settings. That one can be installed from here.')}
+        return {**row, 'state': 'current', 'says': (
+            f'{named} {installed} is the release chosen in Settings.' if chosen else
+            f'{named} {installed} is the newest release.')}
+
+    def _brand_offer(self, row: dict, busy: bool, brand: dict | None) -> dict:
+        """What installing the brand skill would do, for the page's sheet."""
+        return {'offered': bool(row['target'] and row['repository'] and not busy),
+                'action': 'Upgrade' if row['installed'] else 'Install',
+                'repository': row['repository'], 'release': row['release'],
+                'version': row['target'], 'commit': row['commit'],
+                'installed': row['installed'],
+                'state': brand and brand['state'], 'since': brand and brand['since'],
+                'says': brand and brand['says']}
+
     def dismiss(self, key: str) -> dict:
         """Stop showing the versions on Home until a newer one is out than `key` names."""
         if not isinstance(key, str) or not key or len(key) > 500:
@@ -845,14 +1169,18 @@ class Upkeep:
         problem = None
         if missed:
             first = online[missed[0]]['problem']
-            problem = (f'The last look for newer releases did not reach {_who(missed)} '
+            named = ["the brand skill's repository" if name == BRAND else name
+                     for name in missed]
+            problem = (f'The last look for newer releases did not reach {_who(named)} '
                        f'({first}). It is tried again in a day.')
         return {'on': settings.load().look_for_updates, 'at': kept.get('at'),
                 'problem': problem}
 
-    def versions(self, found: dict | None, upgrade: dict | None, busy: bool) -> dict:
-        """A row each for Training Studio and its companions, what an upgrade would do, and
-        the key Home is dismissed with. Worked out from what was last found; asks nothing."""
+    def versions(self, found: dict | None, upgrade: dict | None, busy: bool,
+                 brand: dict | None = None) -> dict:
+        """A row each for Training Studio, its companions and the brand skill, what an
+        upgrade or a brand install would do, and the key Home is dismissed with. Worked out
+        from what was last found; asks nothing."""
         kept = self._saved()
         online = kept.get('found') or {}
         have, newest = self.version(), (found or {}).get('newest')
@@ -866,6 +1194,7 @@ class Upkeep:
             rows.append(self._companion_row(entry, online.get(entry['name']) or {},
                                             newest if ahead else None, pins,
                                             (found.get('tools') or {}).get(entry['name'])))
+        rows.append(self._brand_row(found, online.get(BRAND) or {}))
         wanted = [row for row in rows if row['state'] in ('update', 'missing')]
         key = ', '.join(f"{row['name']} {row['target'] or row['state']}" for row in wanted)
         offered = bool(ahead and not checkout and found and found['installer']
@@ -879,7 +1208,8 @@ class Upkeep:
                             'since': upgrade and upgrade['since'],
                             'says': upgrade and upgrade['says'],
                             'restart': bool(upgrade and upgrade['state'] == 'restart'
-                                            and self._opener())}}
+                                            and self._opener())},
+                'brand': self._brand_offer(rows[-1], busy or waiting, brand)}
 
     def _own_row(self, have: str, newest: dict | None, ahead: bool, checkout: bool,
                  upgrade: dict | None) -> dict:
@@ -970,10 +1300,12 @@ class Upkeep:
             found = self._found
             update = dict(self._update) if self._update else None
             upgrade = dict(self._upgrade) if self._upgrade else None
+            brand = dict(self._brand) if self._brand else None
         wanted = [entry for entry in (found or {}).get('companions', [])
                   if entry['state'] in ('missing', 'older')]
         busy = bool(update and update['state'] == 'running') \
-            or bool(upgrade and upgrade['state'] in ('running', 'restart', 'restarting'))
+            or bool(upgrade and upgrade['state'] in ('running', 'restart', 'restarting')) \
+            or bool(brand and brand['state'] == 'running')
         return {'checking': found is None, 'checked_at': found and found['at'],
                 'version': self.version(),
                 'mode': found and found['mode'],
@@ -986,4 +1318,4 @@ class Upkeep:
                            'since': update and update['since'],
                            'says': update and update['says']},
                 'guidance': self.guidance(), 'releases': self.releases(),
-                'versions': self.versions(found, upgrade, busy)}
+                'versions': self.versions(found, upgrade, busy, brand)}

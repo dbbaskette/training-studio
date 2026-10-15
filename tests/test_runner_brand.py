@@ -73,7 +73,8 @@ class FindingABrandSkillTests(unittest.TestCase):
         self.run.knows(mine, 'acme-brand')
         other = skill(self.claude / 'deck-tool', 'deck-tool', '// renders brands of deck\n')
         self.assertEqual(brand.found(self.run), [
-            {'name': 'Acme Brand', 'runtime': str(mine), 'brands': LISTED}])
+            {'name': 'Acme Brand', 'version': '1.2.3', 'runtime': str(mine),
+             'brands': LISTED}])
         self.assertEqual(self.run.ran, [
             ['node', str(mine / 'scripts' / 'acme-brand.mjs'), 'brands', '--json'],
             ['node', str(mine / 'scripts' / 'acme-brand.mjs'), 'version'],
@@ -164,9 +165,12 @@ class FindingABrandSkillTests(unittest.TestCase):
         self.run.knows(shared, 'other-brand', LISTED[:1], title=None)
         self.run.knows(plain, 'third-brand', LISTED[1:], title='Third Brand')
         self.assertEqual(brand.found(self.run), [
-            {'name': 'Acme Brand', 'runtime': str(version), 'brands': LISTED},
-            {'name': 'other-brand', 'runtime': str(shared), 'brands': LISTED[:1]},
-            {'name': 'Third Brand', 'runtime': str(plain), 'brands': LISTED[1:]}])
+            {'name': 'Acme Brand', 'version': '1.2.3', 'runtime': str(version),
+             'brands': LISTED},
+            {'name': 'other-brand', 'version': None, 'runtime': str(shared),
+             'brands': LISTED[:1]},
+            {'name': 'Third Brand', 'version': '1.2.3', 'runtime': str(plain),
+             'brands': LISTED[1:]}])
         self.assertEqual(sum(command[2:] == ['brands', '--json'] for command in self.run.ran),
                          3, 'one skill behind four links is asked once')
         self.assertEqual(brand.Brand(run=self.run).runtime, version)
@@ -178,7 +182,8 @@ class FindingABrandSkillTests(unittest.TestCase):
         self.run.knows(chosen, 'my-brand', LISTED[1:], title='My Brand')
         os.environ[brand.VARIABLE] = str(chosen)
         self.assertEqual(brand.found(self.run), [
-            {'name': 'My Brand', 'runtime': str(chosen), 'brands': LISTED[1:]}])
+            {'name': 'My Brand', 'version': '1.2.3', 'runtime': str(chosen),
+             'brands': LISTED[1:]}])
         self.assertEqual(brand.Brand(run=self.run).name, 'My Brand')
         os.environ[brand.VARIABLE] = str(self.home / 'nowhere')
         self.assertEqual(brand.found(self.run), [])
@@ -245,11 +250,17 @@ class CommandTests(unittest.TestCase):
         self.assertEqual((self.brand.name, self.brand.runtime, self.brand.script),
                          ('Acme Brand', Path('/opt/acme-brand'),
                           Path('/opt/acme-brand/scripts/acme-brand.mjs')))
-        for answer in ((2, '', 'Unknown command: version.\n'), (0, '1.2.3\n', ''),
-                       (0, '\n', '')):
+        self.assertEqual(self.brand.version, '1.2.3')
+        for answer, version in (((2, '', 'Unknown command: version.\n'), None),
+                                ((0, '1.2.3\n', ''), '1.2.3'), ((0, '\n', ''), None),
+                                ((0, 'Acme Brand v1.2\n', ''), None)):
             quiet = brand.Brand(runtime=Path('/opt/acme-brand'),
                                 run=lambda command, cwd=None: answer)
-            self.assertEqual(quiet.name, 'acme-brand')
+            self.assertEqual(quiet.name, 'Acme Brand' if 'Acme' in answer[1] else 'acme-brand')
+            self.assertEqual(quiet.version, version)
+        tagged = brand.Brand(runtime=Path('/opt/acme-brand'),
+                             run=lambda command, cwd=None: (0, 'Acme Brand v2.0.1\n', ''))
+        self.assertEqual((tagged.name, tagged.version), ('Acme Brand', '2.0.1'))
         current = brand.Brand(runtime=Path('/opt/Acme Brand/current'),
                               run=lambda command, cwd=None: (1, '', ''))
         self.assertEqual((current.name, current.script),

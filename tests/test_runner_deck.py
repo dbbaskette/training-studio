@@ -2729,7 +2729,8 @@ class PageTests(PageCase):
             'brands': [{'brand': 'example-co', 'name': 'Example Co',
                         'variants': ['light', 'dark']}],
             'skills': [{'name': 'Example Co brand kit', 'path': '/opt/brand-kit',
-                        'chosen': True}]})
+                        'chosen': True}],
+            'repository': None, 'release': None})
         self.slides.have['local'] = True
         made = self.post('setup', {'previews': 'local', 'brand_skill': '/opt/brand-kit'})
         self.assertEqual((made['previews']['how'], made['previews']['local'],
