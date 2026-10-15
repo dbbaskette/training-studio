@@ -111,6 +111,48 @@ Where this computer can make a deck, set-up asks two more things.
 
 Nothing is changed until you save. You can change any of it later in Settings.
 
+If you use Presentation Studio or Blog Studio too, set-up starts from what your studios share: see [the shared studios config](#shared-studios-config).
+
+## Shared studios config
+
+Every *-studio (Training Studio, Blog Studio, Presentation Studio) reads shared defaults from one file, `~/.config/studios-config.json`. The `STUDIOS_CONFIG` environment variable names another file instead, which tests use. A person sets the team repository, their name, the assistant and the brand once, and every studio starts ready.
+
+```json
+{
+  "schema": 1,
+  "team": { "repository": "https://github.com/<org>/<team-repo>.git", "branch": "main" },
+  "person": { "name": "Dan Baskette" },
+  "assistant": { "agent": "claude", "model": "opus", "effort": "high" },
+  "brand": { "brand": "tanzu", "variant": "light" },
+  "output": "google",
+  "share": "decision"
+}
+```
+
+Every key is optional. A studio ignores keys it does not use and keys it does not know, and keeps any unknown keys when it writes. `null` is the same as leaving a key out.
+
+- **Shared defaults, local overrides.** A studio reads the file to fill in its first-launch setup and the defaults of a new item. Its own settings still win, and nothing per-studio goes in this file.
+- **Write only with consent.** A studio writes the file only when the person changes a shared value and agrees to "use this for all studios". The write is merged and atomic, and it never removes keys it does not know.
+- **No secrets.** Tokens, Google credentials and GitHub auth stay in `gcloud`, `gh` and git's own stores. A repository address carrying credentials is refused, as the studios already do.
+- **Team repository.** "Join our team repository" is pre-filled from `team.repository`. That is what puts `trainings/`, `blogs/` and `presentations/` under one shared root.
+- **Bad file.** A file that is missing or cannot be read is treated as empty, and the Status / Check this computer screen says in one sentence that it could not be read.
+
+### In Training Studio
+
+Only the page's runner reads the file. The helper's own commands, and a training made in a conversation, never do.
+
+| Key | What it fills in | Written back |
+| --- | --- | --- |
+| `team.repository` | Set-up's "A team repository", where this computer keeps no repository of its own. | Yes |
+| `team.branch` | The branch, for a new workspace in that repository. A workspace your team has set up already keeps the branch its `hub.json` names. Not used for a folder on this computer. | Yes |
+| `person.name` | Nothing: Training Studio asks nobody's name. Your work carries git's own name for you, which set-up checks and never changes. | No |
+| `assistant.agent`, `.model`, `.effort` | The agent, its model and its reasoning level, at the first set-up. A value set-up would refuse is ignored. A model the agent does not list shows as "Another model…", and a level the model does not take is left to the agent. | Yes |
+| `brand.brand`, `.variant` | A new training's deck brand and variant, when the brand skill on this computer has them. | No |
+| `output` | `"google"` makes a new training's deck Google Slides, and `"pptx"` PowerPoint. Copies of the guide and brief are not chosen from it. Any other value is ignored. | No |
+| `share` | `"decision"` is "After each decision", `"asked"` is "Only when I ask". Any other value is ignored. | Yes |
+
+Set-up, the first time or from "Change the set-up" in Settings, has "Use this for all studios" beside the shared values. With it on, saving writes to the file each shared value you changed in that save, where the file says otherwise, and nothing else. A model or level left to the agent is written as `null`. A folder on this computer is not a team repository, so it writes no `team` or `share`. Your set-up is saved first: if the file cannot be written, the page says why and your set-up stands. Training Studio has no default brand or output of its own, so it never writes those.
+
 ## Start a training
 
 "New training" asks for a title, what it should teach, who it is for, and a few choices that already have answers. Then it starts at once.

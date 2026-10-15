@@ -70,7 +70,7 @@ sh ~/.local/share/training-studio/studio
 
 A terminal window opens and the page opens in your browser. Leave the window open while you work.
 
-**2. Set it up, once.** Say where trainings are kept: a folder on this computer to try things out, or a git repository your team shares. The page checks each answer as you give it.
+**2. Set it up, once.** Say where trainings are kept: a folder on this computer to try things out, or a git repository your team shares. The page checks each answer as you give it. If you use Presentation Studio or Blog Studio too, the answers they share are filled in for you (see [the shared studios config](docs/runner.md#shared-studios-config)).
 
 **3. Press "New training".** Give a title, what it should teach and who it is for. It starts at once.
 

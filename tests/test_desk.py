@@ -2731,6 +2731,122 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                       'shared with anyone.', shots['saved']['text'])
         self.assertNotIn('Share now', shots['saved']['buttons'])
 
+    def test_set_up_is_filled_in_from_what_every_studio_shares(self):
+        address = 'git@example.com:team/studios.git'
+        shared = {'team': {'repository': address, 'branch': 'trunk'},
+                  'assistant': {'agent': 'codex', 'model': 'gpt-7-preview', 'effort': 'high'},
+                  'share': 'asked'}
+        first = {**NOT_SET_UP, 'shared': shared, 'shared_problem': None}
+        check = {'ok': True, 'checks': [{'what': 'The repository can be reached', 'ok': True,
+                                         'fix': None}],
+                 'found': {'name': 'studios', 'folder': 'trainings', 'branch': 'main',
+                           'existing': False}}
+        saved = {**SET_UP, 'shared': shared, 'shared_problem': None,
+                 'for_all_studios': {'written': ['assistant.effort'], 'problem': None}}
+        answers = self.answers(first, **{'GET /api/setup': [ok(first), ok(saved)],
+                                         'POST /api/setup/check': [ok(check)],
+                                         'POST /api/setup': [ok(saved)]})
+        result = self.run_page(answers, [
+            {'snapshot': 'first'},
+            {'fill': 'Its reasoning level', 'value': 'medium'},
+            {'click': 'Use this for all studios'}, {'snapshot': 'ticked'},
+            {'click': 'Save and go on'}, {'snapshot': 'saved'}])
+        shots = result['snapshots']
+        start = shots['first']
+        # The team repository, its branch, when to share and the agent come from the file;
+        # a model the agent does not list is "Another model…".
+        self.assertEqual((start['fields']['The repository’s address'],
+                          start['fields']['The branch'], start['fields']['The folder inside it'],
+                          start['fields']['Its model'], start['fields']['The model’s name'],
+                          start['fields']['Its reasoning level']),
+                         (address, 'trunk', 'trainings', ' other', 'gpt-7-preview', 'high'))
+        self.assertEqual(start['pressed'], ['A team repository', 'Only when I ask', 'Codex'])
+        self.assertIn('Your other studios', start['text'])
+        self.assertIn('Training Studio, Presentation Studio and Blog Studio can share the team '
+                      'repository, when to share and the agent through one file, '
+                      '~/.config/studios-config.json.', start['text'])
+        self.assertEqual(start['chosen'], [])
+        self.assertIn('Use this for all studios', start['buttons'])
+        self.assertEqual(shots['ticked']['chosen'], ['Use this for all studios'])
+        self.assertEqual(self.posts(result), [
+            ('/api/setup/check', {'repository': address, 'path': None, 'folder': None,
+                                  'branch': None}),
+            ('/api/setup', {'repository': address, 'folder': 'trainings', 'branch': 'trunk',
+                            'name': 'studios', 'share_when': 'when-asked', 'agent': 'codex',
+                            'model': 'gpt-7-preview', 'effort': 'medium', 'limits': LIMITS,
+                            'for_all_studios': True})])
+        self.assertIn('Your other studios use this too now.', shots['saved']['toasts'])
+
+    def test_a_workspace_the_team_set_up_keeps_its_own_branch_and_this_computer_its_agent(self):
+        address = 'git@example.com:team/tools.git'
+        shared = {'team': {'repository': address, 'branch': 'trunk'},
+                  'assistant': {'agent': 'codex', 'model': 'gpt-6-sol'}, 'share': 'asked'}
+        first = {**NOT_SET_UP, 'shared': shared, 'shared_problem': None}
+        check = {'ok': True, 'checks': [{'what': 'The repository can be reached', 'ok': True,
+                                         'fix': None}],
+                 'found': {'name': 'Field enablement', 'folder': 'trainings',
+                           'branch': 'trainings', 'existing': True}}
+        answers = self.answers(first, **{'POST /api/setup/check': [ok(check), ok(check)]})
+        result = self.run_page(answers, [{'snapshot': 'first'}])
+        self.assertEqual(result['snapshots']['first']['fields']['The branch'], 'trainings')
+        # Once this computer is set up, its own answers come first.
+        mine = {**SET_UP, 'shared': shared, 'shared_problem': None}
+        answers = self.answers(mine, **{'POST /api/setup/check': [ok(check)]})
+        result = self.run_page(answers, [{'click': 'Settings'}, {'click': 'Change the set-up'},
+                                         {'snapshot': 'again'}])
+        again = result['snapshots']['again']
+        self.assertEqual(again['pressed'], ['A team repository', 'After each decision',
+                                            'Claude Code'])
+        self.assertEqual((again['fields']['Its model'], again['chosen']), ('', []))
+
+    def test_a_studios_file_that_cannot_be_read_is_said_on_status_and_holds_nothing_up(self):
+        problem = ('~/.config/studios-config.json could not be read (it is not valid JSON), '
+                   'so the settings your studios share are not used.')
+        broken = {**SET_UP, 'shared': {}, 'shared_problem': problem}
+        result = self.run_page(self.answers(broken), [
+            {'click': 'Status'}, {'snapshot': 'status'},
+            {'click': 'Settings'}, {'click': 'Change the set-up'}, {'snapshot': 'set-up'}])
+        shots = result['snapshots']
+        self.assertIn('Your other studios\n' + problem, shots['status']['text'])
+        self.assertIn(problem, shots['set-up']['text'])
+        self.assertIn('Use this for all studios', shots['set-up']['buttons'])
+        # With nothing wrong, Status says nothing of it; with an older runner, set-up does not
+        # offer it.
+        fine = {**SET_UP, 'shared': {}, 'shared_problem': None}
+        result = self.run_page(self.answers(fine), [{'click': 'Status'}, {'snapshot': 'status'}])
+        self.assertNotIn('Your other studios', result['snapshots']['status']['text'])
+        result = self.run_page(self.answers(), [{'click': 'Settings'},
+                                                {'click': 'Change the set-up'},
+                                                {'snapshot': 'set-up'}])
+        self.assertNotIn('Use this for all studios', result['snapshots']['set-up']['buttons'])
+
+    def test_a_new_training_takes_the_brand_and_google_slides_every_studio_shares(self):
+        shared = {'brand': {'brand': 'example-co', 'variant': 'dark'}, 'output': 'google'}
+        answers = self.answers({**SET_UP, 'shared': shared, 'shared_problem': None})
+        result = self.run_page(answers, [
+            {'click': 'New training'},
+            {'fill': 'A short title', 'value': 'Rolling restarts'},
+            {'fill': 'What should it teach?', 'value': 'How a rolling restart works.'},
+            {'fill': 'Who is it for?', 'value': 'Platform engineers new to it.'},
+            {'click': 'Continue'}, {'snapshot': 'two'}])
+        two = result['snapshots']['two']
+        self.assertEqual(two['pressed'], ['One product or technology', 'Google Slides'])
+        self.assertEqual((two['fields']['The deck’s brand'], two['fields']['The brand’s variant'],
+                          two['chosen']), ('example-co', 'dark', ['101']))
+        # A brand the brand skill here does not have is not offered: its first one is.
+        shared = {'brand': {'brand': 'acme', 'variant': 'dark'}, 'output': 'pptx'}
+        answers = self.answers({**SET_UP, 'shared': shared, 'shared_problem': None})
+        result = self.run_page(answers, [
+            {'click': 'New training'},
+            {'fill': 'A short title', 'value': 'Rolling restarts'},
+            {'fill': 'What should it teach?', 'value': 'How a rolling restart works.'},
+            {'fill': 'Who is it for?', 'value': 'Platform engineers new to it.'},
+            {'click': 'Continue'}, {'snapshot': 'two'}])
+        two = result['snapshots']['two']
+        self.assertEqual(two['pressed'], ['One product or technology', 'PowerPoint'])
+        self.assertEqual((two['fields']['The deck’s brand'], two['fields']['The brand’s variant']),
+                         ('example-co', 'dark'))
+
     def test_a_name_that_cannot_be_used_is_refused_beside_its_box_before_it_is_sent(self):
         address, name = 'git@example.com:team/enablement.git', 'A name for this workspace'
         check = {'ok': True, 'found': {'name': 'enablement', 'folder': 'trainings',

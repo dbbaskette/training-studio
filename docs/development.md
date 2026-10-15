@@ -160,6 +160,7 @@ runner/
   studio.py                 the command line: serve and status
   page.py                   the page's server, with the runner behind it
   setup.py, settings.py     this computer's workspace, agent and limits
+  studios_config.py         the file of defaults every *-studio shares, edited in place
   engine.py                 walks each training, hands out jobs, stops at gates
   pipeline.py               the pipelines as data, and where a training is in them
   agents.py                 starts Claude Code or Codex as a confined worker for one job

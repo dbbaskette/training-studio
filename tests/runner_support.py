@@ -1270,6 +1270,7 @@ class StudioCase(unittest.TestCase):
         self.real = (engines.slides_tool.Slides, engines.brand_skill.Brand)
         patches = [
             mock.patch.dict(os.environ, {'TRAINING_STUDIO_DATA': str(self.base / 'data'),
+                                         'STUDIOS_CONFIG': str(self.base / 'studios.json'),
                                          'GIT_CONFIG_GLOBAL': str(self.base / 'gitconfig'),
                                          'GIT_CONFIG_NOSYSTEM': '1'}),
             mock.patch.object(worker_tools, 'fetch_once', self.web.opener),

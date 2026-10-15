@@ -263,7 +263,7 @@ class RuleTests(PageCase):
 class SetUpTests(FirstTimeCase):
     def test_nothing_is_set_up_at_first(self):
         self.assertEqual(self.get('setup'), {
-            'configured': False, 'workspace': None,
+            'configured': False, 'workspace': None, 'shared': {}, 'shared_problem': None,
             'agent': {'default': 'claude', 'model': None, 'effort': None},
             'limits': {'step_seconds': 900, 'training_dollars': 20.0, 'parallel': 2},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
@@ -288,6 +288,7 @@ class SetUpTests(FirstTimeCase):
             'workspace': {'name': 'my-work', 'repository': None, 'path': str(folder),
                           'folder': 'courses', 'branch': 'main', 'share_when': 'when-asked',
                           'shared': False, 'notice': None},
+            'shared': {}, 'shared_problem': None,
             'agent': {'default': 'codex', 'model': 'a-model', 'effort': 'ultra'},
             'limits': {'step_seconds': 600, 'training_dollars': 7.5, 'parallel': 3},
             'previews': {'how': None, 'drive': False, 'local': False, 'left': []},
@@ -432,6 +433,151 @@ class SetUpTests(FirstTimeCase):
                           for item in listed],
                          [('Rolling restarts', 'elsewhere', False, 'in-progress')])
         self.assertNotEqual(listed[0]['path'], made['path'])
+
+
+class SharedTests(FirstTimeCase):
+    """The studios config every *-studio reads: set-up is filled in from it, and it is
+    written only when the person says a value is for all their studios."""
+
+    # Another studio's file: its own layout, and keys Training Studio does not know.
+    THEIRS = ('{\n'
+              '  "schema": 1,\n'
+              '  "team": { "repository": "@REMOTE@", "branch": "main", "lead": "sam" },\n'
+              '  "person": { "name": "Dan Baskette" },\n'
+              '  "assistant": { "agent": "claude", "model": "opus", "effort": "high" },\n'
+              '  "brand": { "brand": "tanzu", "variant": "light" },\n'
+              '  "output": "google",\n'
+              '  "share": "decision",\n'
+              '  "blog": {"tone": "plain", "drafts": [1, 2, {"x": null}]}\n'
+              '}\n')
+
+    def setUp(self):
+        super().setUp()
+        self.file = Path(os.environ['STUDIOS_CONFIG'])
+
+    def theirs(self, remote: Path) -> str:
+        text = self.THEIRS.replace('@REMOTE@', str(remote))
+        self.file.write_text(text, encoding='utf-8')
+        return text
+
+    def test_with_no_file_set_up_is_as_it_always_was(self):
+        self.assertFalse(self.file.exists())
+        found = self.get('setup')
+        self.assertEqual((found['shared'], found['shared_problem']), ({}, None))
+        self.post('setup', {'path': str(self.base / 'mine'), 'for_all_studios': False})
+        self.assertFalse(self.file.exists())
+
+    def test_set_up_carries_what_the_file_says_that_training_studio_can_use(self):
+        remote = self.bare()
+        self.theirs(remote)
+        found = self.get('setup')
+        self.assertIsNone(found['shared_problem'])
+        self.assertEqual(found['shared'], {
+            'team': {'repository': str(remote), 'branch': 'main'},
+            'assistant': {'agent': 'claude', 'model': 'opus', 'effort': 'high'},
+            'brand': {'brand': 'tanzu', 'variant': 'light'},
+            'output': 'google', 'share': 'decision'})
+        # Nothing is set up from it until the person saves: this computer's own set-up is
+        # untouched, and so is the file.
+        self.assertEqual((found['configured'], found['agent']['model']), (False, None))
+        self.assertEqual(self.file.read_text(), self.THEIRS.replace('@REMOTE@', str(remote)))
+
+    def test_a_value_training_studio_would_refuse_is_left_out(self):
+        for written, shared in (
+                ({'team': {'repository': 'https://dan:hunter2@github.com/acme/team.git',
+                           'branch': 'main'}}, {'team': {'branch': 'main'}}),
+                ({'team': {'repository': 'two words', 'branch': '-x'}}, {}),
+                ({'team': {'branch': 'a..b'}, 'share': 'sometimes', 'output': 'pdf'}, {}),
+                ({'assistant': {'agent': 'gemini', 'model': 'pro', 'effort': 'high'}}, {}),
+                ({'assistant': {'model': 'claude-haiku-4-5', 'effort': 'high'}},
+                 {'assistant': {'model': 'claude-haiku-4-5'}}),
+                ({'assistant': {'agent': 'codex', 'effort': 'ultra'}},
+                 {'assistant': {'agent': 'codex', 'effort': 'ultra'}}),
+                ({'assistant': ['claude'], 'brand': {'brand': 7, 'variant': 'dark'},
+                  'person': {'name': 'Dan'}}, {'brand': {'variant': 'dark'}})):
+            with self.subTest(written=written):
+                self.file.write_text(json.dumps({'schema': 1, **written}))
+                self.assertEqual(self.get('setup')['shared'], shared)
+
+    def test_a_file_that_cannot_be_read_is_said_once_and_blocks_nothing(self):
+        self.file.write_text('{"schema": 1, "team": ', encoding='utf-8')
+        found = self.get('setup')
+        self.assertEqual(found['shared'], {})
+        self.assertEqual(found['shared_problem'],
+                         f'{self.file} could not be read (it is not valid JSON), so the '
+                         'settings your studios share are not used.')
+        made = self.post('setup', {'path': str(self.base / 'mine'), 'for_all_studios': True,
+                                   'agent': 'codex'})
+        self.assertEqual((made['configured'], made['agent']['default']), (True, 'codex'))
+        self.assertEqual(made['for_all_studios'],
+                         {'written': [], 'problem': found['shared_problem']})
+        self.assertTrue(self.started())
+        self.assertEqual(self.file.read_text(), '{"schema": 1, "team": ')
+
+    def test_for_all_studios_writes_only_what_changed_and_keeps_every_other_byte(self):
+        remote = self.bare()
+        text = self.theirs(remote)
+        # The first set-up, as the page fills it in from the file, with the agent changed.
+        made = self.post('setup', {'repository': str(remote), 'branch': 'main',
+                                   'share_when': 'each-decision', 'agent': 'codex',
+                                   'model': 'gpt-6-sol', 'effort': None,
+                                   'for_all_studios': True})
+        self.assertEqual(made['for_all_studios'], {
+            'written': ['assistant.agent', 'assistant.model', 'assistant.effort'],
+            'problem': None})
+        text = text.replace('"agent": "claude", "model": "opus", "effort": "high"',
+                            '"agent": "codex", "model": "gpt-6-sol", "effort": null')
+        self.assertEqual(self.file.read_text(encoding='utf-8'), text)
+        self.assertEqual(made['shared']['assistant'], {'agent': 'codex', 'model': 'gpt-6-sol'})
+        # Later, only when to share changes. Nothing else is written, though the file and
+        # this computer still differ on nothing else.
+        changed = self.post('setup', {'share_when': 'when-asked', 'for_all_studios': True})
+        self.assertEqual(changed['for_all_studios'], {'written': ['share'], 'problem': None})
+        text = text.replace('"share": "decision"', '"share": "asked"')
+        self.assertEqual(self.file.read_text(encoding='utf-8'), text)
+        # Without the person's say-so, nothing is written.
+        self.post('setup', {'share_when': 'each-decision', 'model': 'gpt-6-luna'})
+        self.assertEqual(self.file.read_text(encoding='utf-8'), text)
+        # Saved again with nothing changed, nothing is written either.
+        again = self.post('setup', {'for_all_studios': True})
+        self.assertEqual(again['for_all_studios'], {'written': [], 'problem': None})
+        self.assertEqual(self.file.read_text(encoding='utf-8'), text)
+
+    def test_a_first_write_makes_the_file_with_what_was_set_up(self):
+        remote = self.bare()
+        made = self.post('setup', {'repository': str(remote), 'share_when': 'when-asked',
+                                   'agent': 'claude', 'model': 'opus', 'effort': 'high',
+                                   'for_all_studios': True})
+        self.assertEqual(made['for_all_studios']['written'], [
+            'team.repository', 'team.branch', 'share', 'assistant.agent', 'assistant.model',
+            'assistant.effort'])
+        self.assertEqual(json.loads(self.file.read_text()), {
+            'schema': 1, 'team': {'repository': str(remote), 'branch': 'main'},
+            'share': 'asked',
+            'assistant': {'agent': 'claude', 'model': 'opus', 'effort': 'high'}})
+
+    def test_a_folder_on_this_computer_is_no_team_repository_to_share(self):
+        made = self.post('setup', {'path': str(self.base / 'mine'), 'share_when': 'when-asked',
+                                   'for_all_studios': True})
+        self.assertEqual(made['for_all_studios']['written'],
+                         ['assistant.agent'])
+        self.assertEqual(json.loads(self.file.read_text()),
+                         {'schema': 1, 'assistant': {'agent': 'claude'}})
+
+    def test_an_address_with_a_password_is_refused_and_the_file_is_untouched(self):
+        remote = self.bare()
+        text = self.theirs(remote)
+        said = self.post('setup', {'repository': 'https://dan:hunter2@example.com/team.git',
+                                   'for_all_studios': True}, 409)
+        self.assertIn('carries a password or token', said['error'])
+        self.assertEqual(self.file.read_text(encoding='utf-8'), text)
+
+    def test_for_all_studios_is_true_or_false(self):
+        said = self.post('setup', {'path': str(self.base / 'mine'),
+                                   'for_all_studios': 'yes'}, 400)
+        self.assertEqual(said['error'], 'Say whether this is for all your studios as true or '
+                                        'false.')
+        self.assertFalse(self.file.exists())
 
 
 class CheckTests(FirstTimeCase):
