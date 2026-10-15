@@ -1,7 +1,8 @@
-# Shared studios workspace and defaults
+# Shared studios workspace and settings
 
 This is the common convention for Training Studio, Blog Studio and Presentation
-Studio. Each studio implements the parts it uses and keeps its own settings.
+Studio. Each studio implements the parts it uses. Shared settings have one
+source; limits and other studio-specific choices stay local.
 
 ## One repository
 
@@ -39,10 +40,11 @@ person chooses **Share now**. Claims and handovers are always shared immediately
 Publishing records a numbered revision inside the repository; it does not send
 content to a CMS or change the repository's visibility.
 
-## Shared defaults
+## One shared settings file
 
-The optional file is `~/.config/studios-config.json`. `STUDIOS_CONFIG` overrides
-its location, including in tests. This example contains no credentials:
+`~/.config/studios-config.json` is the single source of truth for settings the
+studios share. `STUDIOS_CONFIG` overrides its location, including in tests.
+This example contains no credentials:
 
 ```json
 {
@@ -50,24 +52,45 @@ its location, including in tests. This example contains no credentials:
   "team": { "repository": "https://github.com/example/team-studios.git", "branch": "main" },
   "person": { "name": "Example Author" },
   "assistant": { "agent": "claude", "model": "opus", "effort": "high" },
-  "brand": { "brand": "example", "variant": "light" },
+  "brand": {
+    "repository": "https://github.com/example/brand-skill.git", "release": "v1.4.0",
+    "brand": "example", "variant": "light"
+  },
   "output": "google",
   "share": "decision"
 }
 ```
 
-Every setting is optional, and `null` is the same as leaving it out. A file whose
-`schema` is not 1 is treated as unreadable. A studio uses supported fields to fill first-launch
-setup and new-item defaults. Its own saved settings win. Existing items retain
-their choices. Unknown and unused fields are ignored, and unrelated JSON bytes
-are preserved when a supported value is changed.
+Every setting is optional. Each studio reads the supported shared values from
+this file on its next read, without a per-studio override or another saved copy.
+Saving a shared value in Settings updates this file directly. There is no
+**Use for all studios** toggle. Existing items retain the choices and contracts
+they started with; these are saved item inputs, not another settings source.
+Unknown and unused fields are ignored. Limits, preview renderer, concurrency,
+installed skill paths and other studio-specific choices stay in local settings.
 
-A studio writes this file only after the person changes a shared value and
-selects **Use for all studios**. It merges only those changed fields and replaces
-the file atomically. Per-studio settings do not belong here. Tokens, passwords,
-Google credentials and GitHub authentication stay in the tools' existing stores;
-repository addresses containing credentials are refused.
+Writes merge only changed members, replace the file atomically, and preserve
+unrelated JSON bytes, including unknown keys and formatting. Writers serialize
+through the adjacent `.lock` file. A stale form preserves unrelated changes and
+refuses a conflicting change to the same member. Tokens, passwords, Google
+credentials and GitHub authentication stay in the tools' existing stores.
+Repository addresses carrying credentials are refused. Brand repository and
+release inputs use the same checks as the brand skill's Settings form.
 
-A missing file leaves normal defaults unchanged. An unreadable or invalid file
-never prevents local writing: setup and computer status explain that the studio
-is using its own settings. An invalid file is preserved when an update is refused.
+Installing or upgrading a brand skill stays an explicit action in each studio's
+Versions/Status view, using the skill's own installer at the shared repository
+and release. Reading shared settings never installs software. A changed team
+repository or branch never silently moves existing work: join it explicitly to
+use it in that studio. A clone's marker and Git origin describe its actual
+connection; they do not override the shared setting for a new join.
+
+On the first run after upgrading, legacy shared values in that studio's settings
+are copied only where the shared file lacks a member. A value already in the
+shared file is kept, and the person is told. After the shared write succeeds,
+the old local copies are removed. Repeating or resuming migration is safe.
+
+A missing file means built-in defaults until shared settings are saved or
+migrated. An unreadable or invalid file never prevents writing: setup and Status
+say that built-in shared defaults are in use. Saving a shared value is refused
+until the file is readable. The existing file and unmigrated local settings are
+kept, without using those old local copies as overrides.
