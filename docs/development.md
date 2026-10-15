@@ -241,3 +241,6 @@ All five phases are built, each from its own specification:
 5. [The page](superpowers/specs/2026-10-12-phase-5-training-desk.md).
 
 The runner came after them, in milestones from [its design](superpowers/specs/2026-10-13-studio-runner-design.md): [approval on the page](superpowers/specs/2026-10-13-milestone-1-page-approval.md), [the runner's core](superpowers/specs/2026-10-13-milestone-2-runner-core.md), [the rest of a training](superpowers/specs/2026-10-13-milestone-3-rest-of-training.md), [the slide deck](superpowers/specs/2026-10-13-milestone-4-slides.md) and [the team](superpowers/specs/2026-10-13-milestone-5-team.md).
+
+The [shared studios convention](shared-studios.md) records the common repository
+layout and optional defaults schema used when integrating the studios.
