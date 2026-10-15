@@ -2806,6 +2806,81 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                                             'Claude Code'])
         self.assertEqual((again['fields']['Its model'], again['chosen']), ('', []))
 
+    def test_a_set_up_refused_as_changed_elsewhere_looks_again_and_saves_the_next_time(self):
+        team = {'repository': WORKSPACE['repository'], 'branch': 'main'}
+        shared = {'team': team, 'assistant': {'agent': 'claude', 'model': 'opus'}}
+        now = {**SET_UP, 'shared': shared, 'shared_problem': None,
+               'agent': {'default': 'claude', 'model': 'opus', 'effort': None}}
+        # Meanwhile, another studio chose Codex, its model, to share only when asked and
+        # another team repository.
+        moved = {'repository': 'git@example.com:team/studios.git', 'branch': 'main'}
+        later = {**now, 'shared': {'team': moved, 'share': 'asked',
+                                   'assistant': {'agent': 'codex', 'model': 'gpt-6-sol'}},
+                 'agent': {'default': 'codex', 'model': 'gpt-6-sol', 'effort': None},
+                 'workspace': {**WORKSPACE, 'share_when': 'when-asked'}}
+        stale = ('The agent was changed in another studio while this was open, so nothing '
+                 'was saved. Look again, then save.')
+        check = {'ok': True, 'checks': [{'what': 'The repository can be reached', 'ok': True,
+                                         'fix': None}],
+                 'found': {'name': 'Field enablement', 'folder': 'trainings',
+                           'branch': 'main', 'existing': True}}
+        answers = self.answers(now, **{'GET /api/setup': [ok(now), ok(later)],
+                                       'POST /api/setup/check': [ok(check)],
+                                       'POST /api/setup': [refused(stale), ok(later)]})
+        level = 'Its reasoning level'
+        result = self.run_page(answers, [
+            {'click': 'Settings'}, {'click': 'Change the set-up'},
+            {'fill': level, 'value': 'high'}, {'click': 'Save'}, {'snapshot': 'refused'},
+            {'click': 'Claude Code'}, {'fill': 'Its model', 'value': 'opus'},
+            {'fill': level, 'value': 'high'}, {'click': 'Save'}, {'snapshot': 'saved'}])
+        shots = result['snapshots']
+        refusal = shots['refused']
+        self.assertIn(stale + ' Nothing was saved, and your answers are still here: change '
+                      'what it names and save again. The team repository every studio shares '
+                      'is now git@example.com:team/studios.git.', refusal['text'])
+        # The form shows what the other studio chose, for each value it changed.
+        self.assertEqual(refusal['pressed'], ['A team repository', 'Only when I ask', 'Codex'])
+        self.assertEqual((refusal['fields']['Its model'], refusal['fields'][level]),
+                         ('gpt-6-sol', ''))
+        # Saved again, the person's choice goes with what the form has been shown since.
+        sent = {'repository': WORKSPACE['repository'], 'folder': 'trainings',
+                'branch': 'main', 'name': 'Field enablement', 'agent': 'claude',
+                'model': 'opus', 'effort': 'high', 'limits': LIMITS}
+        self.assertEqual(self.posts(result)[-2:], [
+            ('/api/setup', {**sent, 'share_when': 'each-decision', 'shared_seen': shared}),
+            ('/api/setup', {**sent, 'share_when': 'when-asked',
+                            'shared_seen': later['shared']})])
+        self.assertIn('The set-up is saved.', shots['saved']['toasts'])
+
+    def test_a_join_refused_for_a_value_changed_meanwhile_says_the_workspace_was_joined(self):
+        address = 'git@example.com:team/studios.git'
+        shared = {'team': {'repository': address, 'branch': 'trunk'}}
+        moved = {**SET_UP, 'shared': shared, 'shared_problem': None, 'shared_notice': None,
+                 'team_moved': {'repository': address, 'branch': 'trunk', 'says': 'Moved.'}}
+        check = {'ok': True, 'checks': [{'what': 'The repository can be reached', 'ok': True,
+                                         'fix': None}],
+                 'found': {'name': 'studios', 'folder': 'trainings', 'branch': 'trunk',
+                           'existing': True}}
+        # The runner joined it, and then found the model changed in another studio.
+        joined = {**moved, 'team_moved': None,
+                  'workspace': {**WORKSPACE, 'repository': address, 'name': 'studios',
+                                'branch': 'trunk'},
+                  'shared': {**shared, 'assistant': {'model': 'opus'}},
+                  'agent': {'default': 'claude', 'model': 'opus', 'effort': None}}
+        said = (f'Training Studio joined {address}, but the model was changed in another '
+                'studio meanwhile, so your other settings were not saved. Set-up shows them '
+                'as they are now: look again, then save.')
+        answers = self.answers(moved, **{'GET /api/setup': [ok(moved), ok(joined)],
+                                         'POST /api/setup/check': [ok(check)],
+                                         'POST /api/setup': [refused(said)]})
+        result = self.run_page(answers, [{'click': 'Join it'}, {'click': 'Save'},
+                                         {'snapshot': 'refused'}])
+        refusal = result['snapshots']['refused']
+        self.assertIn(said + ' Your other answers are still here: save again.',
+                      refusal['text'])
+        self.assertNotIn('Nothing was saved', refusal['text'])
+        self.assertEqual(refusal['fields']['Its model'], 'opus')
+
     def test_a_studios_file_that_cannot_be_read_is_said_on_status_and_holds_nothing_up(self):
         problem = ('~/.config/studios-config.json could not be read (it is not valid JSON), '
                    'so Training Studio uses its built-in defaults for the values every studio '

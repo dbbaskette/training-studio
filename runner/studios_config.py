@@ -31,6 +31,10 @@ What a caller needs to know
   it. It waits a few seconds for another writer, then refuses. `guard`, when given, is
   called with what the file holds while the lock is held, and refuses by raising: that is
   how a form opened before another studio changed a value is kept from writing over it.
+  `changes` may be a function instead, called the same way, that answers what to write from
+  what the file holds then, or refuses by raising. A write that depends on what the file
+  holds is worked out so, never from a read before the lock, so that what another studio
+  writes meanwhile is what it is compared with.
 - Nothing secret belongs in the file: tokens and sign-ins stay with gcloud, gh and git.
 - Only the runner uses this file. The helper's own commands never read it.
 """
@@ -243,12 +247,14 @@ def _locked():
         os.close(handle)
 
 
-def update(changes: dict, guard=None) -> dict:
+def update(changes, guard=None) -> dict:
     """Write these values into the file, merged with what it holds, and return what it then
-    holds. `changes` is shaped as the file is: {"share": ..., "team": {"branch": ...}}.
-    `guard`, when given, is called with what the file holds before anything is written, and
-    refuses by raising."""
-    _check(changes)
+    holds. `changes` is shaped as the file is: {"share": ..., "team": {"branch": ...}}, or is
+    a function that answers them from what the file holds under the lock. `guard`, when
+    given, is called with what the file holds before anything is written, and refuses by
+    raising. Nothing to change is no write at all."""
+    if not callable(changes):
+        _check(changes)
     with _locked():
         return _update(changes, guard)
 
@@ -264,6 +270,11 @@ def _update(changes: dict, guard) -> dict:
         raise WorkspaceError(problem.removesuffix(USING) + REFUSED)
     if guard is not None:
         guard(found)
+    if callable(changes):
+        changes = changes(found)
+        _check(changes)
+    if not changes:
+        return found
     if text is None:
         written = json.dumps({'schema': SCHEMA, **changes}, indent=2, ensure_ascii=False) + '\n'
     else:

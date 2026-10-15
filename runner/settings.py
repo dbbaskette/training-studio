@@ -20,6 +20,12 @@ What a caller needs to know
   cannot be read or written, it refuses before anything is kept, and the file is left as it
   is. A value in the file that Training Studio cannot use is never written over by a save
   that did not change it.
+- An agent and its model and level are written as one, and so are the brand skill's
+  repository and its release: where a save writes a model or a level and the file names
+  another agent than the one saved, the agent, its model and its level are all written, as
+  the form showed them. A model is never left beside another studio's agent. `writes` says
+  what a save would write, from what the file holds, and refuses as `save` would; set-up
+  asks it before it changes anything else.
 - `own()` is what `runner.json` still holds of the shared values from before they were
   shared, and `forget_own()` takes them out of it. See `setup.migrate`.
 - `model` is the model the agent is asked for and `effort` how hard it reasons, its
@@ -362,6 +368,8 @@ def changes(before: Settings, after: Settings) -> dict:
     return found
 
 
+# The shared settings that belong to another, which they are written beside.
+OWNS = {'agent': ('model', 'effort'), 'brand_repository': ('brand_release',)}
 # Each shared setting as a sentence names it.
 NAMED = {'agent': 'The agent', 'model': 'The model', 'effort': 'The reasoning level',
          'brand_repository': "The brand skill's repository",
@@ -370,26 +378,51 @@ STALE = ('{} was changed in another studio while this was open, so nothing was s
          'again, then save.')
 
 
+class Stale(WorkspaceError):
+    """A change to a value another studio changed too, refused. `what` names the value as a
+    sentence begins with it."""
+
+    def __init__(self, what: str):
+        super().__init__(STALE.format(what))
+        self.what = what
+
+
+def writes(chosen: Settings, before: Settings, found: dict) -> dict:
+    """What saving `chosen` writes into the studios config while it holds `found`, shaped
+    as the file is, when the form was shown `before`: each shared setting the person
+    changed, with the agent beside its model and level, and the repository beside its
+    release, where the file names another. Refuses, in a sentence, a change to a value
+    another studio changed too."""
+    changed = changes(before, chosen)
+    for owner, owned in OWNS.items():
+        group, key = SHARED[owner]
+        held = found.get(group) if isinstance(found.get(group), dict) else {}
+        if changed.get(group) and held.get(key) is not None \
+                and not _same(held[key], getattr(chosen, owner)):
+            for name in (owner, *owned):
+                value = getattr(chosen, name)
+                if value is not None or SHARED[name][1] in held:
+                    changed[group][SHARED[name][1]] = value
+    now = shared_now(found)
+    for name, (group, key) in SHARED.items():
+        if key in changed.get(group, {}) and not _same(now[name], getattr(before, name)) \
+                and not _same(now[name], getattr(chosen, name)):
+            raise Stale(NAMED[name])
+    return changed
+
+
 def save(chosen: Settings, shown: Settings | None = None) -> Settings:
     """Keep these settings: each shared one that changed in the studios config, the rest on
     this computer. A shared one that cannot be written is refused before anything is kept.
 
     `shown` is what the form that sent them was shown, where it says. Then only what the
     person changed from that is written, so a value another studio changed meanwhile is
-    kept, and a change to a value that another studio changed too is refused."""
+    kept, and a change to a value that another studio changed too is refused. What is
+    written is worked out from the file under its lock (see `writes`)."""
     chosen = check(chosen)
     before = shown if shown is not None else load()
-    changed = changes(before, chosen)
-
-    def guard(found: dict) -> None:
-        now = shared_now(found)
-        for name, (group, key) in SHARED.items():
-            if key in changed.get(group, {}) and not _same(now[name], getattr(before, name)) \
-                    and not _same(now[name], getattr(chosen, name)):
-                raise WorkspaceError(STALE.format(NAMED[name]))
-
-    if changed:
-        studios_config.update(changed, guard)
+    if changes(before, chosen):
+        studios_config.update(lambda found: writes(chosen, before, found))
     home.write_json(path(), {'schema': SCHEMA, **{
         name: value for name, value in asdict(chosen).items() if name not in SHARED}})
     return chosen
