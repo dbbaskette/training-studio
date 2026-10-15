@@ -226,13 +226,110 @@ class StandInTests(helpers.TrainingCase):
         run = self.planned()
         self.research.record(self.root, run, 'instance-min', self.finding())
         again = self.research.plan(self.root, self.plan_file)
-        self.assertEqual((again['run'], again['completed']), (run, 1))
+        self.assertEqual((again['run'], again['completed'], again['carried']), (run, 1, []))
         longer = {**PLAN, 'items': PLAN['items'] + [{'id': 'rollback', 'question': 'How is a '
                                                      'failed restart rolled back?'}]}
         self.plan_file.write_text(json.dumps(longer))
         changed = self.research.plan(self.root, self.plan_file)
         self.assertNotEqual(changed['run'], run)
-        self.assertEqual((changed['completed'], changed['total']), (0, 3))
+        self.assertEqual((changed['completed'], changed['total'], changed['pending'],
+                          changed['carried']),
+                         (1, 3, ['health-checks', 'rollback'], ['instance-min']))
+        self.assertNotIn('carried', self.research.status(self.root))
+
+    def answered(self, plan: dict | None = None) -> dict:
+        """A fresh run of `plan` with both questions answered, and its findings."""
+        shutil.rmtree(self.root / '.harness-research', ignore_errors=True)
+        self.plan_file.write_text(json.dumps(plan or PLAN))
+        run = self.planned()
+        self.research.record(self.root, run, 'instance-min', self.finding())
+        self.research.record(self.root, run, 'health-checks', self.finding(
+            status='insufficient', summary='The page does not say.', evidence=[]))
+        return workspace.research_record(self.root)['results']
+
+    def replanned(self, plan: dict) -> dict:
+        self.plan_file.write_text(json.dumps(plan))
+        return self.research.plan(self.root, self.plan_file)
+
+    def test_a_changed_plan_keeps_the_findings_of_questions_defined_exactly_as_before(self):
+        first, second = PLAN['items']
+        bare = {key: value for key, value in first.items() if key != 'claim'}
+        for plan, carried in (
+                ({**PLAN, 'items': [second, first]}, ['health-checks', 'instance-min']),
+                ({**PLAN, 'items': [{**first, 'question': 'How many are enough?'}, second]},
+                 ['health-checks']),
+                ({**PLAN, 'items': [bare, second]}, ['health-checks']),
+                ({**PLAN, 'topic': 'Rolling restarts at scale'}, []),
+                ({key: value for key, value in PLAN.items() if key != 'sources'}, [])):
+            with self.subTest(plan=plan):
+                findings = self.answered()
+                status = self.replanned(plan)
+                self.assertEqual((status['carried'], status['completed']),
+                                 (carried, len(carried)))
+                kept = workspace.research_record(self.root)['results']
+                self.assertEqual(kept, {ident: findings[ident] for ident in carried})
+        self.answered()
+        same = self.replanned({**PLAN, 'items': [dict(reversed(list(first.items()))),
+                                                 second]})
+        self.assertEqual((same['completed'], same['carried']), (2, []))
+
+    def test_only_the_run_before_is_consulted_for_findings_to_keep(self):
+        self.answered()
+        first, second = PLAN['items']
+        self.assertEqual(self.replanned({**PLAN, 'items': [second]})['carried'],
+                         ['health-checks'])
+        back = self.replanned(PLAN)
+        self.assertEqual((back['carried'], back['pending']), (['health-checks'],
+                                                              ['instance-min']))
+
+    def test_a_changed_document_keeps_no_findings(self):
+        self.write('sources/handbook.txt', 'Keep two instances running throughout.\n')
+        chosen = {**PLAN, 'sources': [{'id': 'handbook', 'title': 'Operations handbook',
+                                       'origin': 'Supplied by the team',
+                                       'file': 'sources/handbook.txt'}]}
+        self.answered(chosen)
+        self.write('sources/handbook.txt', 'Keep three instances running throughout.\n')
+        status = self.replanned(chosen)
+        self.assertEqual((status['carried'], status['completed']), ([], 0))
+
+    def recorded(self, run: str, finding: dict) -> tuple[int, str, str]:
+        """Record through the stand-in itself: the wrapper sends no headline."""
+        file = self.write('finding.json', json.dumps(finding))
+        return self.research.run(['node', 'script', 'record', '--project', str(self.root),
+                                  '--file', str(file), '--run', run, '--item', 'instance-min'])
+
+    def test_a_finding_may_have_a_headline_kept_only_in_the_record_and_the_report(self):
+        run = self.planned()
+        code, out, _ = self.recorded(run, self.finding(headline='\xa0 Keep at least two. '))
+        self.assertEqual(code, 0)
+        self.assertNotIn('headline', out)
+        record = workspace.research_record(self.root)
+        self.assertEqual(record['results']['instance-min']['headline'], 'Keep at least two.')
+        report = (self.root / '.harness-research' / 'research-report.md').read_text()
+        self.assertIn('Answer: Keep at least two.\n\nTwo instances keep capacity.\n', report)
+        self.assertNotIn('headline', json.dumps(self.research.status(self.root)))
+        self.assertNotIn('headline', json.dumps(self.research.plan(self.root, self.plan_file)))
+        self.assertEqual(self.recorded(run, self.finding())[0], 0)
+        self.assertNotIn('headline', workspace.research_record(self.root)['results']
+                         ['instance-min'])
+
+    def test_a_headline_must_be_one_nonblank_line_of_at_most_300_units(self):
+        run = self.planned()
+        refused = 'Headline requires one nonempty line (maximum 300 characters).\n'
+        for headline in (None, 7, '', ' \xa0﻿', 'One\nTwo', 'One\rTwo', 'x' * 301,
+                         ' ' + 'x' * 300, '\U0001f600' * 151):
+            with self.subTest(headline=headline):
+                self.assertEqual(self.recorded(run, self.finding(headline=headline)),
+                                 (1, '', refused))
+        self.assertEqual(self.research.status(self.root)['completed'], 0)
+        for headline in ('x' * 300, 'One Two', '\U0001f600' * 150):
+            with self.subTest(headline=headline):
+                self.assertEqual(self.recorded(run, self.finding(headline=headline))[0], 0)
+        passage = self.finding()['evidence'][0]
+        self.assertIn('Coverage limits', self.recorded(run, self.finding(
+            limits='', headline=None))[2])
+        self.assertEqual(self.recorded(run, self.finding(
+            headline=None, evidence=[{**passage, 'start': 0}]))[2], refused)
 
     def test_findings_are_recorded_one_at_a_time_until_the_run_is_complete(self):
         run = self.planned()

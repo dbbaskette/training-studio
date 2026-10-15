@@ -117,8 +117,10 @@ class Research:
 
     def plan(self, project: Path, file: Path, allow_web: bool = False) -> dict:
         """Hand over an approved plan. The same plan again continues its run; a changed
-        one starts a new run with no results. `allow_web` permits a plan that widens
-        supplied-only research to the public web."""
+        one starts a new run that keeps the findings of questions defined exactly as
+        before, when the topic, purpose, scope, sources and inputs are unchanged.
+        `carried` lists those, and is empty when the run continues. `allow_web` permits a
+        plan that widens supplied-only research to the public web."""
         extra = ['--allow-web'] if allow_web else []
         return self._json('plan', '--project', str(project), '--file', str(file), *extra)
 

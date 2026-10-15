@@ -33,8 +33,8 @@ On resume, and before each later gate, refresh `harness-research` status through
 
 Use this when a gap matters enough to research further, or a new level needs more.
 
-1. Write an extended plan to a scratch file: every existing question unchanged, with the same ID, plus the new ones.
+1. Write an extended plan to a scratch file: every existing question copied exactly, every field kept, plus the new ones.
 2. `training.py save research-plan --from <that file>`. Present gate 1 for the added questions only, then `training.py approve research-plan`.
-3. Save the plan with the `harness-research` helper. A changed plan starts a new run with no results; the previous run is kept under `.harness-research/history/`.
-4. Record each earlier finding again from the saved previous run, without browsing again, wherever its evidence snapshots are unchanged. Investigate only the new questions.
+3. Save the plan with the `harness-research` helper. A changed plan starts a new run; the previous run is kept under `.harness-research/history/`. The questions it lists in `carried` kept their findings.
+4. Record each other earlier finding again from the saved previous run, without browsing again, wherever its evidence snapshots are unchanged. Investigate only the new questions.
 5. Repeat gate 2. Blueprints and briefs then show as stale: rebuild those the new findings affect, and ask the user about accepting the rest as they are.

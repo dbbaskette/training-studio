@@ -538,7 +538,7 @@ class RequestTests(StudioCase):
         self.decide(root, 'research-plan')
         self.assertEqual(workspace.status(root)['gate'], 'research')
 
-    def test_changing_the_approved_plan_later_has_the_research_done_again(self):
+    def test_changing_the_approved_plan_later_researches_only_the_questions_that_changed(self):
         root = self.start()
         self.to_gate(root, 'blueprint')
         wider = {**FOUR, 'items': FOUR['items'] + [
@@ -547,9 +547,16 @@ class RequestTests(StudioCase):
         self.workers.plan = wider
         self.decide(root, 'research-plan', 'revise', 'Add a question about rollback.')
         self.assertEqual(workspace.status(root)['gate'], 'research-plan')
-        before = len(self.workers.of('question'))
+        before = len(self.workers.jobs)
         self.decide(root, 'research-plan')
-        self.assertEqual(len(self.workers.of('question')) - before, 5)
+        asked = [kind for kind, _, _ in self.workers.jobs[before:]
+                 if kind.startswith('question:')]
+        self.assertEqual(asked, ['question:rollback'],
+                         'the four questions asked as before keep their findings')
+        self.assertEqual(workspace.findings_index(workspace.research_record(root)),
+                         {'availability': 'supported', 'instance-min': 'supported',
+                          'health-checks': 'supported', 'zero-downtime': 'contradicted',
+                          'rollback': 'supported'})
         self.assertEqual(workspace.status(root)['gate'], 'research')
         self.decide(root, 'research')
         status = workspace.status(root)

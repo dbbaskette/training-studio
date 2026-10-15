@@ -22,6 +22,10 @@ SCOPES = {'supplied-only': 'Uploaded sources only',
           'public-web': 'Uploaded sources plus external research'}
 IDENT = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
 NOT_A_QUERY = re.compile(r'https?://|[/\\@]')
+# What JavaScript's trim() strips: its white space and line terminators.
+TRIMMED = '\t\n\v\f\r \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006' \
+          '\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
+HEADLINE = 'Headline requires one nonempty line (maximum 300 characters).'
 
 
 def stand_in() -> tool.Research:
@@ -44,12 +48,28 @@ def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _headline(value) -> str:
+    """A finding's headline, trimmed, or _Said. Its length is counted as JavaScript
+    counts it, in UTF-16 units, before trimming."""
+    if not isinstance(value, str) or not value.strip(TRIMMED) or '\r' in value \
+            or '\n' in value or len(value.encode('utf-16-le', 'surrogatepass')) // 2 > 300:
+        raise _Said(HEADLINE)
+    return value.strip(TRIMMED)
+
+
+def _stable(value) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
 class StandIn:
     """Behaves like the real command line for plan, record and status, in Python.
 
     It keeps the same record and report, in the same places, returns the same JSON and
-    says no with the same lines. It keeps no history of earlier runs and knows nothing of
-    migration. `calls` lists the arguments of every call made.
+    says no with the same lines. As 0.8.1 does, a changed plan keeps the findings of
+    questions defined exactly as before when the topic, purpose, scope, sources and inputs
+    are unchanged, and `plan` lists them in `carried`; a finding may have a `headline`. It
+    keeps no history of earlier runs and knows nothing of migration. `calls` lists the
+    arguments of every call made.
     """
 
     def __init__(self):
@@ -158,6 +178,8 @@ class StandIn:
             lines += [f"## {item['id']}", '', item['question'], '',
                       f"Status: {finding['status'] if finding else 'pending'}.", '']
             if finding:
+                if finding.get('headline'):
+                    lines += [f"Answer: {finding['headline']}", '']
                 lines += [finding['summary'], '',
                           f"Limits/open questions: {finding['limits']}", '']
                 for source in finding['evidence']:
@@ -215,10 +237,23 @@ class StandIn:
             raise _Said('Supplied-only research requires explicit permission before changing '
                         'to public-web scope.')
         if old and old['run'] == run:
-            return self._status(project)
-        return self._save(project, {
+            return {**self._status(project), 'carried': []}
+        kept = self._kept(old, plan, pins) if old else {}
+        status = self._save(project, {
             'schema': 1, 'owner': 'harness-research', 'run': run, **plan, 'inputs': pins,
-            'results': {}, 'created_at': _now()})
+            'results': kept, 'created_at': _now()})
+        return {**status, 'carried': [item['id'] for item in items if item['id'] in kept]}
+
+    def _kept(self, old: dict, plan: dict, pins: dict) -> dict:
+        """The findings a changed plan keeps: those of questions defined exactly as before,
+        compared whole, when the topic, purpose, scope, sources and inputs are unchanged."""
+        if any(old[key] != plan[key] for key in ('topic', 'purpose', 'scope')) \
+                or _stable(old.get('sources')) != _stable(plan.get('sources')) \
+                or _stable(old['inputs']) != _stable(pins):
+            return {}
+        before = {item['id']: _stable(item) for item in old['items']}
+        return {item['id']: old['results'][item['id']] for item in plan['items']
+                if before.get(item['id']) == _stable(item) and item['id'] in old['results']}
 
     def _record(self, project: Path, run: str, ident: str, supplied: dict) -> dict:
         value = self._load(project)
@@ -236,12 +271,14 @@ class StandIn:
                         'status and up to 20 evidence passages.')
         _text(supplied.get('summary'), 'Summary', 12000)
         _text(supplied.get('limits'), 'Coverage limits')
+        headline = {'headline': _headline(supplied['headline'])} \
+            if 'headline' in supplied else {}
         evidence = [self._evidence(project, value, source) for source in passages]
         if supplied['status'] in ('supported', 'contradicted') and not evidence:
             raise _Said('Supported or contradicted findings require an inspected source '
                         'passage.')
         value['results'][ident] = {
-            'status': supplied['status'], 'summary': supplied['summary'],
+            'status': supplied['status'], **headline, 'summary': supplied['summary'],
             'limits': supplied['limits'], 'evidence': evidence, 'checked_at': _now()}
         return self._save(project, value)
 
