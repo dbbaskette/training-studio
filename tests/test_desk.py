@@ -2776,7 +2776,10 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                                   'branch': None}),
             ('/api/setup', {'repository': address, 'folder': 'trainings', 'branch': 'trunk',
                             'name': 'studios', 'share_when': 'when-asked', 'agent': 'codex',
-                            'model': 'gpt-7-preview', 'effort': 'medium', 'limits': LIMITS})])
+                            'model': 'gpt-7-preview', 'effort': 'medium', 'limits': LIMITS,
+                            # What the form was shown, so that a value another studio
+                            # changes meanwhile is never written over.
+                            'shared_seen': shared})])
         self.assertEqual(shots['saved']['toasts'],
                          ['You are set up. Now start your first training.'])
 
@@ -2859,13 +2862,13 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         self.assertEqual(self.posts(result)[-1], ('/api/setup', {
             'repository': address, 'folder': 'trainings', 'branch': 'trunk', 'name': 'studios',
             'share_when': 'each-decision', 'agent': 'claude', 'model': None, 'effort': None,
-            'limits': LIMITS}))
+            'limits': LIMITS, 'shared_seen': shared}))
         self.assertNotIn('Join it', shots['saved']['buttons'])
 
     def test_what_moving_to_the_studios_file_left_as_it_was_is_told_until_read(self):
         told = ('Training Studio now keeps the values every studio shares only in '
-                '~/.config/studios-config.json, which already named the agent, so those are '
-                'used now in place of what this computer had chosen.')
+                '~/.config/studios-config.json, which said otherwise for the agent, so what '
+                'this computer had chosen for those is no longer used.')
         noticed = {**SET_UP, 'shared': {}, 'shared_problem': None, 'team_moved': None,
                    'shared_notice': told}
         seen = {**noticed, 'shared_notice': None}
@@ -6857,6 +6860,33 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
                       shots['saved']['toasts'])
         self.assertEqual(self.posts(result), [('/api/brand', {'repository': address,
                                                               'release': 'v0.13.1'})] * 2)
+
+    def test_the_brand_skills_repository_is_one_every_studio_shares(self):
+        self.started()
+        address = 'https://github.com/acme/brand.git'
+        shared = {'brand': {'repository': address}}
+        stale = ("The brand skill's repository was changed in another studio while this was "
+                 'open, so nothing was saved. Look again, then save.')
+        now = {**SET_UP, 'shared': shared, 'shared_problem': None,
+               'brand': {**BRAND, 'skills': [], 'repository': address, 'release': None}}
+        later = {**now, 'shared': {'brand': {'repository': address, 'release': 'v1.0.0'}}}
+        answers = self.answers(**{'GET /api/setup': [ok(now), ok(later)],
+                                  'POST /api/brand': [refused(stale), ok(later)]})
+        result = self.run_page(answers, [
+            {'click': 'Settings'}, {'snapshot': 'settings'},
+            {'fill': 'Which release', 'value': 'v0.13.1'},
+            {'click': 'Check and save'}, {'snapshot': 'refused'},
+            {'poll': True}, {'click': 'Check and save'}])
+        shots = result['snapshots']
+        self.assertIn('Every studio on this computer shares the repository and release named '
+                      'here, so saving changes them for all of them.', shots['settings']['text'])
+        self.assertIn(stale + ' Nothing was changed.', shots['refused']['text'])
+        # What it was shown goes with it, and after a refusal, what it has been shown since.
+        self.assertEqual(self.posts(result), [
+            ('/api/brand', {'repository': address, 'release': 'v0.13.1',
+                            'shared_seen': shared}),
+            ('/api/brand', {'repository': address, 'release': 'v0.13.1',
+                            'shared_seen': later['shared']})])
 
     def test_versions_can_be_dismissed_until_a_newer_one_is_out(self):
         found = kept(versions=versions(CURRENT))

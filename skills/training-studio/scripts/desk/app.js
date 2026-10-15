@@ -3210,6 +3210,9 @@ function setupForm() {
       name: Boolean(space.name) },
     team: space.repository ? {} : team,
     share: share === SHARE[1] ? 1 : 0,
+    // The values every studio shares as this form was shown them, sent back with it so
+    // that one another studio changes meanwhile is never written over.
+    seen: 'shared' in held ? shared : null,
     agent: agent.default === 'codex' ? 'codex' : 'claude',
     model: agent.model || '', other: false, effort: agent.effort || '',
     minutes: seconds ? String(Math.round(seconds / 6) / 10) : '', seconds,
@@ -3856,6 +3859,7 @@ async function saveSetup(pressed) {
   if (brandSkills().length > 1 && form.brandSkill) body.brand_skill = form.brandSkill;
   // The computer's own notification is switched in Settings, and is saved as it stands.
   if (view.setup.notify) body.notify = Boolean(view.setup.notify.on);
+  if (form.seen) body.shared_seen = form.seen;
   const first = !view.setup.configured;
   try {
     view.setup = await send('setup', body);
@@ -6685,7 +6689,8 @@ function brandSourceCard() {
   const found = view.runner && view.setup ? view.setup.brand : null;
   if (!found) return null;
   if (!view.brandForm) {
-    view.brandForm = { repository: found.repository || '', release: found.release || '' };
+    view.brandForm = { repository: found.repository || '', release: found.release || '',
+      seen: 'shared' in view.setup ? sharedOf() : null };
   }
   const form = view.brandForm;
   const node = add(card('Brand skill'), make('p', '', BRAND_SAYS),
@@ -6715,12 +6720,17 @@ async function saveBrand(pressed) {
   view.brandRefused = '';
   pressed.disabled = true;
   try {
-    view.setup = await send('brand', { repository, release: form.release.trim() });
+    const body = { repository, release: form.release.trim() };
+    if (form.seen) body.shared_seen = form.again ? sharedOf() : form.seen;
+    view.setup = await send('brand', body);
     view.brandForm = null;
     toast(repository ? 'Saved. The Status screen shows which release can be installed.'
       : 'Forgotten. A brand skill already installed is still used.');
   } catch (failure) {
     view.brandRefused = failure.message + ' Nothing was changed.';
+    // What is typed here is the person's own: saved again, it is meant over what the page
+    // has read by then.
+    form.again = true;
   }
   view.savingBrand = false;
   if (view.screen === 'settings') draw(false);

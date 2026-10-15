@@ -26,14 +26,22 @@ What a caller needs to know
   write at all. The file is written whole or not at all, keeps its permissions, and a link
   to it is written through. It refuses a repository address that carries a password or a
   token, a value that is not plain, and a file it could not read, which it leaves as it is.
+- Writers take turns: `update` holds an exclusive lock on the file beside it, its name with
+  `.lock` added, which every studio takes the same way, from reading the file to replacing
+  it. It waits a few seconds for another writer, then refuses. `guard`, when given, is
+  called with what the file holds while the lock is held, and refuses by raising: that is
+  how a form opened before another studio changed a value is kept from writing over it.
 - Nothing secret belongs in the file: tokens and sign-ins stay with gcloud, gh and git.
 - Only the runner uses this file. The helper's own commands never read it.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import secrets
+import time
+from contextlib import contextmanager
 from json import decoder
 from pathlib import Path
 
@@ -49,6 +57,7 @@ SECRET = ('That address carries a password or token. Give the address without it
           'signs in with your own credentials.')
 SPACE = decoder.WHITESPACE
 DECODE = json.JSONDecoder()
+WAIT = 10.0     # seconds a write waits for another studio's to finish
 
 
 def path() -> Path:
@@ -181,6 +190,8 @@ def _edits(text: str, at: int, changes: dict, current: dict) -> list:
             _, key_at, colon, _, value_end = members[-1]
             before = text[:key_at]
             space = text[len(before.rstrip(' \t\r\n')):key_at]
+            # Beside a lone member written against its brace, a comma takes a space.
+            space = space or (' ' if len(members) == 1 else '')
             edits.append((value_end, value_end, ''.join(
                 f',{space}{_dump(key)}{colon}{_dump(value)}' for key, value in added)))
         else:
@@ -196,10 +207,53 @@ def writable() -> None:
         raise WorkspaceError(problem.removesuffix(USING) + REFUSED)
 
 
-def update(changes: dict) -> dict:
+
+
+def lock_path() -> Path:
+    """The file every studio locks while it writes the studios config: beside it."""
+    where = path()
+    return where.with_name(where.name + '.lock')
+
+
+@contextmanager
+def _locked():
+    """Hold the lock every studio takes to write the file, or refuse once it stays taken.
+    The lock goes with the process, so one that ends never leaves it held."""
+    where = lock_path()
+    try:
+        where.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(where, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except OSError as failure:
+        raise WorkspaceError(f'{shown(path())} could not be written '
+                             f'({str(failure.strerror or failure).lower()}), so it was left '
+                             'as it is.')
+    try:
+        deadline = time.monotonic() + WAIT
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise WorkspaceError(f'Another studio is changing {shown(path())}, so '
+                                         'nothing was saved. Try again in a moment.')
+                time.sleep(0.05)
+        yield
+    finally:
+        os.close(handle)
+
+
+def update(changes: dict, guard=None) -> dict:
     """Write these values into the file, merged with what it holds, and return what it then
-    holds. `changes` is shaped as the file is: {"share": ..., "team": {"branch": ...}}."""
+    holds. `changes` is shaped as the file is: {"share": ..., "team": {"branch": ...}}.
+    `guard`, when given, is called with what the file holds before anything is written, and
+    refuses by raising."""
     _check(changes)
+    with _locked():
+        return _update(changes, guard)
+
+
+def _update(changes: dict, guard) -> dict:
     where = path()
     target = where.resolve() if where.is_symlink() else where
     text, problem = _text(target)
@@ -208,6 +262,8 @@ def update(changes: dict) -> dict:
         found, problem = _parsed(where, text)
     if problem:
         raise WorkspaceError(problem.removesuffix(USING) + REFUSED)
+    if guard is not None:
+        guard(found)
     if text is None:
         written = json.dumps({'schema': SCHEMA, **changes}, indent=2, ensure_ascii=False) + '\n'
     else:

@@ -1,9 +1,11 @@
 """The studios config: the one file of the values every *-studio shares, written when one of
 them is saved. Every test points STUDIOS_CONFIG at a file in a temporary folder of its own."""
+import fcntl
 import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -130,6 +132,11 @@ class UpdateTests(StudiosConfigCase):
         before['team']['folder'] = 'shared'
         before['colour'] = 'blue'
         self.assertEqual(json.loads(text), before)
+        # Beside a lone member written against its brace, and among close-packed ones.
+        self.write('{"schema":1,"assistant": {"agent": "claude"}}')
+        studios_config.update({'assistant': {'model': 'opus'}, 'share': 'asked'})
+        self.assertEqual(self.file.read_text(), '{"schema":1,"assistant": {"agent": "claude", '
+                                                '"model": "opus"},"share": "asked"}')
 
     def test_a_new_group_and_an_empty_one_are_filled(self):
         self.write('{"schema": 1, "team": {}}')
@@ -215,8 +222,42 @@ class UpdateTests(StudiosConfigCase):
                 self.assertRaisesRegex(WorkspaceError, 'could not be written'):
             studios_config.update({'share': 'asked'})
         self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS)
+        # Only the lock every studio takes is left beside it.
         self.assertEqual(sorted(path.name for path in self.file.parent.iterdir()),
-                         ['studios-config.json'])
+                         ['studios-config.json', 'studios-config.json.lock'])
+
+    def test_writers_take_turns_through_the_lock_beside_the_file(self):
+        self.write(THEIRS)
+        self.assertEqual(studios_config.lock_path(), self.file.with_name(
+            'studios-config.json.lock'))
+        # Another studio holds the lock: this write waits, then refuses, writing nothing.
+        held = os.open(studios_config.lock_path(), os.O_CREAT | os.O_RDWR)
+        self.addCleanup(os.close, held)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with mock.patch.object(studios_config, 'WAIT', 0.2), \
+                self.assertRaisesRegex(WorkspaceError, 'Another studio is changing'):
+            studios_config.update({'share': 'asked'})
+        self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS)
+        # Once it lets go, the write goes ahead.
+        letting_go = threading.Timer(0.2, fcntl.flock, (held, fcntl.LOCK_UN))
+        letting_go.start()
+        self.addCleanup(letting_go.join)
+        studios_config.update({'share': 'asked'})
+        self.assertEqual(json.loads(self.file.read_text())['share'], 'asked')
+
+    def test_a_guard_sees_the_file_under_the_lock_and_can_refuse(self):
+        self.write(THEIRS)
+        seen = []
+
+        def guard(found):
+            seen.append(found['share'])
+            raise WorkspaceError('Changed elsewhere.')
+
+        with self.assertRaisesRegex(WorkspaceError, 'Changed elsewhere.'):
+            studios_config.update({'share': 'asked'}, guard)
+        self.assertEqual((seen, self.file.read_text(encoding='utf-8')), (['decision'], THEIRS))
+        studios_config.update({'share': 'asked'}, lambda found: None)
+        self.assertEqual(json.loads(self.file.read_text())['share'], 'asked')
 
     def test_its_permissions_are_kept(self):
         self.write(THEIRS)

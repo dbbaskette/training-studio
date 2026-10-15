@@ -333,27 +333,63 @@ def load() -> Settings:
         mine = check(Settings(**known))
     except WorkspaceError:
         mine = Settings()
-    shared = from_shared(studios_config.read()[0])
-    return replace(mine, **{**shared, 'agent': shared['agent'] or Settings().agent})
+    return replace(mine, **shared_now(studios_config.read()[0]))
+
+
+def shared_now(found: dict) -> dict:
+    """The shared settings as Training Studio uses them, from what the studios config holds:
+    those it can use, and the default for the rest."""
+    shared = from_shared(found)
+    return {**shared, 'agent': shared['agent'] or Settings().agent}
+
+
+def seen(found: dict) -> Settings:
+    """The settings a form was shown, from the shared values it was given, in the shape of
+    the studios config. Only the shared ones mean anything."""
+    return replace(Settings(), **shared_now(found if isinstance(found, dict) else {}))
+
+
+def _same(one, other) -> bool:
+    return type(one) is type(other) and one == other
 
 
 def changes(before: Settings, after: Settings) -> dict:
     """The shared settings `after` changes from `before`, shaped as the studios config is."""
     found = {}
     for name, (group, key) in SHARED.items():
-        was, now = getattr(before, name), getattr(after, name)
-        if type(was) is not type(now) or was != now:
-            found.setdefault(group, {})[key] = now
+        if not _same(getattr(before, name), getattr(after, name)):
+            found.setdefault(group, {})[key] = getattr(after, name)
     return found
 
 
-def save(chosen: Settings) -> Settings:
+# Each shared setting as a sentence names it.
+NAMED = {'agent': 'The agent', 'model': 'The model', 'effort': 'The reasoning level',
+         'brand_repository': "The brand skill's repository",
+         'brand_release': "The brand skill's release"}
+STALE = ('{} was changed in another studio while this was open, so nothing was saved. Look '
+         'again, then save.')
+
+
+def save(chosen: Settings, shown: Settings | None = None) -> Settings:
     """Keep these settings: each shared one that changed in the studios config, the rest on
-    this computer. A shared one that cannot be written is refused before anything is kept."""
+    this computer. A shared one that cannot be written is refused before anything is kept.
+
+    `shown` is what the form that sent them was shown, where it says. Then only what the
+    person changed from that is written, so a value another studio changed meanwhile is
+    kept, and a change to a value that another studio changed too is refused."""
     chosen = check(chosen)
-    changed = changes(load(), chosen)
+    before = shown if shown is not None else load()
+    changed = changes(before, chosen)
+
+    def guard(found: dict) -> None:
+        now = shared_now(found)
+        for name, (group, key) in SHARED.items():
+            if key in changed.get(group, {}) and not _same(now[name], getattr(before, name)) \
+                    and not _same(now[name], getattr(chosen, name)):
+                raise WorkspaceError(STALE.format(NAMED[name]))
+
     if changed:
-        studios_config.update(changed)
+        studios_config.update(changed, guard)
     home.write_json(path(), {'schema': SCHEMA, **{
         name: value for name, value in asdict(chosen).items() if name not in SHARED}})
     return chosen
