@@ -299,7 +299,8 @@ const LOOK_SAYS = 'Once a day, Training Studio asks where it and its skills are 
 const BRAND_SAYS = 'Your organisation’s brand skill is released from a repository of its own. '
   + 'Name it here, and Training Studio installs and upgrades the brand skill from it, with '
   + 'your own git access and only after your yes. A brand skill you installed yourself is '
-  + 'still found and used.';
+  + 'still found and used. Every studio on this computer shares the repository and release '
+  + 'named here, so saving changes them for all of them.';
 const BRAND_STEPS = ['The release is fetched with your own access: its ZIP through gh, where '
   + 'gh is signed in, or else the tag with git.',
 'Its own installer is run, and told to leave harness-research alone. Where it would put in '
@@ -356,6 +357,8 @@ const view = {
   // The brand skill's repository as it is typed in Settings, while it is saved, and why
   // saving it was refused.
   brandForm: null, savingBrand: false, brandRefused: '',
+  // Set-up is to start from the team repository every studio now shares.
+  joining: false,
   // The versions Home last told of, when set-up was last read, and the restart in hand.
   versionsTold: undefined, setupAt: 0, restarting: false, comingBack: null,
   fetching: false, fetched: null, notifying: false, unnotified: '',
@@ -1568,7 +1571,7 @@ function drawHome(fresh) {
   const start = view.runner && all.length ? newButton(lead ? '' : 'filled') : null;
   const said = greeting();
   const parts = [['greeting', [said], () => make('p', 'large-title', said)],
-    ['updates', [upkeepOf()], updatesCard]];
+    ['updates', [upkeepOf()], updatesCard], ['studios', studiosMark(), studiosHomeCard]];
   if (!all.length) {
     parts.push(['invite', [Boolean(view.runner)], invitation]);
   } else {
@@ -1749,11 +1752,16 @@ function computerCard() {
   return add(node, summary, items);
 }
 
-// The file every studio shares, said in one sentence where it could not be read. Nothing
-// waits on it: this computer's own settings are used meanwhile.
-function studiosProblemCard() {
-  const problem = view.runner && view.setup ? view.setup.shared_problem : '';
-  return problem ? add(card('Your other studios'), make('p', 'problem', problem)) : null;
+// The file every studio shares, on Status: where it could not be read, built-in defaults are
+// used meanwhile, and nothing waits on it.
+function studiosStatusCard() {
+  const parts = studiosParts(true);
+  return parts.length ? add(card('Your other studios'), ...parts) : null;
+}
+
+function studiosHomeCard() {
+  const parts = studiosParts(false);
+  return parts.length ? add(card('Your other studios'), ...parts) : null;
 }
 
 function drawStatus(fresh) {
@@ -1772,8 +1780,7 @@ function drawStatus(fresh) {
     trainingsTable(),
     ['versions', [upkeepOf(), view.restarting], versionsCard],
     ['skills', [upkeepOf()], skillsCard],
-    ['studios', [Boolean(view.runner), view.setup && view.setup.shared_problem],
-      studiosProblemCard],
+    ['studios', studiosMark(), studiosStatusCard],
     ['computer', [view.computer, Boolean(view.runner)], computerCard]], fresh);
   // With the runner, every run and who runs what is asked for as the screen opens.
   if (fresh && view.runner) {
@@ -3178,17 +3185,18 @@ function leftCard() {
 
 function setupForm() {
   const held = view.setup;
-  const space = held.workspace || {};
+  // Joining the team repository every studio now shares starts from it, not from the
+  // workspace this computer has.
+  const joining = view.joining;
+  view.joining = false;
+  const space = (!joining && held.workspace) || {};
   const limits = held.limits || {};
   const shared = sharedOf();
   const team = shared.team || {};
-  // What every studio shares fills in only what this computer has no answer of its own to:
-  // the agent at the first set-up, and the team repository where none is kept here.
-  const assistant = held.configured ? {} : shared.assistant || {};
-  const agent = assistant.agent || assistant.model || assistant.effort
-    ? { default: assistant.agent || (held.agent || {}).default, model: assistant.model,
-      effort: assistant.effort } : held.agent || {};
-  const local = Boolean(held.workspace) && !space.repository;
+  // The agent is one of the values every studio shares, so the runner reads it from their
+  // file. The team repository fills in only where this computer keeps none.
+  const agent = held.agent || {};
+  const local = !joining && Boolean(held.workspace) && !space.repository;
   const seconds = Number(limits.step_seconds) || 0;
   const share = space.share_when || (shared.share === 'asked' ? SHARE[1] : SHARE[0]);
   return {
@@ -3202,7 +3210,6 @@ function setupForm() {
       name: Boolean(space.name) },
     team: space.repository ? {} : team,
     share: share === SHARE[1] ? 1 : 0,
-    everywhere: false,
     agent: agent.default === 'codex' ? 'codex' : 'claude',
     model: agent.model || '', other: false, effort: agent.effort || '',
     minutes: seconds ? String(Math.round(seconds / 6) / 10) : '', seconds,
@@ -3602,21 +3609,59 @@ function sharedOf() {
   return (view.setup && view.setup.shared) || {};
 }
 
-// The file every studio shares. Set-up is filled in from it where this computer has no
-// answer of its own, and what is changed here is written back to it only when asked.
-function studiosCard(form) {
+// The file every studio shares, said once and plainly: the values in it are theirs, so a
+// change saved here is a change for all of them.
+function studiosCard() {
   const held = view.setup;
   if (!held || !('shared' in held)) return null;
   return add(card('Your other studios'),
-    make('p', '', 'Training Studio, Presentation Studio and Blog Studio can share the team '
-      + 'repository, when to share and the agent through one file, ' + STUDIOS_FILE + '. '
-      + 'What is set here comes first.'),
-    add(make('div', 'chips'), chip('Use for all studios', form.everywhere, (on) => {
-      form.everywhere = on;
-    }, 'for-all-studios')),
-    make('p', 'quiet field-hint', 'Saving then writes to that file only what you changed '
-      + 'here. Nothing else in it is touched, and nothing secret is written.'),
+    make('p', '', 'The team repository, when to share and the agent, with its model and '
+      + 'level, are shared by every studio on this computer, in one file, ' + STUDIOS_FILE
+      + '. Saving here changes them for Presentation Studio and Blog Studio too. Nothing '
+      + 'secret is written there.'),
     held.shared_problem ? make('p', 'problem', held.shared_problem) : null);
+}
+
+// What Home and Status say of the file every studio shares: the team repository it now
+// names, when this computer works in another, and what moving to it left as it was. Status
+// also says when it could not be read. Nothing waits on any of them.
+function studiosParts(problem) {
+  const held = view.runner && view.setup;
+  if (!held) return [];
+  const parts = [];
+  if (problem && held.shared_problem) parts.push(make('p', 'problem', held.shared_problem));
+  const moved = held.team_moved;
+  if (moved && moved.says) {
+    parts.push(make('p', '', moved.says), add(make('div', 'bar'),
+      capsule('Join it', '', joinShared, 'join-shared')));
+  }
+  if (held.shared_notice) {
+    parts.push(make('p', '', held.shared_notice), add(make('div', 'bar'),
+      capsule('Got it', 'quiet', sharedSeen, 'shared-seen')));
+  }
+  return parts;
+}
+
+function studiosMark() {
+  const held = (view.runner && view.setup) || {};
+  return [Boolean(view.runner), held.shared_problem, (held.team_moved || {}).says,
+    held.shared_notice];
+}
+
+// Set-up, filled in with the team repository every studio now shares.
+function joinShared() {
+  view.joining = true;
+  show('setup');
+}
+
+async function sharedSeen() {
+  try {
+    view.setup = await send('shared', { seen: true });
+  } catch (failure) {
+    toast(failure.message);
+    return;
+  }
+  draw(false);
 }
 
 function shareCard(form) {
@@ -3709,7 +3754,7 @@ function paintSetup(fresh) {
       make('p', '', 'An agent is the AI that drafts each stage for you to decide on. It has '
         + 'to be installed on this computer and signed in.'),
       ...agentFields(form, 'setup', 'Use by default')),
-    studiosCard(form), brandSkillCard(form), previewsCard(form), limitsCard(form),
+    studiosCard(), brandSkillCard(form), previewsCard(form), limitsCard(form),
     add(make('div', 'form-foot'), problem, add(make('div', 'bar'), save,
       first ? null : capsule('Cancel', 'quiet', back, 'cancel'))));
   place({ title: first ? 'Set up Training Studio' : 'Set-up', name: 'Set-up',
@@ -3811,7 +3856,6 @@ async function saveSetup(pressed) {
   if (brandSkills().length > 1 && form.brandSkill) body.brand_skill = form.brandSkill;
   // The computer's own notification is switched in Settings, and is saved as it stands.
   if (view.setup.notify) body.notify = Boolean(view.setup.notify.on);
-  if (form.everywhere) body.for_all_studios = true;
   const first = !view.setup.configured;
   try {
     view.setup = await send('setup', body);
@@ -3823,13 +3867,6 @@ async function saveSetup(pressed) {
   form.saving = false;
   frame();
   toast(first ? 'You are set up. Now start your first training.' : 'The set-up is saved.');
-  // Your other studios are told only what this save changed. Where their file could not be
-  // written, the set-up here is saved all the same, and the page says why.
-  const everywhere = view.setup.for_all_studios;
-  if (everywhere) {
-    toast(everywhere.problem || (list(everywhere.written).length
-      ? 'Your other studios use this too now.' : 'Your other studios use this already.'));
-  }
   if (first || view.pushed === 0) show(first ? 'home' : 'settings', null, true);
   else back();
 }

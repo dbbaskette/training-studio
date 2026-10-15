@@ -87,6 +87,7 @@ class WorkspaceCase(unittest.TestCase):
                 f'[user]\n\tname = {person.title()}\n\temail = {person}@example.com\n'
                 f"[init]\n\tdefaultBranch = main\n\ttemplateDir = {self.base / 'no-templates'}\n")
         os.environ.update({'TRAINING_STUDIO_DATA': str(folder / 'data'),
+                           'STUDIOS_CONFIG': str(folder / 'studios-config.json'),
                            'GIT_CONFIG_GLOBAL': str(folder / 'gitconfig'),
                            'GIT_CONFIG_NOSYSTEM': '1'})
 
@@ -172,9 +173,10 @@ class SetUpTests(WorkspaceCase):
     def test_the_workspace_is_remembered_on_this_computer_and_not_in_the_repository(self):
         workspace = self.join(share='asked')
         kept = json.loads(gitstate.settings_path().read_text())
+        # When to share is one of the values every studio shares, so it is not kept here.
         self.assertEqual(kept, {'schema': 1, 'name': 'team-repo', 'repo': str(workspace.repo),
                                 'folder': 'trainings', 'branch': 'main',
-                                'address': str(self.remote), 'share': 'asked'})
+                                'address': str(self.remote)})
         self.assertEqual(gitstate.settings_path().parent, Path(os.environ['TRAINING_STUDIO_DATA']))
         self.assertEqual(gitstate.current(), workspace)
         marker = json.loads((workspace.root / 'hub.json').read_text())
@@ -182,15 +184,56 @@ class SetUpTests(WorkspaceCase):
         self.assertNotIn(str(workspace.repo), json.dumps(marker))
 
     def test_work_is_shared_after_each_decision_unless_the_person_chooses_to_be_asked(self):
+        studios = Path(os.environ['STUDIOS_CONFIG'])
         self.assertEqual(self.join().share, 'decision')
+        self.assertFalse(studios.exists(), 'the default is not written anywhere')
         self.assertEqual(gitstate.share_when('asked').share, 'asked')
         self.assertEqual(gitstate.current().share, 'asked')
+        self.assertEqual(json.loads(studios.read_text()), {'schema': 1, 'share': 'asked'})
         self.assertEqual(self.join().share, 'asked')
         self.assertEqual(self.join(share='decision').share, 'decision')
+        self.assertEqual(json.loads(studios.read_text()), {'schema': 1, 'share': 'decision'})
         with self.assertRaisesRegex(WorkspaceError, 'Sharing is one of: decision, asked'):
             gitstate.share_when('hourly')
         with self.assertRaisesRegex(WorkspaceError, 'Sharing is one of: decision, asked'):
             self.join(share='hourly')
+
+    def test_when_to_share_is_read_from_the_file_every_studio_shares(self):
+        studios = Path(os.environ['STUDIOS_CONFIG'])
+        workspace = self.join()
+        # Changed in another studio, it is what this one does from then on.
+        studios.write_text('{"schema": 1, "share": "asked", "person": {"name": "Alex"}}')
+        self.assertEqual(gitstate.current().share, 'asked')
+        studios.write_text('{"schema": 1, "share": "hourly"}')
+        self.assertEqual(gitstate.current().share, 'decision')
+        # A file that cannot be read is the default, and is never written over.
+        studios.write_text('{"schema": 1, "share": ')
+        self.assertEqual(gitstate.current(), workspace)
+        with self.assertRaisesRegex(WorkspaceError, 'no value every studio shares can be '
+                                                    'saved until it can'):
+            gitstate.share_when('asked')
+        self.assertEqual(studios.read_text(), '{"schema": 1, "share": ')
+        # One that asks only when asked already needs nothing written.
+        studios.write_text('{"schema": 1, "share": "asked"}')
+        before = studios.stat().st_mtime_ns
+        gitstate.share_when('asked')
+        self.assertEqual(studios.stat().st_mtime_ns, before)
+
+    def test_a_folder_with_no_remote_never_says_when_to_share(self):
+        gitstate.local(self.base / 'mine')
+        self.assertFalse(Path(os.environ['STUDIOS_CONFIG']).exists())
+        with self.assertRaises(TypeError):
+            gitstate.local(self.base / 'mine', share='asked')
+
+    def test_when_to_share_kept_here_before_it_was_shared_is_found_and_forgotten(self):
+        workspace = self.join()
+        kept = json.loads(gitstate.settings_path().read_text())
+        gitstate.settings_path().write_text(json.dumps({**kept, 'share': 'asked'}))
+        self.assertEqual(gitstate.own_share(), 'asked')
+        self.assertEqual(gitstate.current(), workspace, 'it is not what is used')
+        gitstate.forget_own_share()
+        self.assertIsNone(gitstate.own_share())
+        self.assertEqual(json.loads(gitstate.settings_path().read_text()), kept)
 
     def test_there_is_no_workspace_until_one_is_set_up(self):
         self.assertIsNone(gitstate.current())

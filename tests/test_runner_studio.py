@@ -134,6 +134,15 @@ class ServeTests(StudioCase):
         self.assertEqual(self.opened, ['http://127.0.0.1:9000/#token=the-key'])
         self.assertEqual(self.serve(False, opens=False)['opened'], False)
 
+    def test_on_start_the_shared_values_kept_here_move_into_the_studios_config(self):
+        studios = Path(os.environ['STUDIOS_CONFIG'])
+        settings.path().write_text('{"schema": 1, "agent": "codex", "parallel": 3}')
+        self.serve(True)
+        self.assertEqual(json.loads(studios.read_text())['assistant'], {'agent': 'codex'})
+        self.assertEqual(json.loads(settings.path().read_text()),
+                         {'schema': 1, 'parallel': 3})
+        self.assertEqual((settings.load().agent, settings.load().parallel), ('codex', 3))
+
     def test_once_it_answers_the_skills_are_looked_after_in_the_background(self):
         seen = []
 
@@ -340,7 +349,8 @@ class StatusTests(StudioCase):
         waiting = self.start(title='Health checks')
         found = self.status()
         self.assertEqual(sorted(found), ['agent', 'brand', 'configured', 'limits', 'notify',
-                                         'previews', 'shared', 'shared_problem', 'trainings',
+                                         'previews', 'shared', 'shared_notice',
+                                         'shared_problem', 'team_moved', 'trainings',
                                          'updates', 'upkeep', 'version', 'workspace'])
         # What was found of the skills, looked at as they are: nothing is put back, and
         # nothing is asked online.

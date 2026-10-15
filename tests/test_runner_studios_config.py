@@ -1,5 +1,5 @@
-"""The studios config: one file every *-studio reads for shared defaults, written only with
-consent. Every test points STUDIOS_CONFIG at a file in a temporary folder of its own."""
+"""The studios config: the one file of the values every *-studio shares, written when one of
+them is saved. Every test points STUDIOS_CONFIG at a file in a temporary folder of its own."""
 import json
 import os
 import stat
@@ -80,6 +80,9 @@ class ReadTests(StudiosConfigCase):
                 self.assertEqual(found, {})
                 self.assertIn(why, problem)
                 self.assertTrue(problem.startswith(str(self.file) + ' could not be read'))
+                self.assertTrue(problem.endswith(
+                    ', so Training Studio uses its built-in defaults for the values every '
+                    'studio shares, and saves none of them, until it can be read.'))
                 self.assertEqual(problem.count('. '), 0, 'one sentence')
                 self.assertTrue(problem.endswith('.'))
 
@@ -172,16 +175,32 @@ class UpdateTests(StudiosConfigCase):
         self.write(THEIRS)
         for address in ('https://dan:hunter2@github.com/acme/team.git',
                         'https://ghp_abcdefghijklmnopqrstuvwxyz@github.com/acme/team.git'):
-            with self.subTest(address=address), \
-                    self.assertRaisesRegex(WorkspaceError, 'password or token'):
-                studios_config.update({'team': {'repository': address}})
+            for group in ('team', 'brand'):
+                with self.subTest(address=address, group=group), \
+                        self.assertRaisesRegex(WorkspaceError, 'password or token'):
+                    studios_config.update({group: {'repository': address}})
         self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS)
+
+    def test_the_brand_skills_repository_and_release_are_written_beside_the_brand(self):
+        self.write(THEIRS)
+        studios_config.update({'brand': {'repository': 'git@github.com:acme/brand.git',
+                                          'release': 'v1.4.0'}})
+        self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS.replace(
+            '"variant": "light" }', '"variant": "light", "repository": '
+            '"git@github.com:acme/brand.git", "release": "v1.4.0" }'))
 
     def test_a_file_that_cannot_be_read_is_never_written_over(self):
         self.write('{"schema": 1, "team": ')
-        with self.assertRaisesRegex(WorkspaceError, 'could not be read'):
-            studios_config.update({'share': 'asked'})
+        refused = (f'{self.file} could not be read (it is not valid JSON), so no value every '
+                   'studio shares can be saved until it can, and the file was left as it is.')
+        for attempt in (lambda: studios_config.update({'share': 'asked'}),
+                        studios_config.writable):
+            with self.assertRaises(WorkspaceError) as caught:
+                attempt()
+            self.assertEqual(str(caught.exception), refused)
         self.assertEqual(self.file.read_text(), '{"schema": 1, "team": ')
+        self.file.write_text('{"schema": 1}')
+        self.assertIsNone(studios_config.writable())
 
     def test_only_plain_values_are_written(self):
         for changes in ({'share': ['asked']}, {'team': {'branch': {'name': 'x'}}},

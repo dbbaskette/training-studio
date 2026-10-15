@@ -160,7 +160,7 @@ runner/
   studio.py                 the command line: serve and status
   page.py                   the page's server, with the runner behind it
   setup.py, settings.py     this computer's workspace, agent and limits
-  studios_config.py         the file of defaults every *-studio shares, edited in place
+  studios_config.py         the one file of the values every *-studio shares, edited in place
   engine.py                 walks each training, hands out jobs, stops at gates
   pipeline.py               the pipelines as data, and where a training is in them
   agents.py                 starts Claude Code or Codex as a confined worker for one job
@@ -243,4 +243,4 @@ All five phases are built, each from its own specification:
 The runner came after them, in milestones from [its design](superpowers/specs/2026-10-13-studio-runner-design.md): [approval on the page](superpowers/specs/2026-10-13-milestone-1-page-approval.md), [the runner's core](superpowers/specs/2026-10-13-milestone-2-runner-core.md), [the rest of a training](superpowers/specs/2026-10-13-milestone-3-rest-of-training.md), [the slide deck](superpowers/specs/2026-10-13-milestone-4-slides.md) and [the team](superpowers/specs/2026-10-13-milestone-5-team.md).
 
 The [shared studios convention](shared-studios.md) records the common repository
-layout and optional defaults schema used when integrating the studios.
+layout and the file of shared values every studio reads and writes.

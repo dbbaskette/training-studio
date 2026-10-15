@@ -76,6 +76,7 @@ A brand skill you install yourself is found in the usual skill folders and used,
 - "Check and save" reads the repository's release tags with `git ls-remote`, as you: your credential helper or your ssh key, with no terminal and no question. It keeps nothing until that works.
 - When it cannot, it says why in a sentence: git could not sign in without asking, the repository was not found (a private one says that too to someone who may not read it), it could not be reached, it has no releases, or it has no such release.
 - Clearing the address forgets it. A brand skill that is installed stays.
+- The repository and release are shared by every studio on this computer, in [the shared studios config](#shared-studios-config). Saving them here changes them for Presentation Studio and Blog Studio too, and a change made there is the one used here.
 - Releases are ordered as the brand skill's own updater orders them: a version whose first number is a year, such as `2026.6.0`, is from an older way of numbering and comes before `0.13.1`.
 
 **Its row.** The Versions table has a row for the brand skill: the version the one in use says it is, the newest release (or the one chosen), and the commit of that release.
@@ -111,27 +112,32 @@ Where this computer can make a deck, set-up asks two more things.
 
 Nothing is changed until you save. You can change any of it later in Settings.
 
-If you use Presentation Studio or Blog Studio too, set-up starts from what your studios share: see [the shared studios config](#shared-studios-config).
+The team repository, when to share and the agent, with its model and level, are shared by every studio on this computer: see [the shared studios config](#shared-studios-config).
 
 ## Shared studios config
 
-Training Studio, Blog Studio and Presentation Studio can share one optional file of defaults, `~/.config/studios-config.json` (`STUDIOS_CONFIG` names another place). [The shared studios convention](shared-studios.md) describes the file, its rules and the shared team repository, identically for every studio. A missing file changes nothing, and a file that cannot be read never stops you: set-up and the Status screen say that Training Studio is using its own settings.
+Training Studio, Blog Studio and Presentation Studio keep the values they share in one file, `~/.config/studios-config.json` (`STUDIOS_CONFIG` names another place), and nowhere else. [The shared studios convention](shared-studios.md) describes the file and its rules, identically for every studio. Change one of these values in any studio and all three use it from their next read. A missing file means the built-in defaults. A file that cannot be read never stops you: set-up and the Status screen say in one sentence that Training Studio is using its built-in defaults, and a save that would change a shared value is refused until the file can be read. The file is never written over.
 
 ### In Training Studio
 
 Only the page's runner reads the file. The helper's own commands, and a training made in a conversation, never do.
 
-| Key | What it fills in | Written back |
+| Key | In Training Studio | Saved from |
 | --- | --- | --- |
-| `team.repository` | Set-up's "A team repository", where this computer keeps no repository of its own. | Yes |
-| `team.branch` | The branch, for a new workspace in that repository. A workspace your team has set up already keeps the branch its `hub.json` names. Not used for a folder on this computer. | Yes |
-| `person.name` | Nothing: Training Studio asks nobody's name. Your work carries git's own name for you, which set-up checks and never changes. | No |
-| `assistant.agent`, `.model`, `.effort` | The agent, its model and its reasoning level, at the first set-up. A value set-up would refuse is ignored. A model the agent does not list shows as "Another model…", and a level the model does not take is left to the agent. | Yes |
-| `brand.brand`, `.variant` | A new training's deck brand and variant, when the brand skill on this computer has them. | No |
-| `output` | `"google"` makes a new training's deck Google Slides, and `"pptx"` PowerPoint. Copies of the guide and brief are not chosen from it. Any other value is ignored. | No |
-| `share` | `"decision"` is "After each decision", `"asked"` is "Only when I ask". Any other value is ignored. | Yes |
+| `team.repository` | The team repository. Set-up starts from it where this computer has joined none, and Home and Status say when it is not the one this computer's workspace is a copy of. | Set-up, when it joins another team repository |
+| `team.branch` | The branch, for a new workspace in that repository. A workspace your team has set up already keeps the branch its `hub.json` names. Not used for a folder on this computer. | Set-up, with a new team repository, where the file names no branch for it |
+| `person.name` | Nothing: Training Studio asks nobody's name. Your work carries git's own name for you, which set-up checks and never changes. The value is kept as it is. | Nowhere |
+| `assistant.agent`, `.model`, `.effort` | The default agent, its model and its reasoning level. A value Training Studio would refuse is its built-in default: Claude Code, with the model and level left to it. A model the agent does not list shows as "Another model…". A level the model does not take is left to the agent. | Set-up |
+| `brand.repository`, `.release` | Where [the brand skill](#the-brand-skill) is installed and upgraded from, checked as Settings checks it. An address that carries a password or token is refused. | Settings, "Brand skill" |
+| `brand.brand`, `.variant` | A new training's deck brand and variant, when the brand skill on this computer has them. | Nowhere: Training Studio has no field for them |
+| `output` | `"google"` makes a new training's deck Google Slides, and `"pptx"` PowerPoint. Copies of the guide and brief are not chosen from it. Any other value is ignored. | Nowhere: Training Studio has no field for it |
+| `share` | `"decision"` is "After each decision", `"asked"` is "Only when I ask". Any other value is "After each decision". It is used only for a team repository. | Set-up, for a team repository |
 
-Set-up, the first time or from "Change the set-up" in Settings, has "Use for all studios" beside the shared values. With it on, saving writes to the file each shared value you changed in that save, where the file says otherwise, and nothing else. A model or level left to the agent is written as `null`. A folder on this computer is not a team repository, so it writes no `team` or `share`. Your set-up is saved first: if the file cannot be written, the page says why and your set-up stands. Training Studio has no default brand or output of its own, so it never writes those.
+Saving writes only the values you changed, and only where the file says otherwise. Everything else in the file, including what other studios keep there, stays as it was, byte for byte. A folder on this computer is not a team repository, so it never writes `team` or `share`. The limits, how slide previews are made, which brand skill to use when there are several, notifications and looking for updates belong to Training Studio on this computer alone, and stay in its own settings.
+
+**When the team repository changes elsewhere.** The workspace you joined is a copy of a repository, kept in Training Studio's own data folder. If another studio changes `team.repository`, Training Studio carries on in the copy it has and never moves by itself. Home and Status say that your studios now share another repository, with "Join it", which opens set-up filled in with it. Joining moves this computer to the new workspace as any change of set-up does: not while a training is working. Only the repository is compared, so a folder your team has already set up keeps the branch its `hub.json` names.
+
+**From an earlier version.** Earlier versions kept the agent, its model and level, the brand skill's repository and release, and when to share on this computer. When the runner starts, it writes each of them into the shared file where the file has none, with the team repository and branch this computer joined, and then removes them from its own settings. A value the file already has is left as it is, and Home and Status say once which ones those were, until you choose "Got it". While the file cannot be read nothing moves, and it is tried again at the next start.
 
 ## Start a training
 

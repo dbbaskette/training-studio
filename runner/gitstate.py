@@ -57,9 +57,12 @@ What a caller needs to know
   so nothing is lost. `undo` takes back the last commit when it was never shared and
   touched one path only. Neither moves anything that was shared, and both are for a clone
   the runner keeps.
-- What belongs to this computer is kept in the per-user data folder, not in the
-  repository: which clone is the workspace, and when to share. Sharing is `decision`,
-  after each decision a person makes, unless they choose `asked`, only when they ask.
+- Which clone is the workspace belongs to this computer, and is kept in the per-user data
+  folder, not in the repository. When to share is one of the values every studio shares,
+  kept only in the studios config as `share` (see `studios_config`): `decision`, after each
+  decision a person makes, unless they choose `asked`, only when they ask. A file that
+  cannot be read is `decision`. `share_when`, and a `join` given `share`, write it there,
+  and refuse while the file cannot be read; a folder with no remote never writes it.
 """
 from __future__ import annotations
 
@@ -68,7 +71,7 @@ import secrets
 import shutil
 import threading
 from contextlib import nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import runner  # noqa: F401  puts the core on the import path
@@ -77,6 +80,8 @@ import hub
 import sync_guidance
 import workspace
 from workspace import WorkspaceError
+
+from runner import studios_config
 
 SCHEMA = 1
 TOOL = 'training-studio'
@@ -135,36 +140,66 @@ def clones() -> Path:
 
 
 def remember(workspace: Workspace) -> Workspace:
-    """Make this the computer's workspace."""
+    """Make this the computer's workspace. When to share is not kept here."""
     home.write_json(settings_path(), {
         'schema': SCHEMA, 'name': workspace.name, 'repo': str(workspace.repo),
         'folder': workspace.folder, 'branch': workspace.branch,
-        'address': workspace.address, 'share': workspace.share})
+        'address': workspace.address})
     return workspace
+
+
+def _record() -> dict | None:
+    kept = home.read_json(settings_path(), None)
+    return kept if isinstance(kept, dict) and kept.get('schema') == SCHEMA else None
+
+
+def shared_share() -> str:
+    """When to share, as the studios config says: `decision` unless it says `asked`."""
+    said = studios_config.read()[0].get('share')
+    return said if said in SHARE else SHARE[0]
 
 
 def current() -> Workspace | None:
     """The workspace remembered on this computer, or None when there is none to use."""
-    kept = home.read_json(settings_path(), None)
-    if not isinstance(kept, dict) or kept.get('schema') != SCHEMA:
+    kept = _record()
+    if kept is None:
         return None
     try:
         found = Workspace(str(kept['name']), Path(kept['repo']), str(kept['folder']),
-                          str(kept['branch']), kept.get('address'),
-                          kept['share'] if kept.get('share') in SHARE else SHARE[0])
+                          str(kept['branch']), kept.get('address'), shared_share())
     except (KeyError, TypeError):
         return None
     return found if (found.root / MARKER).is_file() else None
+
+
+def own_share() -> str | None:
+    """When to share, as this computer's record kept it before it was shared, or None."""
+    kept = _record() or {}
+    return kept['share'] if kept.get('share') in SHARE else None
+
+
+def forget_own_share() -> None:
+    """Take when to share out of this computer's record, from before it was shared."""
+    kept = _record()
+    if kept is not None and 'share' in kept:
+        home.write_json(settings_path(), {name: value for name, value in kept.items()
+                                          if name != 'share'})
+
+
+def _keep_share(when: str) -> None:
+    """Write when to share into the studios config, where it says otherwise."""
+    if shared_share() != when:
+        studios_config.update({'share': when})
 
 
 def share_when(when: str) -> Workspace:
     """Choose when work is shared: after each decision, or only when asked."""
     if when not in SHARE:
         raise WorkspaceError('Sharing is one of: ' + ', '.join(SHARE) + '.')
-    workspace = current()
-    if workspace is None:
+    if current() is None:
         raise WorkspaceError('No workspace is set up on this computer yet.')
-    return remember(replace(workspace, share=when))
+    _keep_share(when)
+    return current()
 
 
 # --- git ---------------------------------------------------------------------------------
@@ -328,10 +363,10 @@ def set_up(repo: Path, label: str, address: str | None, folder: str | None,
     written = lay_out(repo, where, described)
     if written:
         _commit(repo, f'Set up the Training Studio workspace in {where}/', written)
-    before = current()
-    kept = before.share if before and before.repo == repo else SHARE[0]
+    if share is not None and address is not None:
+        _keep_share(share)
     return remember(Workspace(str((found or described)['name']), repo, where,
-                              on_branch(repo), address, share or kept))
+                              on_branch(repo), address, shared_share()))
 
 
 def join(address: str, folder: str | None = None, branch: str | None = None,
@@ -373,9 +408,9 @@ def _clone(address: str, repo: Path) -> None:
 
 
 def local(path: Path, folder: str | None = None, branch: str | None = None,
-          name: str | None = None, share: str | None = None) -> Workspace:
-    """Set the workspace up in a folder on this computer that has no remote. The folder is
-    made a repository if it is not one."""
+          name: str | None = None) -> Workspace:
+    """Set the workspace up in a folder on this computer that has no remote, and so nowhere
+    to share to. The folder is made a repository if it is not one."""
     need_git()
     repo = Path(path).expanduser().resolve()
     skill = workspace.SKILL_DIR
@@ -393,7 +428,7 @@ def local(path: Path, folder: str | None = None, branch: str | None = None,
             "workspace up from the repository's address instead: the runner keeps a copy of "
             'its own, so it never changes yours.')
     label = check_name(name or hub.name_from(repo.name), 'A workspace name')
-    return set_up(repo, label, None, folder, branch, share)
+    return set_up(repo, label, None, folder, branch, None)
 
 
 # --- committing --------------------------------------------------------------------------

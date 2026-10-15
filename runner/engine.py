@@ -898,7 +898,7 @@ class Engine:
         space, chosen = self.space(), settings.load()
         gitstate.identity(space.repo)
         # A form that names its agent says its model and level too, None being the
-        # agent's own choice. One that names none takes this computer's settings.
+        # agent's own choice. One that names none takes the default ones.
         named = form['agent'] is not None
         agent = form['agent'] or chosen.agent
         model = form['model'] if named else form['model'] or chosen.model
