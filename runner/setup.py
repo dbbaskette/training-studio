@@ -48,12 +48,15 @@ What a caller needs to know
   the team repository when set-up joins another one, with its branch where the file names
   no branch for that repository. A folder on this computer writes no `team` and no `share`.
   While the file cannot be read, a save that would change one of them is refused before
-  anything changes, and one that changes none goes through.
+  anything changes, and one that changes none goes through. Every write that depends on
+  what the file holds is worked out from it under the lock every studio takes to write it,
+  so a value another studio writes meanwhile is kept, or the save is refused.
 - `shared_seen`, sent with the set-up or with the brand skill's repository, is the `shared`
   the page's form was shown. Then only what the person changed from it is written: a value
   another studio changed while the form was open is kept, and a change to a value another
-  studio changed too is refused, in a sentence, before anything changes. Without it, a
-  value is written where it differs from what the file holds now.
+  studio changed too is refused, in a sentence, before anything changes: before the
+  workspace is joined or moved, and before anything is written. Without it, a value is
+  written where it differs from what the file holds now.
 - `shared` is what the file holds that Training Studio can use, in the file's own shape:
   `team` {repository, branch}, `assistant` {agent, model, effort}, `brand` {repository,
   release, brand, variant}, `output` and `share`. A value that would be refused here is
@@ -71,10 +74,13 @@ What a caller needs to know
   release in runner.json; when to share, and the team repository and branch it joined, in
   the workspace record) into the file where it has none, and takes them out of runner.json
   and the record. The record keeps its repository and branch, which say what the clone is.
+  When to share moves from a record of a team repository even where its clone or marker is
+  gone, and leaves the record only once the file holds it.
   A value the file holds already stays as it is. A model and a level go only beside the
   same agent, a release only beside the same repository, and a branch only beside the same
   team repository. Where a value differed, `shared_notice` is a sentence that says so, until
-  `notice_read()`. While the file cannot be read nothing is moved.
+  `notice_read()`. While the file cannot be read nothing is moved. What moves is worked out
+  again under the file's lock, so a value another studio writes meanwhile stays.
 """
 from __future__ import annotations
 
@@ -259,13 +265,40 @@ def migrate() -> list[str]:
     found, problem = studios_config.read()
     if problem:
         return []
-    kept = settings.own()
+    kept, share, record = settings.own(), gitstate.own_share(), gitstate.current()
+    moving = {}
+
+    def wanted(held: dict) -> dict:
+        moving['changes'], moving['differed'] = _moving(held, kept, share, record)
+        return moving['changes']
+
+    # Worked out again under the lock, from what the file holds then.
+    if wanted(found):
+        try:
+            studios_config.update(wanted)
+        except WorkspaceError:
+            return []
+    settings.forget_own()
+    gitstate.forget_own_share()
+    differed = moving['differed']
+    if differed:
+        home.write_json(notice_path(), {'says': (
+            f'Training Studio now keeps the values every studio shares only in '
+            f'{studios_config.shown(studios_config.path())}, which said otherwise for '
+            f'{_words(differed)}, so what this computer had chosen for those is no longer '
+            'used.')})
+    return [f'{key}.{name}' if isinstance(value, dict) else key
+            for key, value in moving['changes'].items()
+            for name in (value if isinstance(value, dict) else [None])]
+
+
+def _moving(found: dict, kept: dict, share: str | None, record) -> tuple[dict, list]:
+    """What moves into the studios config while it holds `found`, and what it said otherwise
+    for, as the notice names them."""
     mine = [(*settings.SHARED[name], name, value) for name, value in kept.items()]
-    record = gitstate.current()
+    if share:
+        mine.append((None, 'share', 'share', share))
     if record is not None and record.address:
-        share = gitstate.own_share()
-        if share:
-            mine.append((None, 'share', 'share', share))
         team = _group(found, 'team')
         mine.append(('team', 'repository', None, record.address))
         if team.get('repository') is None or same_address(team['repository'], record.address):
@@ -289,22 +322,7 @@ def migrate() -> list[str]:
             (changes.setdefault(group, {}) if group else changes)[key] = value
         elif not _same(held, value) and name is not None:
             differed.append(LABELS[name])
-    if changes:
-        try:
-            studios_config.update(changes)
-        except WorkspaceError:
-            return []
-    settings.forget_own()
-    gitstate.forget_own_share()
-    if differed:
-        home.write_json(notice_path(), {'says': (
-            f'Training Studio now keeps the values every studio shares only in '
-            f'{studios_config.shown(studios_config.path())}, which said otherwise for '
-            f'{_words(differed)}, so what this computer had chosen for those is no longer '
-            'used.')})
-    return [f'{key}.{name}' if isinstance(value, dict) else key
-            for key, value in changes.items()
-            for name in (value if isinstance(value, dict) else [None])]
+    return changes, differed
 
 
 # --- what was sent -----------------------------------------------------------------------
@@ -560,14 +578,27 @@ def stale(what: str) -> WorkspaceError:
     return WorkspaceError(settings.STALE.format(what))
 
 
-def _team(joined: gitstate.Workspace) -> None:
+def _address(found: dict) -> str | None:
+    """The team repository the studios config names, as it is written there."""
+    named = _group(found, 'team').get('repository')
+    return named if isinstance(named, str) else None
+
+
+def _team(joined: gitstate.Workspace, was: str | None) -> None:
     """Make the team repository just joined the one every studio shares, with its branch
-    where the file names no branch for that repository."""
-    held = _group(studios_config.read()[0], 'team')
-    team = {'repository': joined.address}
-    if held.get('branch') is None or not same_address(held.get('repository'), joined.address):
-        team['branch'] = joined.branch
-    studios_config.update({'team': team})
+    where the file names no branch for that repository. The file is read under its lock: a
+    team repository another studio wrote there since set-up read `was` is kept, and
+    `team_moved` says so, and a branch it names for this one stays."""
+    def wanted(found: dict) -> dict:
+        held, named = _group(found, 'team'), _address(found)
+        if named is not None and named != was and not same_address(named, was) \
+                and not same_address(named, joined.address):
+            return {}
+        team = {'repository': joined.address}
+        if held.get('branch') is None or not same_address(named, joined.address):
+            team['branch'] = joined.branch
+        return {'team': team}
+    studios_config.update(wanted)
 
 
 def apply(engine, wanted: dict) -> dict:
@@ -589,6 +620,7 @@ def apply(engine, wanted: dict) -> dict:
     # change to a value another studio changed meanwhile is refused.
     told = wanted.get('seen')
     shown = None if told is None else settings.seen(told)
+    holds = studios_config.read()[0]
     now = shared()[0]
     team = bool(repository) and (before is None or not same_address(before.address,
                                                                      repository))
@@ -604,6 +636,9 @@ def apply(engine, wanted: dict) -> dict:
         share = None
     elif gitstate.shared_share() not in (was, share):
         raise stale('When to share')
+    # A change to a value another studio changed too is refused here, before the workspace
+    # is joined or moved and before anything is written.
+    settings.writes(wanted['settings'], shown or settings.load(), holds)
     if team or share or settings.changes(shown or settings.load(), wanted['settings']):
         studios_config.writable()
     if not repository and not path:
@@ -624,7 +659,7 @@ def apply(engine, wanted: dict) -> dict:
             else:
                 gitstate.local(path, wanted['folder'], wanted['branch'], wanted['name'])
         if team:
-            _team(gitstate.current())
+            _team(gitstate.current(), _address(holds))
     settings.save(wanted['settings'], shown)
     engine.saved()
     engine.resume()

@@ -3864,8 +3864,19 @@ async function saveSetup(pressed) {
   try {
     view.setup = await send('setup', body);
   } catch (failure) {
-    done(failure.message + ' Nothing was saved, and your answers are still here: change what '
-      + 'it names and save again.');
+    const said = failure.message + ' Nothing was saved, and your answers are still here: '
+      + 'change what it names and save again.';
+    const anew = await lookAgain(form);
+    if (anew === null) {
+      done(said);
+      return;
+    }
+    // What another studio changed is shown as it is now, so the form is drawn again.
+    form.saving = false;
+    paintSetup(false);
+    readModels(form.agent);
+    say(byId('setup-problem'), said + anew);
+    focusKey('save');
     return;
   }
   form.saving = false;
@@ -3873,6 +3884,40 @@ async function saveSetup(pressed) {
   toast(first ? 'You are set up. Now start your first training.' : 'The set-up is saved.');
   if (first || view.pushed === 0) show(first ? 'home' : 'settings', null, true);
   else back();
+}
+
+// After a refusal, set-up reads again what every studio shares, as the brand skill's form
+// does. Each value another studio changed while the form was open is shown as it is now, and
+// the form counts as having been shown it, so saving again is the person's choice over it.
+// Answers what to add to the refusal, or null where nothing was changed elsewhere.
+async function lookAgain(form) {
+  if (!form.seen) return null;
+  let found;
+  try {
+    found = await ask('setup');
+  } catch (failure) {
+    return null;
+  }
+  tookSetup(found);
+  if (view.form !== form || !('shared' in found)) return null;
+  const was = form.seen;
+  const now = sharedOf();
+  const same = (one, other) => JSON.stringify(one || {}) === JSON.stringify(other || {});
+  if (same(was, now)) return null;
+  form.seen = now;
+  if (!same(was.assistant, now.assistant)) {
+    const agent = found.agent || {};
+    form.agent = agent.default === 'codex' ? 'codex' : 'claude';
+    form.model = agent.model || '';
+    form.effort = agent.effort || '';
+    form.other = false;
+  }
+  if ((was.share || 'decision') !== (now.share || 'decision')) {
+    form.share = now.share === 'asked' ? 1 : 0;
+  }
+  const team = (now.team || {}).repository;
+  return team && team !== (was.team || {}).repository
+    ? ' The team repository every studio shares is now ' + team + '.' : '';
 }
 
 // --- a new training ------------------------------------------------------------------

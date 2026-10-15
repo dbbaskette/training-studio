@@ -259,6 +259,29 @@ class UpdateTests(StudiosConfigCase):
         studios_config.update({'share': 'asked'}, lambda found: None)
         self.assertEqual(json.loads(self.file.read_text())['share'], 'asked')
 
+    def test_what_to_write_can_be_worked_out_from_the_file_under_the_lock(self):
+        seen = []
+
+        def wanted(found):
+            seen.append(found.get('share'))
+            return {} if found.get('share') == 'asked' else {'share': 'asked'}
+
+        # With nothing to write, there is no write at all, and no file is made.
+        self.assertEqual(studios_config.update(lambda found: {}), {})
+        self.assertFalse(self.file.exists())
+        self.write(THEIRS)
+        self.assertEqual(studios_config.update(wanted)['share'], 'asked')
+        before = self.file.read_text(encoding='utf-8')
+        self.assertEqual(before, THEIRS.replace('"share": "decision"', '"share": "asked"'))
+        studios_config.update(wanted)
+        self.assertEqual(self.file.read_text(encoding='utf-8'), before)
+        self.assertEqual(seen, ['decision', 'asked'])
+        # What it answers is checked as any change is.
+        with self.assertRaisesRegex(WorkspaceError, 'password or token'):
+            studios_config.update(lambda found: {
+                'team': {'repository': 'https://dan:hunter2@github.com/acme/team.git'}})
+        self.assertEqual(self.file.read_text(encoding='utf-8'), before)
+
     def test_its_permissions_are_kept(self):
         self.write(THEIRS)
         self.file.chmod(0o600)

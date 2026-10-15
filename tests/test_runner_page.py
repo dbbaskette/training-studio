@@ -54,6 +54,23 @@ STEP_KEYS = ['attempts', 'dollars', 'error', 'id', 'kind', 'label', 'seconds', '
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+@contextlib.contextmanager
+def meanwhile(write):
+    """Another studio writes the studios config once, just before this one takes the lock:
+    after whatever this one looked at outside the lock, and before it writes."""
+    taking, waiting = studios_config._locked, [write]
+
+    @contextlib.contextmanager
+    def locked():
+        while waiting:
+            waiting.pop()()
+        with taking():
+            yield
+
+    with mock.patch.object(studios_config, '_locked', locked):
+        yield
+
+
 def never(*args, **kwargs):
     raise AssertionError('A test must never look at the real computer.')
 
@@ -706,6 +723,65 @@ class SharedTests(FirstTimeCase):
         self.assertEqual(self.post('setup', {'shared_seen': ['x']}, 400)['error'],
                          'Give shared_seen as the shared values the page was shown.')
 
+    def test_a_refused_set_up_joins_nothing_and_saves_once_it_has_looked_again(self):
+        remote, other = self.bare(), self.bare('other-repo.git')
+        self.post('setup', {'repository': str(remote), 'limits': {'parallel': 3}})
+        shown = self.get('setup')['shared']
+        record = gitstate.settings_path().read_text()
+        clones = sorted(path.name for path in gitstate.clones().iterdir())
+        # Meanwhile, another studio changes the model.
+        text = json.dumps({'schema': 1, 'team': {'repository': str(remote), 'branch': 'main'},
+                           'assistant': {'agent': 'claude', 'model': 'sonnet'}})
+        self.file.write_text(text)
+        # Here, another team repository is joined, with another model.
+        sent = {'repository': str(other), 'share_when': 'when-asked', 'agent': 'claude',
+                'model': 'opus', 'effort': None, 'limits': {'parallel': 5},
+                'shared_seen': shown}
+        refused = self.post('setup', sent, 409)
+        # Nothing changed: not the workspace, its clones, the file or this computer's limits.
+        self.assertEqual((gitstate.settings_path().read_text(),
+                          sorted(path.name for path in gitstate.clones().iterdir()),
+                          self.file.read_text(), settings.load().parallel),
+                         (record, clones, text, 3))
+        self.assertEqual(refused['error'], 'The model was changed in another studio while '
+                         'this was open, so nothing was saved. Look again, then save.')
+        # Looked at again, the same choice is the person's, over what the other studio chose.
+        again = self.get('setup')['shared']
+        self.assertEqual(again['assistant'], {'agent': 'claude', 'model': 'sonnet'})
+        made = self.post('setup', {**sent, 'shared_seen': again})
+        self.assertEqual((made['workspace']['repository'], made['workspace']['share_when'],
+                          made['agent'], made['limits']['parallel']),
+                         (str(other), 'when-asked',
+                          {'default': 'claude', 'model': 'opus', 'effort': None}, 5))
+        self.assertEqual(json.loads(self.file.read_text()), {
+            'schema': 1, 'team': {'repository': str(other), 'branch': 'main'},
+            'assistant': {'agent': 'claude', 'model': 'opus'}, 'share': 'asked'})
+
+    def test_a_team_branch_another_studio_writes_while_joining_is_kept(self):
+        remote = self.bare()
+        theirs = {'schema': 1, 'team': {'repository': str(remote), 'branch': 'trunk'}}
+        with meanwhile(lambda: self.file.write_text(json.dumps(theirs))):
+            made = self.post('setup', {'repository': str(remote)})
+        self.assertEqual(json.loads(self.file.read_text()), theirs)
+        self.assertEqual((made['workspace']['branch'], made['team_moved']), ('main', None))
+
+    def test_a_team_repository_another_studio_writes_while_joining_is_kept_and_said(self):
+        remote, other = self.bare(), self.bare('other-repo.git')
+        theirs = {'schema': 1, 'team': {'repository': str(other), 'branch': 'trunk'}}
+        with meanwhile(lambda: self.file.write_text(json.dumps(theirs))):
+            made = self.post('setup', {'repository': str(remote)})
+        self.assertEqual(json.loads(self.file.read_text()), theirs)
+        self.assertEqual((made['workspace']['repository'], made['team_moved']['repository']),
+                         (str(remote), str(other)))
+
+    def test_when_to_share_is_compared_with_the_file_as_it_is_written(self):
+        remote = self.bare()
+        self.post('setup', {'repository': str(remote)})
+        theirs = json.dumps({'schema': 1, 'person': {'name': 'Alex'}, 'share': 'asked'})
+        with meanwhile(lambda: self.file.write_text(theirs)):
+            self.post('setup', {'share_when': 'when-asked'})
+        self.assertEqual(self.file.read_text(), theirs, 'already so, and not written again')
+
     def test_the_brand_skills_repository_saved_from_a_stale_form_keeps_what_changed(self):
         self.post('setup', {'path': str(self.base / 'mine')})
         self.file.write_text('{"schema": 1, "brand": {"repository": '
@@ -827,6 +903,36 @@ class MigrationTests(FirstTimeCase):
         # That is said by the workspace itself, with a way to join the new one.
         self.assertIsNotNone(self.get('setup')['team_moved'])
         self.assertIsNone(self.get('setup')['shared_notice'])
+
+    def test_a_value_another_studio_writes_while_they_move_is_kept(self):
+        theirs = {'schema': 1, 'assistant': {'agent': 'claude', 'model': 'opus'}}
+        with meanwhile(lambda: self.file.write_text(json.dumps(theirs))):
+            moved = setup.migrate()
+        self.assertEqual(moved, ['brand.repository', 'brand.release', 'share',
+                                 'team.repository', 'team.branch'])
+        self.assertEqual(json.loads(self.file.read_text())['assistant'], theirs['assistant'])
+        self.assertIn('otherwise for the agent, the model and the reasoning level, so',
+                      self.get('setup')['shared_notice'])
+        self.assertEqual(self.kept_here(), (self.mine, self.record))
+
+    def test_when_to_share_moves_where_the_workspaces_clone_is_gone(self):
+        shutil.rmtree(Path(self.record['repo']))
+        self.when_to_share_moves_from_a_record_that_is_not_whole()
+
+    def test_when_to_share_moves_where_the_workspaces_marker_is_gone(self):
+        (Path(self.record['repo']) / self.record['folder'] / gitstate.MARKER).unlink()
+        self.when_to_share_moves_from_a_record_that_is_not_whole()
+
+    def when_to_share_moves_from_a_record_that_is_not_whole(self):
+        self.assertIsNone(gitstate.current())
+        # While it cannot be written, it stays in the record.
+        self.file.write_text('{"schema": 1, "share": ')
+        self.assertEqual(setup.migrate(), [])
+        self.assertEqual(gitstate.own_share(), 'asked')
+        self.file.write_text('{"schema": 1}')
+        self.assertIn('share', setup.migrate())
+        self.assertEqual(json.loads(self.file.read_text())['share'], 'asked')
+        self.assertEqual(self.kept_here(), (self.mine, self.record))
 
 
 class CheckTests(FirstTimeCase):
@@ -2229,6 +2335,39 @@ class SettingsTests(StudioCase):
         # Changed to what the other studio chose, there is nothing to refuse.
         settings.save(replace(shown, model='sonnet'), shown)
         self.assertEqual(settings.load().model, 'sonnet')
+
+    def test_a_model_and_a_level_are_written_only_beside_the_agent_the_form_shows(self):
+        studios = Path(os.environ['STUDIOS_CONFIG'])
+        theirs = '{"schema": 1, "assistant": {"agent": "gemini", "model": "pro", "effort": "deep"}}'
+        for changed, written in (
+                ({'model': 'opus'}, {'agent': 'claude', 'model': 'opus', 'effort': None}),
+                ({'effort': 'high'}, {'agent': 'claude', 'model': None, 'effort': 'high'})):
+            with self.subTest(changed=changed):
+                studios.write_text(theirs)
+                shown = settings.load()
+                self.assertEqual((shown.agent, shown.model, shown.effort),
+                                 ('claude', None, None))
+                settings.save(replace(shown, **changed), shown)
+                self.assertEqual(json.loads(studios.read_text())['assistant'], written)
+        # So is a release beside the brand skill's repository: another one goes with it.
+        studios.write_text('{"schema": 1, "brand": {"repository": '
+                           '"https://pat:secret@github.com/acme/brand.git", "release": "v1"}}')
+        shown = settings.load()
+        settings.save(replace(shown, brand_repository='git@github.com:acme/brand.git'), shown)
+        self.assertEqual(json.loads(studios.read_text())['brand'],
+                         {'repository': 'git@github.com:acme/brand.git', 'release': None})
+
+    def test_a_level_is_not_saved_beside_an_agent_another_studio_chose_meanwhile(self):
+        studios = Path(os.environ['STUDIOS_CONFIG'])
+        studios.write_text('{"schema": 1, "assistant": {"agent": "claude"}}')
+        shown = settings.load()
+        text = '{"schema": 1, "assistant": {"agent": "codex"}}'
+        studios.write_text(text)
+        with self.assertRaises(WorkspaceError) as refused:
+            settings.save(replace(shown, effort='high'), shown)
+        self.assertEqual(str(refused.exception), 'The agent was changed in another studio '
+                         'while this was open, so nothing was saved. Look again, then save.')
+        self.assertEqual(studios.read_text(), text)
 
     def test_while_the_studios_config_cannot_be_read_a_shared_setting_is_not_saved(self):
         studios = Path(os.environ['STUDIOS_CONFIG'])

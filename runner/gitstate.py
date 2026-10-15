@@ -173,9 +173,11 @@ def current() -> Workspace | None:
 
 
 def own_share() -> str | None:
-    """When to share, as this computer's record kept it before it was shared, or None."""
+    """When to share, as this computer's record of a team repository kept it before it was
+    shared, or None. It is found whether or not the clone and its marker are still there. A
+    folder on this computer has none to share."""
     kept = _record() or {}
-    return kept['share'] if kept.get('share') in SHARE else None
+    return kept['share'] if kept.get('share') in SHARE and kept.get('address') else None
 
 
 def forget_own_share() -> None:
@@ -187,9 +189,13 @@ def forget_own_share() -> None:
 
 
 def _keep_share(when: str) -> None:
-    """Write when to share into the studios config, where it says otherwise."""
+    """Write when to share into the studios config, where it says otherwise. Whether it does
+    is decided again under the lock every studio takes to write it."""
+    def wanted(found: dict) -> dict:
+        said = found.get('share')
+        return {} if (said if said in SHARE else SHARE[0]) == when else {'share': when}
     if shared_share() != when:
-        studios_config.update({'share': when})
+        studios_config.update(wanted)
 
 
 def share_when(when: str) -> Workspace:
