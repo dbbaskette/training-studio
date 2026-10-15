@@ -90,7 +90,8 @@ class BrandRepository:
 
     def __init__(self, base: Path):
         self.bare, self.work = base / 'acme-brand.git', base / 'acme-brand-work'
-        git(base, 'init', '-q', '--bare', str(self.bare))
+        # Its releases are pushed to main, which is its HEAD whatever git's default is here.
+        git(base, 'init', '-q', '--bare', '--initial-branch=main', str(self.bare))
         git(base, 'init', '-q', str(self.work))
 
     def release(self, version: str, slides: str | None = '0.13.1', tag: bool = True,
@@ -427,7 +428,9 @@ class BrandRowTests(BrandInstallCase):
                          'Name its repository in Settings to install and upgrade it from here.')
         self.brand.release('0.13.1')
         folder = self.base / 'by-hand'
-        git(self.base, 'clone', '-q', self.address, str(folder))
+        # By its tag: the bare repository's HEAD is whatever branch git makes by default here.
+        # By its tag, so the branch git makes by default on this computer does not matter.
+        git(self.base, 'clone', '-q', '--branch', 'v0.13.1', self.address, str(folder))
         (self.claude / 'acme-brand').symlink_to(folder)
         self.keep.check(repair=False)
         shown = self.keep.report()['versions']
