@@ -1,0 +1,222 @@
+"""The studios config: one file of defaults that every *-studio on this computer shares.
+
+What a caller needs to know
+---------------------------
+    found, problem = studios_config.read()       # ({}, None) when there is no file
+    studios_config.update({'share': 'asked'})     # only with the person's consent
+
+- The file is `~/.config/studios-config.json`, or the one `STUDIOS_CONFIG` names, which is
+  how tests keep away from a real one. Training Studio, Blog Studio and Presentation Studio
+  read the same file, in this shape, where every key is optional:
+
+      {"schema": 1, "team": {"repository", "branch"}, "person": {"name"},
+       "assistant": {"agent", "model", "effort"}, "brand": {"brand", "variant"},
+       "output", "share"}
+
+  A studio ignores the keys it does not use and those it does not know. `null` is the same
+  as leaving a key out.
+- `read` never refuses. A file that cannot be read, is not JSON, is not an object or is of
+  another schema is read as empty, with a sentence that says so for the page to show. What
+  each value means to Training Studio, and whether it can be used, is `setup`'s to say.
+- `update` is called only when the person said a value is for all their studios. It
+  changes only the members it is given, by editing them in the file's own text, so every
+  other key keeps its bytes, its order and its layout, and a key it does not know is never
+  removed. A value that is the same already is not written, and nothing changed is no
+  write at all. The file is written whole or not at all, keeps its permissions, and a
+  link to it is written through. It refuses a team repository whose address carries a
+  password or a token, a value that is not plain, and a file it could not read.
+- Nothing secret belongs in the file: tokens and sign-ins stay with gcloud, gh and git.
+- Only the runner uses this file. The helper's own commands never read it.
+"""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+from json import decoder
+from pathlib import Path
+
+import runner  # noqa: F401  puts the core on the import path
+import hub
+from workspace import WorkspaceError
+
+SCHEMA = 1
+PATH = Path.home() / '.config' / 'studios-config.json'
+GROUPS = ('team', 'person', 'assistant', 'brand')   # keys whose value is an object
+WORDS = ('output', 'share')                         # keys whose value is a word
+SECRET = ('That address carries a password or token. Give the address without it; git '
+          'signs in with your own credentials.')
+SPACE = decoder.WHITESPACE
+DECODE = json.JSONDecoder()
+
+
+def path() -> Path:
+    """Where the file is: the one STUDIOS_CONFIG names, else in ~/.config."""
+    named = os.environ.get('STUDIOS_CONFIG')
+    if named:
+        return Path(named).expanduser()
+    return Path.home() / '.config' / 'studios-config.json'
+
+
+def shown(where: Path) -> str:
+    """A path as a person would write it: from ~ when it is in their home folder."""
+    try:
+        return '~/' + Path(where).relative_to(Path.home()).as_posix()
+    except ValueError:
+        return str(where)
+
+
+def _unreadable(where: Path, why: str) -> str:
+    return (f'{shown(where)} could not be read ({why}), so Training Studio is using '
+            'its own settings.')
+
+
+def _parsed(where: Path, text: str) -> tuple[dict, str | None]:
+    try:
+        found = json.loads(text)
+    except ValueError:
+        return {}, _unreadable(where, 'it is not valid JSON')
+    if not isinstance(found, dict):
+        return {}, _unreadable(where, 'it does not hold a JSON object')
+    schema = found.get('schema', SCHEMA)
+    if type(schema) is not int or schema != SCHEMA:
+        return {}, _unreadable(where, 'it is written for a newer version of the studios')
+    return found, None
+
+
+def _text(where: Path) -> tuple[str | None, str | None]:
+    """The file's text, or None when there is none; and why it could not be read."""
+    try:
+        return where.read_text(encoding='utf-8'), None
+    except FileNotFoundError:
+        return None, None
+    except UnicodeDecodeError:
+        return None, _unreadable(where, 'it is not text in UTF-8')
+    except OSError as failure:
+        return None, _unreadable(where, str(failure.strerror or 'it cannot be opened').lower())
+
+
+def read() -> tuple[dict, str | None]:
+    """What the file holds, and a sentence when it could not be used. No file is ({}, None);
+    a file that cannot be used is ({}, the sentence)."""
+    where = path()
+    text, problem = _text(where)
+    if text is None:
+        return {}, problem
+    return _parsed(where, text)
+
+
+# --- writing -----------------------------------------------------------------------------
+
+def _plain(value) -> bool:
+    return value is None or isinstance(value, (str, bool, int, float))
+
+
+def _check(changes) -> None:
+    """Refuse what is not for this file: a value that is not plain, or a secret."""
+    if not isinstance(changes, dict) or 'schema' in changes:
+        raise WorkspaceError('Give the shared values as the studios config names them.')
+    for key, value in changes.items():
+        whole = isinstance(value, dict) and all(
+            isinstance(name, str) and _plain(inner) for name, inner in value.items())
+        if not isinstance(key, str) or (key in GROUPS and not whole) or (
+                key in WORDS and not (value is None or isinstance(value, str))) or (
+                not whole and not _plain(value)):
+            raise WorkspaceError(f'"{key}" cannot be written to the studios config as it is.')
+    address = (changes.get('team') or {}).get('repository')
+    if isinstance(address, str) and hub.ADDRESS_WITH_SECRET.match(address.strip()):
+        raise WorkspaceError(SECRET)
+
+
+def _object(text: str, at: int) -> tuple[list, int]:
+    """The members of the object whose brace is at `at`, each as (key, key_at, colon,
+    value_at, value_end), and where its closing brace is. The text is known to be JSON."""
+    members = []
+    at = SPACE.match(text, at + 1).end()
+    while text[at] != '}':
+        key_at = at
+        key, key_end = decoder.scanstring(text, at + 1)
+        value_at = SPACE.match(text, SPACE.match(text, key_end).end() + 1).end()
+        _, value_end = DECODE.raw_decode(text, value_at)
+        members.append((key, key_at, text[key_end:value_at], value_at, value_end))
+        at = SPACE.match(text, value_end).end()
+        if text[at] == ',':
+            at = SPACE.match(text, at + 1).end()
+    return members, at
+
+
+def _dump(value) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _same(one, other) -> bool:
+    return type(one) is type(other) and one == other
+
+
+def _edits(text: str, at: int, changes: dict, current: dict) -> list:
+    """What to change in the object at `at` so that it holds `changes`: (start, end, text)
+    each, touching nothing else. A key given twice is changed where JSON reads it, last."""
+    members, close = _object(text, at)
+    last = {member[0]: member for member in members}
+    edits, added = [], []
+    for key, value in changes.items():
+        if key not in last:
+            added.append((key, value))
+            continue
+        _, _, _, value_at, value_end = last[key]
+        held = current.get(key)
+        if isinstance(value, dict) and isinstance(held, dict):
+            edits.extend(_edits(text, value_at, value, held))
+        elif not _same(held, value):
+            edits.append((value_at, value_end, _dump(value)))
+    if added:
+        if members:
+            _, key_at, colon, _, value_end = members[-1]
+            before = text[:key_at]
+            space = text[len(before.rstrip(' \t\r\n')):key_at]
+            edits.append((value_end, value_end, ''.join(
+                f',{space}{_dump(key)}{colon}{_dump(value)}' for key, value in added)))
+        else:
+            edits.append((close, close, ', '.join(
+                f'{_dump(key)}: {_dump(value)}' for key, value in added)))
+    return edits
+
+
+def update(changes: dict) -> dict:
+    """Write these values into the file, merged with what it holds, and return what it then
+    holds. `changes` is shaped as the file is: {"share": ..., "team": {"branch": ...}}."""
+    _check(changes)
+    where = path()
+    target = where.resolve() if where.is_symlink() else where
+    text, problem = _text(target)
+    found = {}
+    if text is not None:
+        found, problem = _parsed(where, text)
+    if problem:
+        raise WorkspaceError(problem.removesuffix(', so Training Studio is using its own '
+                                                  'settings.') + ', so it was left as it is.')
+    if text is None:
+        written = json.dumps({'schema': SCHEMA, **changes}, indent=2, ensure_ascii=False) + '\n'
+    else:
+        start = SPACE.match(text, 0).end()
+        wanted = changes if 'schema' in found else {'schema': SCHEMA, **changes}
+        written = text
+        for begin, end, put in sorted(_edits(text, start, wanted, found), reverse=True):
+            written = written[:begin] + put + written[end:]
+        if written == text:
+            return found
+    mode = target.stat().st_mode & 0o7777 if text is not None else None
+    pending = target.with_name(f'.{target.name}.pending-{secrets.token_hex(4)}')
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text(written, encoding='utf-8')
+        if mode is not None:
+            os.chmod(pending, mode)
+        os.replace(pending, target)
+    except OSError as failure:
+        raise WorkspaceError(f'{shown(where)} could not be written '
+                             f'({str(failure.strerror or failure).lower()}), so it was left '
+                             'as it is.')
+    finally:
+        pending.unlink(missing_ok=True)
+    return json.loads(written)

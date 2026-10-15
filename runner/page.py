@@ -78,6 +78,11 @@ What a caller needs to know
   installer, in the background, and answers `upkeep`; it is 409 while a training is working,
   while anything else is in hand, while a companion waits for Update, and when `release`
   is not the one shown in `upkeep.versions.brand`.
+- `GET /api/setup` carries `shared`, what the studios config every *-studio reads holds
+  that Training Studio can use, and `shared_problem`, a sentence when that file could not
+  be read. `POST /api/setup` takes `"for_all_studios": true` to write the shared values the
+  save changed into that file too, and then answers `for_all_studios` beside the set-up.
+  See `setup` and `studios_config`.
 - `POST /api/adopt` with {"path"} copies a training this computer knows, started in a
   conversation, into the workspace, and answers {"path", "id"} of the copy.
 - Every request that passes the rules tells the engine a page is open, which is how the

@@ -340,8 +340,8 @@ class StatusTests(StudioCase):
         waiting = self.start(title='Health checks')
         found = self.status()
         self.assertEqual(sorted(found), ['agent', 'brand', 'configured', 'limits', 'notify',
-                                         'previews', 'trainings', 'updates', 'upkeep',
-                                         'version', 'workspace'])
+                                         'previews', 'shared', 'shared_problem', 'trainings',
+                                         'updates', 'upkeep', 'version', 'workspace'])
         # What was found of the skills, looked at as they are: nothing is put back, and
         # nothing is asked online.
         self.assertEqual((found['upkeep'], found['updates']),

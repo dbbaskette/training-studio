@@ -111,6 +111,28 @@ Where this computer can make a deck, set-up asks two more things.
 
 Nothing is changed until you save. You can change any of it later in Settings.
 
+If you use Presentation Studio or Blog Studio too, set-up starts from what your studios share: see [the shared studios config](#shared-studios-config).
+
+## Shared studios config
+
+Training Studio, Blog Studio and Presentation Studio can share one optional file of defaults, `~/.config/studios-config.json` (`STUDIOS_CONFIG` names another place). [The shared studios convention](shared-studios.md) describes the file, its rules and the shared team repository, identically for every studio. A missing file changes nothing, and a file that cannot be read never stops you: set-up and the Status screen say that Training Studio is using its own settings.
+
+### In Training Studio
+
+Only the page's runner reads the file. The helper's own commands, and a training made in a conversation, never do.
+
+| Key | What it fills in | Written back |
+| --- | --- | --- |
+| `team.repository` | Set-up's "A team repository", where this computer keeps no repository of its own. | Yes |
+| `team.branch` | The branch, for a new workspace in that repository. A workspace your team has set up already keeps the branch its `hub.json` names. Not used for a folder on this computer. | Yes |
+| `person.name` | Nothing: Training Studio asks nobody's name. Your work carries git's own name for you, which set-up checks and never changes. | No |
+| `assistant.agent`, `.model`, `.effort` | The agent, its model and its reasoning level, at the first set-up. A value set-up would refuse is ignored. A model the agent does not list shows as "Another model…", and a level the model does not take is left to the agent. | Yes |
+| `brand.brand`, `.variant` | A new training's deck brand and variant, when the brand skill on this computer has them. | No |
+| `output` | `"google"` makes a new training's deck Google Slides, and `"pptx"` PowerPoint. Copies of the guide and brief are not chosen from it. Any other value is ignored. | No |
+| `share` | `"decision"` is "After each decision", `"asked"` is "Only when I ask". Any other value is ignored. | Yes |
+
+Set-up, the first time or from "Change the set-up" in Settings, has "Use for all studios" beside the shared values. With it on, saving writes to the file each shared value you changed in that save, where the file says otherwise, and nothing else. A model or level left to the agent is written as `null`. A folder on this computer is not a team repository, so it writes no `team` or `share`. Your set-up is saved first: if the file cannot be written, the page says why and your set-up stands. Training Studio has no default brand or output of its own, so it never writes those.
+
 ## Start a training
 
 "New training" asks for a title, what it should teach, who it is for, and a few choices that already have answers. Then it starts at once.

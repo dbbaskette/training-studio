@@ -140,6 +140,8 @@ const LEVEL_NAMES = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Med
   high: 'High', xhigh: 'Extra high', max: 'Maximum', ultra: 'Ultra' };
 const MODELS_AGAIN = 60000; // a list of models that could not be made is asked for again after
 const SHARE = ['each-decision', 'when-asked'];
+// The file of defaults every studio on this computer shares, where the runner reads it.
+const STUDIOS_FILE = '~/.config/studios-config.json';
 // What the folder and the workspace are called become names of folders, so they are plain.
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const PLAIN_SAYS = 'Use letters, digits, dots, hyphens and underscores, with no spaces, '
@@ -1747,6 +1749,13 @@ function computerCard() {
   return add(node, summary, items);
 }
 
+// The file every studio shares, said in one sentence where it could not be read. Nothing
+// waits on it: this computer's own settings are used meanwhile.
+function studiosProblemCard() {
+  const problem = view.runner && view.setup ? view.setup.shared_problem : '';
+  return problem ? add(card('Your other studios'), make('p', 'problem', problem)) : null;
+}
+
 function drawStatus(fresh) {
   const check = capsule(view.checking ? 'Checking…' : view.computer ? 'Check this computer again'
     : 'Check this computer', 'filled', checkComputer, 'check-computer');
@@ -1763,6 +1772,8 @@ function drawStatus(fresh) {
     trainingsTable(),
     ['versions', [upkeepOf(), view.restarting], versionsCard],
     ['skills', [upkeepOf()], skillsCard],
+    ['studios', [Boolean(view.runner), view.setup && view.setup.shared_problem],
+      studiosProblemCard],
     ['computer', [view.computer, Boolean(view.runner)], computerCard]], fresh);
   // With the runner, every run and who runs what is asked for as the screen opens.
   if (fresh && view.runner) {
@@ -3169,19 +3180,29 @@ function setupForm() {
   const held = view.setup;
   const space = held.workspace || {};
   const limits = held.limits || {};
-  const agent = held.agent || {};
+  const shared = sharedOf();
+  const team = shared.team || {};
+  // What every studio shares fills in only what this computer has no answer of its own to:
+  // the agent at the first set-up, and the team repository where none is kept here.
+  const assistant = held.configured ? {} : shared.assistant || {};
+  const agent = assistant.agent || assistant.model || assistant.effort
+    ? { default: assistant.agent || (held.agent || {}).default, model: assistant.model,
+      effort: assistant.effort } : held.agent || {};
   const local = Boolean(held.workspace) && !space.repository;
   const seconds = Number(limits.step_seconds) || 0;
+  const share = space.share_when || (shared.share === 'asked' ? SHARE[1] : SHARE[0]);
   return {
     where: local ? 1 : 0,
-    repository: space.repository || '',
+    repository: space.repository || team.repository || '',
     path: local ? space.path || '' : '',
     folder: space.folder || '',
     branch: space.branch || '',
     name: space.name || '',
     touched: { folder: Boolean(space.folder), branch: Boolean(space.branch),
       name: Boolean(space.name) },
-    share: space.share_when === 'when-asked' ? 1 : 0,
+    team: space.repository ? {} : team,
+    share: share === SHARE[1] ? 1 : 0,
+    everywhere: false,
     agent: agent.default === 'codex' ? 'codex' : 'claude',
     model: agent.model || '', other: false, effort: agent.effort || '',
     minutes: seconds ? String(Math.round(seconds / 6) / 10) : '', seconds,
@@ -3259,6 +3280,9 @@ function fillFound(found) {
   for (const name of ['folder', 'branch', 'name']) {
     const box = byId('setup-' + name);
     if (found[name] && (form.existing || !form.touched[name])) form[name] = String(found[name]);
+    // The branch every studio shares is the one for a new workspace in the team repository.
+    // A workspace the team has set up already keeps the branch its hub.json names.
+    if (name === 'branch' && sharedBranch(form)) form.branch = form.team.branch;
     if (!box) continue;
     box.value = form[name];
     box.readOnly = form.existing;
@@ -3270,6 +3294,13 @@ function fillFound(found) {
     + 'in this repository' + (found.name ? ', as “' + found.name + '”' : '') + '. Its folder, '
     + 'branch and name are read from the hub.json your team keeps there, so there is nothing '
     + 'to choose here.')] : []));
+}
+
+// Whether the branch every studio shares is the one to fill in: for the team repository they
+// share, when nobody has named a branch here and the repository has none of its own yet.
+function sharedBranch(form) {
+  return Boolean(form.team.branch && !form.where && !form.existing && !form.touched.branch
+    && form.repository.trim() === form.team.repository);
 }
 
 async function checkSetup() {
@@ -3565,6 +3596,29 @@ function placeCard(form) {
     add(make('div', 'bar'), capsule('Check again', 'quiet', again, 'check-again')));
 }
 
+// What every studio on this computer shares, as the runner read it, or nothing from a runner
+// that does not read it.
+function sharedOf() {
+  return (view.setup && view.setup.shared) || {};
+}
+
+// The file every studio shares. Set-up is filled in from it where this computer has no
+// answer of its own, and what is changed here is written back to it only when asked.
+function studiosCard(form) {
+  const held = view.setup;
+  if (!held || !('shared' in held)) return null;
+  return add(card('Your other studios'),
+    make('p', '', 'Training Studio, Presentation Studio and Blog Studio can share the team '
+      + 'repository, when to share and the agent through one file, ' + STUDIOS_FILE + '. '
+      + 'What is set here comes first.'),
+    add(make('div', 'chips'), chip('Use for all studios', form.everywhere, (on) => {
+      form.everywhere = on;
+    }, 'for-all-studios')),
+    make('p', 'quiet field-hint', 'Saving then writes to that file only what you changed '
+      + 'here. Nothing else in it is touched, and nothing secret is written.'),
+    held.shared_problem ? make('p', 'problem', held.shared_problem) : null);
+}
+
 function shareCard(form) {
   return add(card('When your team sees the work'), ...explained('Share',
     ['After each decision', 'Only when I ask'], SHARE_SAYS, form.share, (index) => {
@@ -3655,7 +3709,7 @@ function paintSetup(fresh) {
       make('p', '', 'An agent is the AI that drafts each stage for you to decide on. It has '
         + 'to be installed on this computer and signed in.'),
       ...agentFields(form, 'setup', 'Use by default')),
-    brandSkillCard(form), previewsCard(form), limitsCard(form),
+    studiosCard(form), brandSkillCard(form), previewsCard(form), limitsCard(form),
     add(make('div', 'form-foot'), problem, add(make('div', 'bar'), save,
       first ? null : capsule('Cancel', 'quiet', back, 'cancel'))));
   place({ title: first ? 'Set up Training Studio' : 'Set-up', name: 'Set-up',
@@ -3757,6 +3811,7 @@ async function saveSetup(pressed) {
   if (brandSkills().length > 1 && form.brandSkill) body.brand_skill = form.brandSkill;
   // The computer's own notification is switched in Settings, and is saved as it stands.
   if (view.setup.notify) body.notify = Boolean(view.setup.notify.on);
+  if (form.everywhere) body.for_all_studios = true;
   const first = !view.setup.configured;
   try {
     view.setup = await send('setup', body);
@@ -3768,6 +3823,13 @@ async function saveSetup(pressed) {
   form.saving = false;
   frame();
   toast(first ? 'You are set up. Now start your first training.' : 'The set-up is saved.');
+  // Your other studios are told only what this save changed. Where their file could not be
+  // written, the set-up here is saved all the same, and the page says why.
+  const everywhere = view.setup.for_all_studios;
+  if (everywhere) {
+    toast(everywhere.problem || (list(everywhere.written).length
+      ? 'Your other studios use this too now.' : 'Your other studios use this already.'));
+  }
   if (first || view.pushed === 0) show(first ? 'home' : 'settings', null, true);
   else back();
 }
@@ -3777,8 +3839,13 @@ async function saveSetup(pressed) {
 
 function newDraft() {
   const agent = (view.setup && view.setup.agent) || {};
+  // The brand, its variant and Google Slides come from what every studio shares, where the
+  // brand skill here has them.
+  const shared = sharedOf();
+  const brand = shared.brand || {};
   return settleDeck({ step: 0, title: '', topic: '', audience: '', purpose: 0,
-    levels: ['101'], brief: 0, time: '', deck: 0, brand: '', variant: '', copies: [],
+    levels: ['101'], brief: 0, time: '', deck: shared.output === 'google' ? 1 : 0,
+    brand: brand.brand || '', variant: brand.variant || '', copies: [],
     yoodli: false, sources: 0, agent: agent.default === 'codex' ? 'codex' : 'claude',
     model: agent.model || '', other: false, effort: agent.effort || '', starting: false });
 }

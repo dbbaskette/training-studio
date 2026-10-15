@@ -56,7 +56,8 @@ its location, including in tests. This example contains no credentials:
 }
 ```
 
-Every setting is optional. A studio uses supported fields to fill first-launch
+Every setting is optional, and `null` is the same as leaving it out. A file whose
+`schema` is not 1 is treated as unreadable. A studio uses supported fields to fill first-launch
 setup and new-item defaults. Its own saved settings win. Existing items retain
 their choices. Unknown and unused fields are ignored, and unrelated JSON bytes
 are preserved when a supported value is changed.
