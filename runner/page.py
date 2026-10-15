@@ -78,11 +78,17 @@ What a caller needs to know
   installer, in the background, and answers `upkeep`; it is 409 while a training is working,
   while anything else is in hand, while a companion waits for Update, and when `release`
   is not the one shown in `upkeep.versions.brand`.
-- `GET /api/setup` carries `shared`, what the studios config every *-studio reads holds
-  that Training Studio can use, and `shared_problem`, a sentence when that file could not
-  be read. `POST /api/setup` takes `"for_all_studios": true` to write the shared values the
-  save changed into that file too, and then answers `for_all_studios` beside the set-up.
-  See `setup` and `studios_config`.
+- The values every studio shares are kept only in the studios config, so `POST /api/setup`
+  and `POST /api/brand` write the ones they change there, and are 409 and 400, with a
+  sentence, when one changes while that file cannot be read, or when the form was opened
+  before another studio changed that same value: each takes `shared_seen`, the `shared`
+  the form was shown, to tell what the person changed. `GET /api/setup` carries
+  `shared`, what the file holds that Training Studio can use; `shared_problem`, a sentence
+  when it could not be read; `team_moved`, {"repository", "branch", "says"} when it names
+  a team repository this computer's workspace is not a copy of; and `shared_notice`, a
+  sentence about the values the file already held when this computer's own moved there.
+  `POST /api/shared` with {"seen": true} stops it being shown and answers the set-up. See
+  `setup` and `studios_config`.
 - `POST /api/adopt` with {"path"} copies a training this computer knows, started in a
   conversation, into the workspace, and answers {"path", "id"} of the copy.
 - Every request that passes the rules tells the engine a page is open, which is how the
@@ -160,7 +166,7 @@ WRITES = ('/api/setup/check', '/api/setup', '/api/trainings', '/api/run', '/api/
           '/api/documents', '/api/copies', '/api/share', '/api/outline', '/api/drive',
           '/api/publish', '/api/adopt', '/api/fetch', '/api/delete', '/api/companions',
           '/api/asset', '/api/upgrade', '/api/restart', '/api/versions', '/api/redesign',
-          '/api/brand', '/api/brand/install')
+          '/api/brand', '/api/brand/install', '/api/shared')
 PNG = 'image/png'
 DOCUMENTS = '/api/documents'
 ASSET = '/api/asset'
@@ -434,6 +440,12 @@ class RunnerPage(desk.Page):
                 desk.text(sent, 'dismiss'))})
         if path == '/api/brand':
             return desk.as_json(HTTPStatus.OK, shaped(setup.save_brand, self.engine, sent))
+        if path == '/api/shared':
+            if sent.get('seen') is not True:
+                raise desk.Refusal(HTTPStatus.BAD_REQUEST, 'Send {"seen": true} once the '
+                                   'notice about the shared values has been read.')
+            setup.notice_read()
+            return desk.as_json(HTTPStatus.OK, setup.describe(self.engine))
         if path == '/api/brand/install':
             release = desk.text(sent, 'release')
             return desk.as_json(HTTPStatus.OK, {'upkeep': self.keeper().install_brand(

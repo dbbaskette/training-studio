@@ -2736,20 +2736,22 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         shared = {'team': {'repository': address, 'branch': 'trunk'},
                   'assistant': {'agent': 'codex', 'model': 'gpt-7-preview', 'effort': 'high'},
                   'share': 'asked'}
-        first = {**NOT_SET_UP, 'shared': shared, 'shared_problem': None}
+        # The agent is one of the values every studio shares, so the runner reads it from
+        # their file: it is the set-up's agent.
+        first = {**NOT_SET_UP, 'agent': {'default': 'codex', 'model': 'gpt-7-preview',
+                                         'effort': 'high'},
+                 'shared': shared, 'shared_problem': None}
         check = {'ok': True, 'checks': [{'what': 'The repository can be reached', 'ok': True,
                                          'fix': None}],
                  'found': {'name': 'studios', 'folder': 'trainings', 'branch': 'main',
                            'existing': False}}
-        saved = {**SET_UP, 'shared': shared, 'shared_problem': None,
-                 'for_all_studios': {'written': ['assistant.effort'], 'problem': None}}
+        saved = {**SET_UP, 'shared': shared, 'shared_problem': None}
         answers = self.answers(first, **{'GET /api/setup': [ok(first), ok(saved)],
                                          'POST /api/setup/check': [ok(check)],
                                          'POST /api/setup': [ok(saved)]})
         result = self.run_page(answers, [
             {'snapshot': 'first'},
             {'fill': 'Its reasoning level', 'value': 'medium'},
-            {'click': 'Use for all studios'}, {'snapshot': 'ticked'},
             {'click': 'Save and go on'}, {'snapshot': 'saved'}])
         shots = result['snapshots']
         start = shots['first']
@@ -2761,23 +2763,27 @@ class RunnerScreenTests(ScriptedPage, PageCase):
                           start['fields']['Its reasoning level']),
                          (address, 'trunk', 'trainings', ' other', 'gpt-7-preview', 'high'))
         self.assertEqual(start['pressed'], ['A team repository', 'Only when I ask', 'Codex'])
-        self.assertIn('Your other studios', start['text'])
-        self.assertIn('Training Studio, Presentation Studio and Blog Studio can share the team '
-                      'repository, when to share and the agent through one file, '
-                      '~/.config/studios-config.json.', start['text'])
+        # Said once, plainly, with no switch: what is saved here is saved for every studio.
+        self.assertIn('Your other studios\nThe team repository, when to share and the agent, '
+                      'with its model and level, are shared by every studio on this computer, '
+                      'in one file, ~/.config/studios-config.json. Saving here changes them '
+                      'for Presentation Studio and Blog Studio too.', start['text'])
+        self.assertEqual(start['text'].count('shared by every studio'), 1)
         self.assertEqual(start['chosen'], [])
-        self.assertIn('Use for all studios', start['buttons'])
-        self.assertEqual(shots['ticked']['chosen'], ['Use for all studios'])
+        self.assertNotIn('Use for all studios', start['buttons'])
         self.assertEqual(self.posts(result), [
             ('/api/setup/check', {'repository': address, 'path': None, 'folder': None,
                                   'branch': None}),
             ('/api/setup', {'repository': address, 'folder': 'trainings', 'branch': 'trunk',
                             'name': 'studios', 'share_when': 'when-asked', 'agent': 'codex',
                             'model': 'gpt-7-preview', 'effort': 'medium', 'limits': LIMITS,
-                            'for_all_studios': True})])
-        self.assertIn('Your other studios use this too now.', shots['saved']['toasts'])
+                            # What the form was shown, so that a value another studio
+                            # changes meanwhile is never written over.
+                            'shared_seen': shared})])
+        self.assertEqual(shots['saved']['toasts'],
+                         ['You are set up. Now start your first training.'])
 
-    def test_a_workspace_the_team_set_up_keeps_its_own_branch_and_this_computer_its_agent(self):
+    def test_a_workspace_the_team_set_up_keeps_its_own_branch_and_set_up_its_workspace(self):
         address = 'git@example.com:team/tools.git'
         shared = {'team': {'repository': address, 'branch': 'trunk'},
                   'assistant': {'agent': 'codex', 'model': 'gpt-6-sol'}, 'share': 'asked'}
@@ -2789,7 +2795,8 @@ class RunnerScreenTests(ScriptedPage, PageCase):
         answers = self.answers(first, **{'POST /api/setup/check': [ok(check), ok(check)]})
         result = self.run_page(answers, [{'snapshot': 'first'}])
         self.assertEqual(result['snapshots']['first']['fields']['The branch'], 'trainings')
-        # Once this computer is set up, its own answers come first.
+        # Once this computer is set up, its workspace comes first, and the agent is the one
+        # the runner read.
         mine = {**SET_UP, 'shared': shared, 'shared_problem': None}
         answers = self.answers(mine, **{'POST /api/setup/check': [ok(check)]})
         result = self.run_page(answers, [{'click': 'Settings'}, {'click': 'Change the set-up'},
@@ -2801,24 +2808,80 @@ class RunnerScreenTests(ScriptedPage, PageCase):
 
     def test_a_studios_file_that_cannot_be_read_is_said_on_status_and_holds_nothing_up(self):
         problem = ('~/.config/studios-config.json could not be read (it is not valid JSON), '
-                   'so Training Studio is using its own settings.')
-        broken = {**SET_UP, 'shared': {}, 'shared_problem': problem}
+                   'so Training Studio uses its built-in defaults for the values every studio '
+                   'shares, and saves none of them, until it can be read.')
+        broken = {**SET_UP, 'shared': {}, 'shared_problem': problem, 'team_moved': None,
+                  'shared_notice': None}
         result = self.run_page(self.answers(broken), [
             {'click': 'Status'}, {'snapshot': 'status'},
             {'click': 'Settings'}, {'click': 'Change the set-up'}, {'snapshot': 'set-up'}])
         shots = result['snapshots']
         self.assertIn('Your other studios\n' + problem, shots['status']['text'])
         self.assertIn(problem, shots['set-up']['text'])
-        self.assertIn('Use for all studios', shots['set-up']['buttons'])
+        self.assertNotIn('Use for all studios', shots['set-up']['buttons'])
         # With nothing wrong, Status says nothing of it; with an older runner, set-up does not
-        # offer it.
+        # say it either.
         fine = {**SET_UP, 'shared': {}, 'shared_problem': None}
         result = self.run_page(self.answers(fine), [{'click': 'Status'}, {'snapshot': 'status'}])
         self.assertNotIn('Your other studios', result['snapshots']['status']['text'])
         result = self.run_page(self.answers(), [{'click': 'Settings'},
                                                 {'click': 'Change the set-up'},
                                                 {'snapshot': 'set-up'}])
-        self.assertNotIn('Use for all studios', result['snapshots']['set-up']['buttons'])
+        self.assertNotIn('Your other studios', result['snapshots']['set-up']['text'])
+
+    def test_a_team_repository_changed_in_another_studio_is_offered_never_followed(self):
+        address = 'git@example.com:team/studios.git'
+        says = (f'The team repository your studios share is now {address}, and Training '
+                f'Studio still works in its copy of {WORKSPACE["repository"]} until you join '
+                'the new one.')
+        shared = {'team': {'repository': address, 'branch': 'trunk'}}
+        moved = {**SET_UP, 'shared': shared, 'shared_problem': None, 'shared_notice': None,
+                 'team_moved': {'repository': address, 'branch': 'trunk', 'says': says}}
+        check = {'ok': True, 'checks': [{'what': 'The repository can be reached', 'ok': True,
+                                         'fix': None}],
+                 'found': {'name': 'studios', 'folder': 'trainings', 'branch': 'main',
+                           'existing': False}}
+        joined = {**SET_UP, 'workspace': {**WORKSPACE, 'repository': address,
+                                          'name': 'studios', 'branch': 'trunk'},
+                  'shared': shared, 'shared_problem': None, 'shared_notice': None,
+                  'team_moved': None}
+        answers = self.answers(moved, **{'POST /api/setup/check': [ok(check)],
+                                         'POST /api/setup': [ok(joined)]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'click': 'Status'}, {'snapshot': 'status'},
+            {'click': 'Join it'}, {'snapshot': 'set-up'}, {'click': 'Save'},
+            {'snapshot': 'saved'}])
+        shots = result['snapshots']
+        for shot in ('home', 'status'):
+            self.assertIn('Your other studios\n' + says, shots[shot]['text'])
+            self.assertIn('Join it', shots[shot]['buttons'])
+        form = shots['set-up']['fields']
+        self.assertEqual((form['The repository’s address'], form['The branch'],
+                          form['The folder inside it'], form['A name for this workspace']),
+                         (address, 'trunk', 'trainings', 'studios'))
+        self.assertEqual(self.posts(result)[-1], ('/api/setup', {
+            'repository': address, 'folder': 'trainings', 'branch': 'trunk', 'name': 'studios',
+            'share_when': 'each-decision', 'agent': 'claude', 'model': None, 'effort': None,
+            'limits': LIMITS, 'shared_seen': shared}))
+        self.assertNotIn('Join it', shots['saved']['buttons'])
+
+    def test_what_moving_to_the_studios_file_left_as_it_was_is_told_until_read(self):
+        told = ('Training Studio now keeps the values every studio shares only in '
+                '~/.config/studios-config.json, which said otherwise for the agent, so what '
+                'this computer had chosen for those is no longer used.')
+        noticed = {**SET_UP, 'shared': {}, 'shared_problem': None, 'team_moved': None,
+                   'shared_notice': told}
+        seen = {**noticed, 'shared_notice': None}
+        answers = self.answers(noticed, **{'POST /api/shared': [ok(seen)]})
+        result = self.run_page(answers, [
+            {'snapshot': 'home'}, {'click': 'Got it'}, {'snapshot': 'read'},
+            {'click': 'Status'}, {'snapshot': 'status'}])
+        shots = result['snapshots']
+        self.assertIn('Your other studios\n' + told, shots['home']['text'])
+        self.assertEqual(self.posts(result), [('/api/shared', {'seen': True})])
+        for shot in ('read', 'status'):
+            self.assertNotIn(told, shots[shot]['text'])
+            self.assertNotIn('Your other studios', shots[shot]['text'])
 
     def test_a_new_training_takes_the_brand_and_google_slides_every_studio_shares(self):
         shared = {'brand': {'brand': 'example-co', 'variant': 'dark'}, 'output': 'google'}
@@ -6797,6 +6860,33 @@ class UpkeepScreenTests(ScriptedPage, PageCase):
                       shots['saved']['toasts'])
         self.assertEqual(self.posts(result), [('/api/brand', {'repository': address,
                                                               'release': 'v0.13.1'})] * 2)
+
+    def test_the_brand_skills_repository_is_one_every_studio_shares(self):
+        self.started()
+        address = 'https://github.com/acme/brand.git'
+        shared = {'brand': {'repository': address}}
+        stale = ("The brand skill's repository was changed in another studio while this was "
+                 'open, so nothing was saved. Look again, then save.')
+        now = {**SET_UP, 'shared': shared, 'shared_problem': None,
+               'brand': {**BRAND, 'skills': [], 'repository': address, 'release': None}}
+        later = {**now, 'shared': {'brand': {'repository': address, 'release': 'v1.0.0'}}}
+        answers = self.answers(**{'GET /api/setup': [ok(now), ok(later)],
+                                  'POST /api/brand': [refused(stale), ok(later)]})
+        result = self.run_page(answers, [
+            {'click': 'Settings'}, {'snapshot': 'settings'},
+            {'fill': 'Which release', 'value': 'v0.13.1'},
+            {'click': 'Check and save'}, {'snapshot': 'refused'},
+            {'poll': True}, {'click': 'Check and save'}])
+        shots = result['snapshots']
+        self.assertIn('Every studio on this computer shares the repository and release named '
+                      'here, so saving changes them for all of them.', shots['settings']['text'])
+        self.assertIn(stale + ' Nothing was changed.', shots['refused']['text'])
+        # What it was shown goes with it, and after a refusal, what it has been shown since.
+        self.assertEqual(self.posts(result), [
+            ('/api/brand', {'repository': address, 'release': 'v0.13.1',
+                            'shared_seen': shared}),
+            ('/api/brand', {'repository': address, 'release': 'v0.13.1',
+                            'shared_seen': later['shared']})])
 
     def test_versions_can_be_dismissed_until_a_newer_one_is_out(self):
         found = kept(versions=versions(CURRENT))

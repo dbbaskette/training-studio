@@ -101,6 +101,7 @@ def serve(args, make=engines.Engine, out=None, opener=cmd_desk.show, keeper=None
     if space is not None:
         gitstate.identity(space.repo)  # nothing can be recorded without one; says the fix
     with only_runner():
+        setup.migrate()     # the values every studio shares, into the file they all read
         engine = make()
         engine.upkeep = (keeper or upkeeping.Upkeep)(after=engine.look_again)
         try:

@@ -89,6 +89,7 @@ class UpkeepCase(unittest.TestCase):
         git(self.base, 'init', '-q', '--bare', str(self.source))
         for patch in (mock.patch.dict(os.environ, {
                           'TRAINING_STUDIO_DATA': str(self.root),
+                          'STUDIOS_CONFIG': str(self.base / 'studios-config.json'),
                           'TRAINING_STUDIO_SOURCE': str(self.source)}),
                       mock.patch.object(install, 'PINS', self.pins_file),
                       mock.patch.object(install, 'PLATFORM', 'linux'),

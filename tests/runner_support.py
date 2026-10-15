@@ -1425,8 +1425,8 @@ class StudioCase(unittest.TestCase):
 
 
 class Person:
-    """One of two people who share a workspace: a data folder, a git identity, a clone of
-    the workspace and an engine of their own."""
+    """One of two people who share a workspace: a data folder, a studios config, a git
+    identity, a clone of the workspace and an engine of their own."""
 
     def __init__(self, name: str, env: dict):
         self.name, self.env = name, env
@@ -1448,7 +1448,7 @@ class TeamCase(StudioCase):
     def setUp(self):
         super().setUp()
         self.alex = Person('Alex', {name: os.environ[name] for name in (
-            'TRAINING_STUDIO_DATA', 'GIT_CONFIG_GLOBAL')})
+            'TRAINING_STUDIO_DATA', 'STUDIOS_CONFIG', 'GIT_CONFIG_GLOBAL')})
         self.alex.space, self.alex.engine = self.space, self.engine
         with self.be(self.alex):
             self.engine.share()     # the workspace's own files, so a teammate finds them
@@ -1463,6 +1463,7 @@ class TeamCase(StudioCase):
             f'[user]\n\tname = {name}\n\temail = {name.lower()}@example.com\n[init]\n\t'
             f"defaultBranch = main\n\ttemplateDir = {self.base / 'no-templates'}\n")
         made = Person(name, {'TRAINING_STUDIO_DATA': str(folder / 'data'),
+                             'STUDIOS_CONFIG': str(folder / 'studios-config.json'),
                              'GIT_CONFIG_GLOBAL': str(folder / 'gitconfig')})
         with self.be(made):
             made.space = self.gitstate.join(str(self.remote))
@@ -1470,7 +1471,8 @@ class TeamCase(StudioCase):
         return made
 
     def be(self, person: Person):
-        """Act as one of them: their data folder and their git identity."""
+        """Act as one of them: their data folder, their studios config and their git
+        identity."""
         return mock.patch.dict(os.environ, person.env)
 
     def as_(self, person: Person, action, *args, **named):

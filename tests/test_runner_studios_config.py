@@ -1,9 +1,11 @@
-"""The studios config: one file every *-studio reads for shared defaults, written only with
-consent. Every test points STUDIOS_CONFIG at a file in a temporary folder of its own."""
+"""The studios config: the one file of the values every *-studio shares, written when one of
+them is saved. Every test points STUDIOS_CONFIG at a file in a temporary folder of its own."""
+import fcntl
 import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -80,6 +82,9 @@ class ReadTests(StudiosConfigCase):
                 self.assertEqual(found, {})
                 self.assertIn(why, problem)
                 self.assertTrue(problem.startswith(str(self.file) + ' could not be read'))
+                self.assertTrue(problem.endswith(
+                    ', so Training Studio uses its built-in defaults for the values every '
+                    'studio shares, and saves none of them, until it can be read.'))
                 self.assertEqual(problem.count('. '), 0, 'one sentence')
                 self.assertTrue(problem.endswith('.'))
 
@@ -127,6 +132,11 @@ class UpdateTests(StudiosConfigCase):
         before['team']['folder'] = 'shared'
         before['colour'] = 'blue'
         self.assertEqual(json.loads(text), before)
+        # Beside a lone member written against its brace, and among close-packed ones.
+        self.write('{"schema":1,"assistant": {"agent": "claude"}}')
+        studios_config.update({'assistant': {'model': 'opus'}, 'share': 'asked'})
+        self.assertEqual(self.file.read_text(), '{"schema":1,"assistant": {"agent": "claude", '
+                                                '"model": "opus"},"share": "asked"}')
 
     def test_a_new_group_and_an_empty_one_are_filled(self):
         self.write('{"schema": 1, "team": {}}')
@@ -172,16 +182,32 @@ class UpdateTests(StudiosConfigCase):
         self.write(THEIRS)
         for address in ('https://dan:hunter2@github.com/acme/team.git',
                         'https://ghp_abcdefghijklmnopqrstuvwxyz@github.com/acme/team.git'):
-            with self.subTest(address=address), \
-                    self.assertRaisesRegex(WorkspaceError, 'password or token'):
-                studios_config.update({'team': {'repository': address}})
+            for group in ('team', 'brand'):
+                with self.subTest(address=address, group=group), \
+                        self.assertRaisesRegex(WorkspaceError, 'password or token'):
+                    studios_config.update({group: {'repository': address}})
         self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS)
+
+    def test_the_brand_skills_repository_and_release_are_written_beside_the_brand(self):
+        self.write(THEIRS)
+        studios_config.update({'brand': {'repository': 'git@github.com:acme/brand.git',
+                                          'release': 'v1.4.0'}})
+        self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS.replace(
+            '"variant": "light" }', '"variant": "light", "repository": '
+            '"git@github.com:acme/brand.git", "release": "v1.4.0" }'))
 
     def test_a_file_that_cannot_be_read_is_never_written_over(self):
         self.write('{"schema": 1, "team": ')
-        with self.assertRaisesRegex(WorkspaceError, 'could not be read'):
-            studios_config.update({'share': 'asked'})
+        refused = (f'{self.file} could not be read (it is not valid JSON), so no value every '
+                   'studio shares can be saved until it can, and the file was left as it is.')
+        for attempt in (lambda: studios_config.update({'share': 'asked'}),
+                        studios_config.writable):
+            with self.assertRaises(WorkspaceError) as caught:
+                attempt()
+            self.assertEqual(str(caught.exception), refused)
         self.assertEqual(self.file.read_text(), '{"schema": 1, "team": ')
+        self.file.write_text('{"schema": 1}')
+        self.assertIsNone(studios_config.writable())
 
     def test_only_plain_values_are_written(self):
         for changes in ({'share': ['asked']}, {'team': {'branch': {'name': 'x'}}},
@@ -196,8 +222,42 @@ class UpdateTests(StudiosConfigCase):
                 self.assertRaisesRegex(WorkspaceError, 'could not be written'):
             studios_config.update({'share': 'asked'})
         self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS)
+        # Only the lock every studio takes is left beside it.
         self.assertEqual(sorted(path.name for path in self.file.parent.iterdir()),
-                         ['studios-config.json'])
+                         ['studios-config.json', 'studios-config.json.lock'])
+
+    def test_writers_take_turns_through_the_lock_beside_the_file(self):
+        self.write(THEIRS)
+        self.assertEqual(studios_config.lock_path(), self.file.with_name(
+            'studios-config.json.lock'))
+        # Another studio holds the lock: this write waits, then refuses, writing nothing.
+        held = os.open(studios_config.lock_path(), os.O_CREAT | os.O_RDWR)
+        self.addCleanup(os.close, held)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with mock.patch.object(studios_config, 'WAIT', 0.2), \
+                self.assertRaisesRegex(WorkspaceError, 'Another studio is changing'):
+            studios_config.update({'share': 'asked'})
+        self.assertEqual(self.file.read_text(encoding='utf-8'), THEIRS)
+        # Once it lets go, the write goes ahead.
+        letting_go = threading.Timer(0.2, fcntl.flock, (held, fcntl.LOCK_UN))
+        letting_go.start()
+        self.addCleanup(letting_go.join)
+        studios_config.update({'share': 'asked'})
+        self.assertEqual(json.loads(self.file.read_text())['share'], 'asked')
+
+    def test_a_guard_sees_the_file_under_the_lock_and_can_refuse(self):
+        self.write(THEIRS)
+        seen = []
+
+        def guard(found):
+            seen.append(found['share'])
+            raise WorkspaceError('Changed elsewhere.')
+
+        with self.assertRaisesRegex(WorkspaceError, 'Changed elsewhere.'):
+            studios_config.update({'share': 'asked'}, guard)
+        self.assertEqual((seen, self.file.read_text(encoding='utf-8')), (['decision'], THEIRS))
+        studios_config.update({'share': 'asked'}, lambda found: None)
+        self.assertEqual(json.loads(self.file.read_text())['share'], 'asked')
 
     def test_its_permissions_are_kept(self):
         self.write(THEIRS)

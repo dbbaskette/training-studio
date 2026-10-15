@@ -1,14 +1,27 @@
-"""What this computer remembers for the runner: the agent to use by default, the limits, and
-how a deck's previews are rendered.
+"""What the runner is set to: the agent to use by default, the limits, how a deck's previews
+are rendered, and where the brand skill is installed from.
 
 What a caller needs to know
 ---------------------------
     chosen = settings.load()                      # the defaults when nothing is saved
     settings.save(replace(chosen, agent='codex', training_dollars=10))
 
-- Kept in the per-user data folder as `runner.json`, beside the workspace `gitstate`
-  remembers there. Nothing here is written into the repository: two people who share a
-  workspace can use different agents and different limits.
+- Two places hold them. The values every studio on this computer shares are kept only in
+  the studios config (`studios_config`), and read from it each time: the agent, its model
+  and its level (`assistant.agent`, `.model`, `.effort`) and the brand skill's repository and
+  release (`brand.repository`, `.release`). SHARED names them. A value there that would be
+  refused here is the default, and so is every one of them while the file cannot be read.
+  The rest belong to Training Studio on this computer alone, and are kept in the per-user
+  data folder as `runner.json`, beside the workspace `gitstate` remembers there. Nothing
+  here is written into the repository: two people who share a workspace can use different
+  agents and different limits.
+- `save` writes into the studios config only the shared values that differ from what
+  `load` reads there now, then `runner.json`. Where a shared value changed and the file
+  cannot be read or written, it refuses before anything is kept, and the file is left as it
+  is. A value in the file that Training Studio cannot use is never written over by a save
+  that did not change it.
+- `own()` is what `runner.json` still holds of the shared values from before they were
+  shared, and `forget_own()` takes them out of it. See `setup.migrate`.
 - `model` is the model the agent is asked for and `effort` how hard it reasons, its
   reasoning level; None for each is the agent's own choice. A level is one of the words an
   agent takes (EFFORTS): which of them a model takes is what the agent lists. Claude Code
@@ -39,13 +52,15 @@ from __future__ import annotations
 import functools
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import runner  # noqa: F401  puts the core on the import path
 import home
 import hub
 from workspace import WorkspaceError
+
+from runner import studios_config
 
 SCHEMA = 1
 AGENTS = ('claude', 'codex')
@@ -62,6 +77,10 @@ CLAUDE_MODELS = Path(__file__).resolve().with_name('claude-code-models.json')
 PREVIEWS = ('drive', 'local')   # how a deck's previews are rendered
 ADDRESS = 2000                  # characters in a repository's address
 RELEASE = re.compile(r'^[\w][\w.+-]{0,99}$')   # a release tag's name, as git takes it
+# The settings every studio shares, each with where the studios config keeps it.
+SHARED = {'agent': ('assistant', 'agent'), 'model': ('assistant', 'model'),
+          'effort': ('assistant', 'effort'), 'brand_repository': ('brand', 'repository'),
+          'brand_release': ('brand', 'release')}
 
 
 @dataclass(frozen=True)
@@ -269,20 +288,128 @@ def check(chosen: Settings) -> Settings:
         brand_release=check_release(chosen.brand_release, repository))
 
 
-def load() -> Settings:
-    """What is saved on this computer. Anything missing or unusable is the default."""
-    kept = home.read_json(path(), None)
-    if not isinstance(kept, dict) or kept.get('schema') != SCHEMA:
-        return Settings()
-    known = {name: kept[name] for name in asdict(Settings()) if name in kept}
+def passes(check, *args):
+    """What a check makes of a value, or None where it refuses it."""
     try:
-        return check(Settings(**known))
+        return check(*args)
     except WorkspaceError:
-        return Settings()
+        return None
 
 
-def save(chosen: Settings) -> Settings:
-    """Remember these settings on this computer."""
+def from_shared(found: dict) -> dict:
+    """The shared settings the studios config holds, by name, each as Training Studio can
+    use it and None where it cannot. A model or a level named for an agent Training Studio
+    does not have is not for it."""
+    assistant, brand = (found.get(name) if isinstance(found.get(name), dict) else {}
+                        for name in ('assistant', 'brand'))
+    named = assistant.get('agent')
+    agent = None if named is None else passes(check_agent, named)
+    usable = named is None or agent is not None
+    model = passes(check_model, assistant.get('model')) if usable else None
+    effort = passes(check_effort, assistant.get('effort'), agent or Settings().agent,
+                     model) if usable else None
+    repository = brand.get('repository')
+    repository = passes(check_repository, repository) if isinstance(repository, str) else None
+    release = brand.get('release')
+    release = passes(check_release, release, repository) \
+        if isinstance(release, str) and repository else None
+    return {'agent': agent, 'model': model, 'effort': effort,
+            'brand_repository': repository, 'brand_release': release}
+
+
+def _kept() -> dict:
+    """What runner.json holds, or nothing when it cannot be used."""
+    kept = home.read_json(path(), None)
+    return kept if isinstance(kept, dict) and kept.get('schema') == SCHEMA else {}
+
+
+def load() -> Settings:
+    """The settings now: the shared ones from the studios config, the rest from this
+    computer. Anything missing or unusable is the default."""
+    kept = _kept()
+    known = {name: kept[name] for name in asdict(Settings())
+             if name in kept and name not in SHARED}
+    try:
+        mine = check(Settings(**known))
+    except WorkspaceError:
+        mine = Settings()
+    return replace(mine, **shared_now(studios_config.read()[0]))
+
+
+def shared_now(found: dict) -> dict:
+    """The shared settings as Training Studio uses them, from what the studios config holds:
+    those it can use, and the default for the rest."""
+    shared = from_shared(found)
+    return {**shared, 'agent': shared['agent'] or Settings().agent}
+
+
+def seen(found: dict) -> Settings:
+    """The settings a form was shown, from the shared values it was given, in the shape of
+    the studios config. Only the shared ones mean anything."""
+    return replace(Settings(), **shared_now(found if isinstance(found, dict) else {}))
+
+
+def _same(one, other) -> bool:
+    return type(one) is type(other) and one == other
+
+
+def changes(before: Settings, after: Settings) -> dict:
+    """The shared settings `after` changes from `before`, shaped as the studios config is."""
+    found = {}
+    for name, (group, key) in SHARED.items():
+        if not _same(getattr(before, name), getattr(after, name)):
+            found.setdefault(group, {})[key] = getattr(after, name)
+    return found
+
+
+# Each shared setting as a sentence names it.
+NAMED = {'agent': 'The agent', 'model': 'The model', 'effort': 'The reasoning level',
+         'brand_repository': "The brand skill's repository",
+         'brand_release': "The brand skill's release"}
+STALE = ('{} was changed in another studio while this was open, so nothing was saved. Look '
+         'again, then save.')
+
+
+def save(chosen: Settings, shown: Settings | None = None) -> Settings:
+    """Keep these settings: each shared one that changed in the studios config, the rest on
+    this computer. A shared one that cannot be written is refused before anything is kept.
+
+    `shown` is what the form that sent them was shown, where it says. Then only what the
+    person changed from that is written, so a value another studio changed meanwhile is
+    kept, and a change to a value that another studio changed too is refused."""
     chosen = check(chosen)
-    home.write_json(path(), {'schema': SCHEMA, **asdict(chosen)})
+    before = shown if shown is not None else load()
+    changed = changes(before, chosen)
+
+    def guard(found: dict) -> None:
+        now = shared_now(found)
+        for name, (group, key) in SHARED.items():
+            if key in changed.get(group, {}) and not _same(now[name], getattr(before, name)) \
+                    and not _same(now[name], getattr(chosen, name)):
+                raise WorkspaceError(STALE.format(NAMED[name]))
+
+    if changed:
+        studios_config.update(changed, guard)
+    home.write_json(path(), {'schema': SCHEMA, **{
+        name: value for name, value in asdict(chosen).items() if name not in SHARED}})
     return chosen
+
+
+def own() -> dict:
+    """The shared settings runner.json still holds from before they were shared, by name,
+    each that can be used. Nothing when it holds none."""
+    kept = _kept()
+    found = from_shared({
+        'assistant': {'agent': kept.get('agent'), 'model': kept.get('model'),
+                      'effort': kept.get('effort')},
+        'brand': {'repository': kept.get('brand_repository'),
+                  'release': kept.get('brand_release')}})
+    return {name: value for name, value in found.items() if value is not None}
+
+
+def forget_own() -> None:
+    """Take the shared settings out of runner.json, and leave the rest as it is."""
+    kept = _kept()
+    if any(name in kept for name in SHARED):
+        home.write_json(path(), {name: value for name, value in kept.items()
+                                 if name not in SHARED})
