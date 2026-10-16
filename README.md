@@ -1,3 +1,5 @@
+> **Training Studio has moved.** Development, installation, issues, and new releases are now in [Marketing Studio](https://github.com/dbbaskette/marketing-studio/tree/main/studios/training). Use the [new installers](https://github.com/dbbaskette/marketing-studio/releases/latest). This repository is archived; historical source and release downloads remain available.
+
 # Training Studio
 
 Training Studio turns a topic into training material. You give it a subject, it researches it, and it builds the material with you one stage at a time. Nothing moves forward until you approve it.
